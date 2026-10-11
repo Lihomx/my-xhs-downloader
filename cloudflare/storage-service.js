@@ -7,15 +7,13 @@ const DEFAULT_PIN = "1987";
 /**
  * 初始化数据库表结构
  */
-export async function initDb(db) {
-  if (!db) return;
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
+let isDbInitialized = false;
 
-    CREATE TABLE IF NOT EXISTS notes (
+export async function initDb(db) {
+  if (!db || isDbInitialized) return;
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`).run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS notes (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       content TEXT,
@@ -26,13 +24,15 @@ export async function initDb(db) {
       source_url TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
-    );
-  `);
+    )`).run();
 
-  // 插入默认 PIN 码
-  const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
-  if (!existingPin) {
-    await db.prepare("INSERT INTO settings (key, value) VALUES ('pin_code', ?)").bind(DEFAULT_PIN).run();
+    const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
+    if (!existingPin) {
+      await db.prepare("INSERT INTO settings (key, value) VALUES ('pin_code', ?)").bind(DEFAULT_PIN).run();
+    }
+    isDbInitialized = true;
+  } catch (err) {
+    console.error("initDb error:", err);
   }
 }
 
