@@ -166,19 +166,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (env.AI) {
             const errors = [];
 
-            // 策略 1: @cf/openai/whisper-large-v3-turbo (纯 audio 数组)
-            try {
-              const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                audio: [...new Uint8Array(audioBuffer)]
-              });
-              if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo' });
-              }
-            } catch (err) {
-              errors.push(`turbo-array: ${err.message}`);
-            }
-
-            // 策略 2: @cf/openai/whisper (经典标准 Whisper 模型)
+            // 策略 1: @cf/openai/whisper (标准稳定模型，直接支持 Uint8Array 数组)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper', {
                 audio: [...new Uint8Array(audioBuffer)]
@@ -188,6 +176,18 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               }
             } catch (err) {
               errors.push(`whisper-array: ${err.message}`);
+            }
+
+            // 策略 2: @cf/openai/whisper-large-v3-turbo (备选模型)
+            try {
+              const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
+                audio: [...new Uint8Array(audioBuffer)]
+              });
+              if (aiResp && typeof aiResp.text === 'string') {
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo' });
+              }
+            } catch (err) {
+              errors.push(`turbo-array: ${err.message}`);
             }
 
             // 策略 3: Uint8Array 二进制对象

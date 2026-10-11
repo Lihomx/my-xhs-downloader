@@ -385,9 +385,13 @@ async function triggerCloudSync(note) {
         note.noteId = data.result.id;
       }
       if (statusBadge) {
-        statusBadge.textContent = "✅ 已永久离线保存至 Cloudflare 知识库";
+        statusBadge.innerHTML = '✅ 已永久离线保存至 <a href="#kb" id="link-to-kb-badge" style="color:var(--success);text-decoration:underline;cursor:pointer;font-weight:600;">我的收藏知识库 ↗</a>';
         statusBadge.style.color = "var(--success)";
         statusBadge.style.background = "var(--success-bg)";
+        document.getElementById("link-to-kb-badge")?.addEventListener("click", (e) => {
+          e.preventDefault();
+          switchPageTab("kb");
+        });
       }
       refreshNotesBadge();
     }
@@ -1067,21 +1071,55 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 宽屏全屏知识库管理视窗展开/关闭
-  const kbModal = document.getElementById("modal-knowledge-base");
-  document.getElementById("btn-open-drawer")?.addEventListener("click", () => {
-    kbModal?.classList.add("active");
-    loadTags();
-    loadNotes();
+  // 页面顶级标签页切换管理 (采集下载工具 vs 收藏知识库)
+  function switchPageTab(tabName) {
+    const downloadTabBtn = document.getElementById("tab-nav-download");
+    const kbTabBtn = document.getElementById("tab-nav-kb");
+    const downloadView = document.getElementById("view-download");
+    const kbView = document.getElementById("view-kb");
+
+    if (tabName === "kb") {
+      downloadTabBtn?.classList.remove("active");
+      kbTabBtn?.classList.add("active");
+      if (downloadView) downloadView.style.display = "none";
+      if (kbView) kbView.style.display = "block";
+      if (window.location.hash !== "#kb") {
+        window.location.hash = "kb";
+      }
+      loadTags();
+      loadNotes();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      kbTabBtn?.classList.remove("active");
+      downloadTabBtn?.classList.add("active");
+      if (kbView) kbView.style.display = "none";
+      if (downloadView) downloadView.style.display = "block";
+      if (window.location.hash === "#kb") {
+        window.location.hash = "download";
+      }
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  document.getElementById("tab-nav-download")?.addEventListener("click", () => switchPageTab("download"));
+  document.getElementById("tab-nav-kb")?.addEventListener("click", () => switchPageTab("kb"));
+  document.getElementById("brand-link")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    switchPageTab("download");
+  });
+  document.getElementById("btn-empty-go-download")?.addEventListener("click", () => switchPageTab("download"));
+
+  window.addEventListener("hashchange", () => {
+    if (window.location.hash === "#kb") {
+      switchPageTab("kb");
+    } else {
+      switchPageTab("download");
+    }
   });
 
-  document.getElementById("btn-close-kb-modal")?.addEventListener("click", () => {
-    kbModal?.classList.remove("active");
-  });
-
-  kbModal?.addEventListener("click", (e) => {
-    if (e.target === kbModal) kbModal.classList.remove("active");
-  });
+  if (window.location.hash === "#kb") {
+    switchPageTab("kb");
+  }
 
   // 知识库解锁 PIN
   document.getElementById("btn-kb-unlock-pin")?.addEventListener("click", async () => {
