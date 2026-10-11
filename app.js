@@ -1920,6 +1920,32 @@ async function sendAudioChunkForTranscription(blob) {
   };
 }
 
+function cleanWhisperHallucinationsClient(text) {
+  if (!text) return "";
+  let cleaned = String(text).trim();
+  const hallucinationPatterns = [
+    /请务必使用简体中文.*?标点符号[。！!？?]?/g,
+    /这是一段中文普通话演讲.*?标点符号[。！!？?]?/g,
+    /请不吝点赞.*?栏目[。！!？?]?/g,
+    /请不吝点赞.*?支持[。！!？?]?/g,
+    /欢迎订阅.*?频道[。！!？?]?/g,
+    /感谢大家的?收看[。！!？?]?/g,
+    /感谢收看[。！!？?]?/g,
+    /感谢观看[。！!？?]?/g,
+    /不吝点赞.*?打赏[。！!？?]?/g,
+    /点赞、?投币、?收藏[。！!？?]?/g,
+    /字幕由.*?社区提供[。！!？?]?/g,
+    /字幕制作.*$/g,
+    /Thank you for watching\.?/gi,
+    /Please subscribe\.?/gi
+  ];
+  for (const pattern of hallucinationPatterns) {
+    cleaned = cleaned.replace(pattern, " ");
+  }
+  cleaned = cleaned.replace(/(.{2,25}?)\1{2,}/g, "$1");
+  return cleaned.trim();
+}
+
 // 音频提取与 AI Whisper 语音识别 (支持多段切片流水线与实时流式文案呈现)
 async function transcribeAudio(mediaUrl, containerSelector, noteId) {
   const container = document.querySelector(containerSelector);
@@ -1946,9 +1972,13 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
   const livePreview = container.querySelector("#transcribe-live-preview");
 
   try {
+    const isGroq = state.whisperProvider === "groq" || Boolean(document.getElementById("settings-whisper-key")?.value);
+    // Groq 单次请求支持 25MB 大音频，单段切片扩大至 180 秒 (3分钟)，普通视频 1 秒整篇出全文！
+    const chunkDuration = isGroq ? 180 : 30;
+
     const { duration, chunks } = await extractAudioChunksFromMedia(mediaUrl, (msg) => {
       if (statusText) statusText.textContent = msg;
-    }, 24);
+    }, chunkDuration);
 
     const totalChunks = chunks.length;
     if (progressTrack) progressTrack.style.display = "block";
@@ -1970,6 +2000,11 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
       const chunk = chunks[i];
       const chunkIndex = i + 1;
       const percent = Math.round(((i) / totalChunks) * 100);
+
+      // 跳过纯静音分段，杜绝静音诱发的幻觉
+      if (chunk.isSilent && totalChunks > 1) {
+        continue;
+      }
 
       if (progressBar) progressBar.style.width = `${percent}%`;
       if (statusText) {
@@ -2001,14 +2036,20 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
         console.warn(`Chunk ${chunkIndex} error:`, lastErr);
       }
 
-      if (chunkResult?.text) {
-        transcribedParts.push(chunkResult.text);
+      let text = (chunkResult?.text || "").trim();
+      text = cleanWhisperHallucinationsClient(text);
 
-        // 实时流式呈现在预览区
-        if (livePreview) {
-          livePreview.style.display = "block";
-          livePreview.textContent = transcribedParts.join("\n\n");
-          livePreview.scrollTop = livePreview.scrollHeight;
+      if (text) {
+        // 如果与上一分段内容完全相同（模型死循环幻觉），不重复追加
+        if (transcribedParts.length === 0 || transcribedParts[transcribedParts.length - 1] !== text) {
+          transcribedParts.push(text);
+
+          // 实时流式呈现在预览区
+          if (livePreview) {
+            livePreview.style.display = "block";
+            livePreview.textContent = transcribedParts.join("\n\n");
+            livePreview.scrollTop = livePreview.scrollHeight;
+          }
         }
       }
     }
@@ -2030,6 +2071,7 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
 
     // 持久化保存至 D1 数据库
     const targetNoteId = noteId || (state.activeDetailNote?.id);
+
     if (targetNoteId) {
       try {
         const savedTranscript = serializeTranscriptParagraphs(container) || fullTranscript;

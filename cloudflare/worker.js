@@ -162,6 +162,38 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           }
         }
 
+        // 辅助方法：过滤 Whisper 幻觉（如提示词复读、YouTube 片尾字幕、重复死循环等）
+        function cleanWhisperHallucinations(text) {
+          if (!text) return "";
+          let cleaned = String(text).trim();
+
+          const hallucinationPatterns = [
+            /请务必使用简体中文.*?标点符号[。！!？?]?/g,
+            /这是一段中文普通话演讲.*?标点符号[。！!？?]?/g,
+            /请不吝点赞.*?栏目[。！!？?]?/g,
+            /请不吝点赞.*?支持[。！!？?]?/g,
+            /欢迎订阅.*?频道[。！!？?]?/g,
+            /感谢大家的?收看[。！!？?]?/g,
+            /感谢收看[。！!？?]?/g,
+            /感谢观看[。！!？?]?/g,
+            /不吝点赞.*?打赏[。！!？?]?/g,
+            /点赞、?投币、?收藏[。！!？?]?/g,
+            /字幕由.*?社区提供[。！!？?]?/g,
+            /字幕制作.*$/g,
+            /Thank you for watching\.?/gi,
+            /Please subscribe\.?/gi
+          ];
+
+          for (const pattern of hallucinationPatterns) {
+            cleaned = cleaned.replace(pattern, " ");
+          }
+
+          // 连续相同短语重复死循环消除 (Whisper 重复循环幻觉)
+          cleaned = cleaned.replace(/(.{2,25}?)\1{2,}/g, "$1");
+
+          return cleaned.trim();
+        }
+
         // 4.1 视频语音转写文本 (POST /api/transcribe)
         if (path === '/api/transcribe' && request.method === 'POST') {
           const pin = request.headers.get('x-auth-pin');
@@ -172,8 +204,6 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (!audioBuffer || audioBuffer.byteLength === 0) {
             return json({ success: false, message: "未接收到音频数据" }, 400);
           }
-
-          const zhPrompt = "这是一段中文普通话演讲，请务必使用简体中文，并在语调停顿处正确添加逗号、句号、感叹号、问号等标点符号。";
 
           let whisperProvider = '';
           let thirdPartyKey = '';
@@ -200,11 +230,19 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               const endpoint = thirdPartyEndpoint || 'https://api.groq.com/openai/v1/audio/transcriptions';
               const isGroq = endpoint.includes('groq') || effectiveProvider === 'groq';
               const formData = new FormData();
-              formData.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav');
-              formData.append('model', isGroq ? 'whisper-large-v3' : 'whisper-1');
+              
+              // 构造标准 WAV 文件体
+              const audioFile = typeof File !== 'undefined'
+                ? new File([audioBuffer], 'audio.wav', { type: 'audio/wav' })
+                : new Blob([audioBuffer], { type: 'audio/wav' });
+              formData.append('file', audioFile, 'audio.wav');
+              
+              // Groq 官方推荐：优先使用 whisper-large-v3-turbo (速度 4x，防复读幻觉能力显著更优)
+              formData.append('model', isGroq ? 'whisper-large-v3-turbo' : 'whisper-1');
               formData.append('language', 'zh');
-              formData.append('prompt', zhPrompt);
+              formData.append('temperature', '0');
               formData.append('response_format', 'json');
+              // 注意：千万不要向 Whisper 传递指令类 prompt 提示词，否则 Whisper 会当成语音上一句不断复读！
 
               const aiRes = await fetch(endpoint, {
                 method: 'POST',
@@ -216,11 +254,13 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
               if (aiRes.ok) {
                 const aiData = await aiRes.json();
+                const rawRecognized = aiData.text || '';
+                const cleanedText = cleanWhisperHallucinations(rawRecognized);
                 return json({
                   success: true,
-                  text: aiData.text || '',
+                  text: cleanedText,
                   provider: isGroq ? 'groq' : 'custom',
-                  model: isGroq ? 'whisper-large-v3' : 'whisper-1'
+                  model: isGroq ? 'whisper-large-v3-turbo' : 'whisper-1'
                 });
               } else {
                 const errText = await aiRes.text();
@@ -246,14 +286,13 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             const errors = [];
             const uint8 = new Uint8Array(audioBuffer);
 
-            // 策略 1: 优先使用 @cf/openai/whisper-large-v3-turbo (800M 大模型，中文成语与词汇识别率高数倍)
+            // 策略 1: 优先使用 @cf/openai/whisper-large-v3-turbo (800M 大模型)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                audio: uint8,
-                initial_prompt: zhPrompt
+                audio: uint8
               });
               if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
+                return json({ success: true, text: cleanWhisperHallucinations(aiResp.text || ''), provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
               }
             } catch (err) {
               errors.push(`turbo-uint8: ${err.message}`);
@@ -262,11 +301,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             // 策略 2: 降级使用 @cf/openai/whisper (轻量基础模型)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper', {
-                audio: uint8,
-                initial_prompt: zhPrompt
+                audio: uint8
               });
               if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-base' });
+                return json({ success: true, text: cleanWhisperHallucinations(aiResp.text || ''), provider: 'cloudflare', model: 'whisper-base' });
               }
             } catch (err) {
               errors.push(`whisper-uint8: ${err.message}`);
@@ -276,11 +314,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             if (audioBuffer.byteLength <= 1.5 * 1024 * 1024) {
               try {
                 const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                  audio: Array.from(uint8),
-                  initial_prompt: zhPrompt
+                  audio: Array.from(uint8)
                 });
                 if (aiResp && typeof aiResp.text === 'string') {
-                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
+                  return json({ success: true, text: cleanWhisperHallucinations(aiResp.text || ''), provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
                 }
               } catch (err) {
                 errors.push(`turbo-array: ${err.message}`);
@@ -298,11 +335,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 const base64Audio = btoa(binary);
 
                 const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                  audio: base64Audio,
-                  initial_prompt: zhPrompt
+                  audio: base64Audio
                 });
                 if (aiResp && typeof aiResp.text === 'string') {
-                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
+                  return json({ success: true, text: cleanWhisperHallucinations(aiResp.text || ''), provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
                 }
               } catch (err) {
                 errors.push(`turbo-base64: ${err.message}`);
