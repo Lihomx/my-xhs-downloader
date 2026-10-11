@@ -3,903 +3,250 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Brclio 小红书下载器：免费保存原图、实况素材与播放视频；会员可下载页面提供的无水印原视频，并可批量打包文案 TXT。" />
-    <meta name="theme-color" content="#fefcf6" />
+    <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700;9..144,900&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@700;900&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="/style.css" />
-    <!-- desktop-only:start -->
-    <link rel="stylesheet" href="/ios-shortcut.css" />
-    <!-- desktop-only:end -->
-    <link rel="stylesheet" href="/visit-counter.css" />
-    <link rel="stylesheet" href="/support.css" />
-    <link rel="stylesheet" href="/desktop-ui.css" />
-    <link rel="stylesheet" href="/account-ui.css" />
-    <link rel="stylesheet" href="/commerce-ui.css" />
-    <title>Brclio 小红书下载器</title>
   </head>
   <body>
-    <header class="app-header">
-      <div class="app-header-inner">
-        <a class="brand" href="/" aria-label="Brclio 小红书下载器首页">
-          <img class="brand-logo" src="/aiyc.svg" alt="" width="40" height="40" />
-          <span class="brand-copy">
-            <strong>Brclio <span>小红书下载器</span></strong>
-            <small>XHS MEDIA SAVER</small>
-          </span>
+    <!-- 顶部极简导航 -->
+    <header class="navbar">
+      <div class="nav-container">
+        <a href="/" class="brand">
+          <div class="brand-icon">小</div>
+          <span class="brand-title">小红书采集工具</span>
+          <span class="brand-badge">云端知识库</span>
         </a>
 
-        <div class="app-header-actions">
-          <nav class="app-navigation" aria-label="主要导航">
-            <a class="nav-link is-current" href="/" aria-current="page">下载工具</a>
-            <a class="nav-link" href="/live.html">制作实况</a>
-            <a class="nav-link" href="/product.html">产品介绍</a>
-            <a class="nav-link" href="/download.html">软件下载</a>
-            <a class="nav-link" href="/membership.html">会员权益</a>
-            <a class="nav-link" href="/#software-reviews">用户评价</a>
-            <a class="nav-link" href="/vip.html">VIP 交流群</a>
-            <a class="nav-link" href="/learn.html">编程私教与书籍</a>
-            <a class="nav-link" href="/changelog.html">更新记录</a>
-            <button id="browser-account-open" class="nav-link browser-account-open" type="button" aria-haspopup="dialog" aria-controls="browser-account-dialog">账号与会员</button>
-            <a class="nav-link" href="https://xhs.download.brclio.com/feedback.html">问题广场</a>
-            <a class="nav-link" href="#support">支持</a>
-          </nav>
+        <div class="nav-actions">
+          <!-- 剪贴板自动解析开关 -->
+          <label class="clipboard-toggle" title="打开或切回网页时，自动读取小红书链接并解析">
+            <span>⚡ 自动解析剪贴板</span>
+            <div class="switch">
+              <input type="checkbox" id="clipboard-switch" checked />
+              <span class="slider"></span>
+            </div>
+          </label>
 
-          <div class="header-status" aria-label="运行状态：文件仅在浏览器本地生成">
-            <span class="status-dot" aria-hidden="true"></span>
-            <span>浏览器本地处理</span>
-          </div>
+          <!-- 收藏知识库入口 -->
+          <button id="btn-open-drawer" class="btn btn-secondary">
+            📚 我的收藏 <span id="notes-badge" class="badge" style="display: none;">0</span>
+          </button>
+
+          <!-- 设置 -->
+          <button id="btn-open-settings" class="btn btn-ghost" title="系统设置">
+            ⚙️ 设置
+          </button>
         </div>
       </div>
     </header>
 
-    <dialog id="browser-account-dialog" class="browser-account-dialog" aria-labelledby="account-title">
-      <button id="browser-account-close" class="browser-account-close" type="button" aria-label="关闭账号与会员">关闭 ×</button>
-      <div id="browser-account-mount"></div>
-    </dialog>
+    <!-- 主工作区：100% 纯粹核心下载工具 -->
+    <main class="main-wrapper">
+      <div class="hero">
+        <h1>把喜欢的笔记，<span>完整且干净地保存下来</span></h1>
+        <p>支持原图、实况图片与高清视频，解析后自动永久离线保存至个人知识库</p>
+      </div>
 
-    <!-- Update modal adapted from Brclio's app modal and CTA components. -->
-    <dialog id="desktop-update-dialog" class="desktop-update-dialog" aria-labelledby="desktop-update-dialog-title" aria-describedby="desktop-update-dialog-version">
-      <header class="desktop-update-dialog-heading">
-        <img src="/aiyc.svg" alt="" width="56" height="56" />
-        <h2 id="desktop-update-dialog-title">版本更新</h2>
-        <p id="desktop-update-dialog-version"></p>
-      </header>
-      <div id="desktop-update-dialog-notes" class="desktop-update-dialog-notes" role="region" aria-label="本次更新内容" tabindex="0"></div>
-      <section id="desktop-update-dialog-manual" class="desktop-update-dialog-manual" aria-label="手动安装新版" tabindex="0" hidden>
-        <h3>请手动下载最新版，覆盖安装</h3>
-        <p>按钮会通过默认浏览器，下载适合当前系统与芯片的最新安装包。</p>
-        <p data-manual-install-guidance></p>
-        <p>覆盖安装通常会保留账号、任务和已下载文件。请保留原数据目录及下载文件夹，不要先卸载或删除数据。</p>
-        <p id="desktop-update-dialog-manual-status" class="desktop-manual-installer-status" role="status" aria-live="polite" hidden></p>
+      <!-- 解析输入卡片 -->
+      <section class="input-card">
+        <textarea
+          id="input-text"
+          class="textarea-field"
+          rows="4"
+          placeholder="粘贴小红书短链 (xhslink.cn)、长链 (xiaohongshu.com) 或带文字的整段分享文案..."
+        ></textarea>
+
+        <div class="input-actions">
+          <div class="action-left">
+            <button id="btn-paste" class="btn btn-secondary" type="button">
+              📋 粘贴剪贴板
+            </button>
+            <button id="btn-clear" class="btn btn-ghost" type="button">
+              清空
+            </button>
+            <span id="auto-clip-indicator" class="auto-status-hint" style="display: none;">
+              ⚡ 已自动检测并填入剪贴板
+            </span>
+          </div>
+
+          <button id="btn-parse" class="btn btn-primary" type="button">
+            <span id="btn-parse-text">开始解析 ↗</span>
+            <span id="btn-parse-spinner" class="spinner" style="display: none;"></span>
+          </button>
+        </div>
       </section>
-      <div class="desktop-update-dialog-bottom">
-        <div id="desktop-update-dialog-progress-wrap" class="desktop-update-progress-wrap" hidden>
-          <progress id="desktop-update-dialog-progress" max="100" aria-label="更新下载进度"></progress>
-          <p id="desktop-update-dialog-progress-text" role="status" aria-live="polite"></p>
+
+      <!-- 解析结果展示区 (默认隐藏) -->
+      <section id="result-section" class="result-card" style="display: none;">
+        <div class="result-header">
+          <div class="result-title-group">
+            <div class="cloud-sync-badge" id="cloud-sync-status">
+              ☁️ 正在自动同步保存至 Cloudflare...
+            </div>
+            <h2 id="result-title" style="margin-top: 8px;">笔记标题</h2>
+          </div>
         </div>
-        <p id="desktop-update-dialog-check-note" class="desktop-update-check-note" role="status" aria-live="polite" hidden></p>
-        <p id="desktop-update-dialog-error" class="desktop-update-error" role="alert" hidden></p>
-        <div id="desktop-update-dialog-proxy" class="desktop-update-proxy" hidden>
-          <p id="desktop-update-dialog-proxy-status" role="status" aria-live="polite"></p>
-          <button id="desktop-update-dialog-proxy-toggle" class="button button-secondary" type="button">关闭软件内置代理</button>
+
+        <!-- 笔记文案 -->
+        <div class="note-content-box">
+          <button id="btn-copy-content" class="copy-content-btn" type="button">复制完整文案</button>
+          <div id="result-content">笔记正文</div>
         </div>
-        <div id="desktop-update-dialog-manual-actions" class="desktop-update-dialog-actions desktop-manual-installer-actions" hidden>
-          <button id="desktop-update-dialog-manual-download" class="desktop-update-dialog-primary" type="button">手动下载安装包</button>
+
+        <!-- 视频展示区 (仅视频笔记展示) -->
+        <div id="video-section" style="display: none; margin-bottom: 24px;">
+          <div class="media-toolbar">
+            <span class="media-count">🎬 视频播放与下载</span>
+            <div class="media-btn-group">
+              <select id="video-quality-select" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px;"></select>
+              <button id="btn-download-video" class="btn btn-primary" type="button">下载视频</button>
+            </div>
+          </div>
+          <div class="video-container">
+            <video id="video-player" controls playsinline></video>
+          </div>
         </div>
-        <div class="desktop-update-dialog-actions">
-          <button id="desktop-update-dialog-later" class="desktop-update-dialog-secondary" type="button">稍后再说</button>
-          <button id="desktop-update-dialog-action" class="desktop-update-dialog-primary" type="button">立即更新</button>
+
+        <!-- 图片展示区 -->
+        <div id="image-section" style="display: none;">
+          <div class="media-toolbar">
+            <span class="media-count" id="image-count-label">🖼️ 高清无水印图片 (0 张)</span>
+            <div class="media-btn-group">
+              <button id="btn-select-all" class="btn btn-secondary" type="button">全选 / 反选</button>
+              <button id="btn-download-zip" class="btn btn-primary" type="button">打包下载所选 ZIP</button>
+            </div>
+          </div>
+
+          <!-- 图片网格 -->
+          <div id="image-grid" class="image-grid"></div>
         </div>
-      </div>
-    </dialog>
+      </section>
+    </main>
 
-    <dialog id="desktop-install-confirmation" class="desktop-update-dialog desktop-install-dialog" aria-labelledby="desktop-install-confirmation-title" aria-describedby="desktop-install-confirmation-version">
-      <header class="desktop-update-dialog-heading desktop-install-heading">
-        <img src="/aiyc.svg" alt="" width="52" height="52" />
-        <h2 id="desktop-install-confirmation-title">安装新版本</h2>
-        <p id="desktop-install-confirmation-version" class="desktop-install-version"><span id="desktop-install-current-version"></span><span class="desktop-install-version-arrow" aria-hidden="true">→</span><strong id="desktop-install-latest-version"></strong></p>
-      </header>
-      <div class="desktop-install-body">
-        <ol class="desktop-install-steps" aria-label="安装过程">
-          <li><span class="desktop-install-step-number" aria-hidden="true">1</span><div><strong>暂停并保存任务</strong><p>保存当前下载进度，更新后可以继续。</p></div></li>
-          <li><span class="desktop-install-step-number" aria-hidden="true">2</span><div><strong id="desktop-install-replacement-title">原位置替换客户端</strong><p id="desktop-install-replacement-description">新版成功启动后，自动清理旧客户端备份。</p></div></li>
-          <li><span class="desktop-install-step-number" aria-hidden="true">3</span><div><strong>自动重新打开</strong><p>账号、任务和已下载文件都会保留。</p></div></li>
-        </ol>
-        <details id="desktop-install-details" class="desktop-install-details">
-          <summary>安装细节<span aria-hidden="true">按系统查看</span></summary>
-          <p id="desktop-install-technical-hint"></p>
-        </details>
-      </div>
-      <div class="desktop-update-dialog-bottom desktop-install-bottom">
-        <p id="desktop-install-confirmation-error" class="desktop-update-error" role="alert" hidden></p>
-        <div class="desktop-update-dialog-actions">
-          <button id="desktop-install-later" class="desktop-update-dialog-secondary" type="button" autofocus>稍后安装</button>
-          <button id="desktop-install-confirm" class="desktop-update-dialog-primary" type="button">安装并重启</button>
+    <!-- 右侧滑出抽屉：我的收藏与随笔知识库 -->
+    <div id="drawer-backdrop" class="drawer-backdrop">
+      <aside class="drawer">
+        <div class="drawer-header">
+          <div class="drawer-title">
+            <span>📚 我的收藏知识库</span>
+            <span id="drawer-total-count" style="font-size: 13px; color: var(--text-muted); font-weight: normal;">(0篇)</span>
+          </div>
+          <button id="btn-close-drawer" class="drawer-close" aria-label="关闭抽屉">✕</button>
         </div>
-      </div>
-    </dialog>
 
-    <div class="page-shell">
-      <main>
-        <!-- Desktop-only app shell, adapted from Brclio's app template. -->
-        <nav id="desktop-navigation" class="desktop-navigation" aria-label="桌面工作台" hidden>
-          <div class="desktop-nav-heading"><span class="section-label">YOUR WORKSPACE</span><strong>下载工作台</strong></div>
-          <div class="desktop-tabs" role="tablist" aria-label="工作台页面" aria-orientation="vertical">
-            <button id="single-note-tab" class="desktop-tab" type="button" role="tab" aria-controls="single-note-panel" aria-selected="true"><span class="desktop-nav-icon" aria-hidden="true">↙</span><span>单篇下载</span></button>
-            <button id="live-photo-tab" class="desktop-tab" type="button" role="tab" aria-controls="desktop-live-photo-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">◉</span><span>制作实况<small>图片 · 视频转实况</small></span></button>
-            <button id="profile-tab" class="desktop-tab" type="button" role="tab" aria-controls="profile-panel" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">▦</span><span>主页批量</span><span id="desktop-task-badge" class="desktop-nav-count" hidden>进行中</span></button>
-            <button id="account-tab" class="desktop-tab" type="button" role="tab" aria-controls="desktop-account-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">◎</span><span>账号与会员</span></button>
-            <button id="reviews-tab" class="desktop-tab" type="button" role="tab" aria-controls="desktop-reviews-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">☆</span><span>用户评价<small>每个账号仅限一次</small></span></button>
-            <button id="desktop-membership-link" class="desktop-tab desktop-membership-link" type="button" role="tab" aria-controls="desktop-membership-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">◇</span><span>会员权益<small>当前权限 · 未来福利</small></span></button>
-            <button id="feedback-tab" class="desktop-tab" type="button" role="tab" aria-controls="desktop-feedback-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">✎</span><span>问题反馈</span></button>
-            <button id="about-tab" class="desktop-tab" type="button" role="tab" aria-controls="desktop-about-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">ⓘ</span><span>关于软件</span><span id="desktop-update-badge" class="desktop-nav-count desktop-new-badge" hidden>新版本</span></button>
-            <button id="desktop-vip-link" class="desktop-tab desktop-vip-link" type="button" role="tab" aria-controls="desktop-vip-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">✦</span><span>VIP 交流群<small>付费交流 · 99.99 元</small></span></button>
-            <button id="desktop-learning-link" class="desktop-tab desktop-learning-link" type="button" role="tab" aria-controls="desktop-learning-page" aria-selected="false" tabindex="-1"><span class="desktop-nav-icon" aria-hidden="true">▤</span><span>编程私教与书籍<small>一对一教学 · 长期招生</small></span></button>
+        <!-- PIN 锁屏解锁区域 -->
+        <div id="pin-lock-view" class="pin-lock-box" style="display: none;">
+          <div class="pin-lock-icon">🔒</div>
+          <h3>输入个人 PIN 码解锁知识库</h3>
+          <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">
+            保护你的私有存储空间与感想笔记（默认 PIN 码：1987）
+          </p>
+          <input type="password" id="drawer-pin-input" class="pin-input" maxlength="12" placeholder="••••" />
+          <button id="btn-unlock-pin" class="btn btn-primary" style="margin-top: 8px;">
+            验证并解锁
+          </button>
+          <p id="pin-error-hint" style="color: var(--primary); font-size: 12px; margin-top: 8px; display: none;">PIN 码错误，请重试</p>
+        </div>
+
+        <!-- 收藏列表展示区 -->
+        <div id="notes-content-view" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
+          <div class="drawer-toolbar">
+            <input type="text" id="search-notes-input" class="search-input" placeholder="🔍 搜索标题、正文或我的感想随笔..." />
           </div>
-          <aside id="desktop-update-announcement" class="desktop-update-announcement" aria-live="polite" hidden>
-            <strong id="desktop-announcement-title">有新版本可用</strong><p id="desktop-announcement-message">前往关于软件查看并下载更新。</p>
-            <div><button id="desktop-announcement-open" type="button">查看更新 ↗</button><button id="desktop-announcement-dismiss" type="button" aria-label="暂时收起更新提醒">稍后</button></div>
-          </aside>
-          <div class="desktop-sidebar-bottom"><button id="desktop-account-shortcut" class="desktop-account-shortcut" type="button"><span class="desktop-account-avatar" aria-hidden="true">B</span><span><strong id="desktop-account-summary">软件账号</strong><small id="desktop-account-summary-status">点击登录 / 查看会员</small></span></button><div class="desktop-update-tools"><span id="desktop-version" class="desktop-version">本地下载工作台</span><button id="desktop-check-updates" class="desktop-check-updates" type="button">检查更新</button></div><a class="desktop-design-credit" href="https://github.com/Brclio/brclio-design-system" target="_blank" rel="noopener noreferrer">Design by Brclio</a></div>
-        </nav>
 
-        <section id="desktop-live-photo-page" class="desktop-page desktop-live-photo-page" role="tabpanel" aria-labelledby="live-photo-tab" tabindex="0" hidden>
-          <iframe id="desktop-live-photo-frame" title="制作实况" data-src="./live.html?source=desktop" sandbox="allow-scripts allow-same-origin allow-downloads" referrerpolicy="no-referrer"></iframe>
-        </section>
-
-        <section id="desktop-membership-page" class="desktop-page desktop-membership-page" role="tabpanel" aria-labelledby="desktop-membership-link" tabindex="0" hidden>
-          <iframe id="desktop-membership-frame" title="会员权益" data-src="./membership.html?source=desktop" sandbox="allow-scripts allow-same-origin allow-downloads allow-popups" referrerpolicy="no-referrer"></iframe>
-        </section>
-
-        <section id="desktop-vip-page" class="desktop-page desktop-vip-page" role="tabpanel" aria-labelledby="desktop-vip-link" tabindex="0" hidden>
-          <iframe id="desktop-vip-frame" title="VIP 交流群" data-src="./vip.html?source=desktop" sandbox="allow-scripts allow-same-origin allow-downloads allow-popups" referrerpolicy="no-referrer"></iframe>
-        </section>
-
-        <section id="desktop-learning-page" class="desktop-page desktop-learning-page" role="tabpanel" aria-labelledby="desktop-learning-link" tabindex="0" hidden>
-          <iframe id="desktop-learning-frame" title="编程私教与书籍" data-src="./learn.html?source=desktop" sandbox="allow-scripts allow-same-origin allow-downloads allow-popups" referrerpolicy="no-referrer"></iframe>
-        </section>
-
-        <section id="desktop-account-page" class="desktop-page" role="tabpanel" aria-labelledby="account-tab" tabindex="0" hidden><div id="desktop-account-mount"></div></section>
-        <section id="desktop-reviews-page" class="desktop-page" role="tabpanel" aria-labelledby="reviews-tab" tabindex="0" hidden></section>
-
-        <section id="desktop-feedback-page" class="desktop-page" role="tabpanel" aria-labelledby="feedback-tab" tabindex="0" hidden>
-          <header class="desktop-page-heading"><div><span class="section-label">FEEDBACK / 一起改进</span><h1>把问题告诉我们。</h1><p>提交问题后，可在「我的反馈」查看管理员的回答并继续回复。</p></div><span class="desktop-pill">无需会员</span></header>
-          <section class="desktop-feedback-inbox" aria-labelledby="desktop-feedback-inbox-title">
-            <div class="desktop-feedback-inbox-heading"><div><h2 id="desktop-feedback-inbox-title">我的反馈</h2><p class="desktop-field-help">只显示当前软件账号提交的问题。</p></div><button id="desktop-feedback-refresh" class="button button-secondary" type="button">刷新反馈</button></div>
-            <p id="desktop-feedback-list-status" class="desktop-field-help" role="status" aria-live="polite">登录后可查看自己的反馈和回复。</p>
-            <div class="desktop-feedback-conversations">
-              <div id="desktop-feedback-list" class="desktop-feedback-list" aria-label="我的反馈列表"></div>
-              <section id="desktop-feedback-detail" class="desktop-feedback-detail" aria-labelledby="desktop-feedback-detail-title" hidden>
-                <div class="desktop-feedback-thread-heading"><h3 id="desktop-feedback-detail-title"></h3><button id="desktop-feedback-thread-refresh" class="desktop-text-button" type="button">刷新对话</button></div>
-                <p id="desktop-feedback-detail-meta" class="desktop-field-help"></p>
-                <article class="desktop-feedback-message desktop-feedback-question"><p class="desktop-feedback-message-meta">我 · 问题原文</p><p id="desktop-feedback-question" class="desktop-feedback-message-content"></p></article>
-                <div id="desktop-feedback-messages" class="desktop-feedback-messages" aria-label="反馈对话"></div>
-                <p id="desktop-feedback-thread-status" class="desktop-field-help" role="status" aria-live="polite"></p>
-                <form id="desktop-feedback-reply-form" class="desktop-feedback-form"><label for="desktop-feedback-reply">继续回复<textarea id="desktop-feedback-reply" rows="4" maxlength="8000" placeholder="补充问题细节，或回复管理员的建议。" required></textarea></label><div class="desktop-feedback-submit-row"><button id="desktop-feedback-reply-submit" class="button button-primary" type="submit">发送回复 ↗</button><span id="desktop-feedback-reply-hint" class="desktop-field-help">最多 8000 字</span></div></form>
-              </section>
+          <div class="drawer-content">
+            <div id="notes-list" class="notes-list">
+              <!-- 动态插入卡片 -->
             </div>
-          </section>
-          <h2 class="desktop-feedback-new-title">提交新问题</h2>
-          <div class="desktop-feedback-layout">
-            <form id="desktop-feedback-form" class="desktop-feedback-form">
-              <label>问题类型<select id="desktop-feedback-category"><option value="download">下载与任务</option><option value="audio">视频声音问题</option><option value="account">账号与会员</option><option value="update">安装与更新</option><option value="other">功能建议 / 其他问题</option></select></label>
-              <label>用一句话概括<input id="desktop-feedback-title" type="text" maxlength="120" minlength="3" placeholder="例如：主页下载到第 12 篇时暂停" required></label>
-              <label>详细描述<textarea id="desktop-feedback-description" rows="8" maxlength="8000" minlength="10" placeholder="你做了什么？原本期待怎样的结果？实际发生了什么？如果有提示，请把提示文字一起填写。" required></textarea></label>
-              <p class="desktop-field-help">请勿在描述中填写密码、验证码、小红书 Cookie 或其他敏感内容。</p>
-              <div id="desktop-feedback-account-hint" class="desktop-feedback-account-hint"><span>提交反馈需要登录软件账号，无需开通会员。</span><button id="desktop-feedback-login" type="button">前往登录 ↗</button></div>
-              <div class="desktop-feedback-submit-row"><button id="desktop-feedback-submit" class="button button-primary" type="submit">提交反馈与日志 ↗</button><span id="desktop-feedback-request-hint" class="desktop-field-help">提交后可查看并继续回复</span></div>
-              <div id="desktop-feedback-progress-wrap" class="desktop-feedback-progress-wrap" hidden><progress id="desktop-feedback-progress" max="100" aria-label="反馈上传进度"></progress><p id="desktop-feedback-progress-text" role="status" aria-live="polite"></p></div>
-              <p id="desktop-feedback-result" class="desktop-feedback-result" role="status" aria-live="polite" hidden></p>
-            </form>
-            <aside class="desktop-diagnostics-panel" aria-labelledby="desktop-diagnostics-title"><span class="section-label">DIAGNOSTICS / 诊断信息</span><h2 id="desktop-diagnostics-title">日志会自动带上。</h2><p>提交时附带当前保留的完整诊断日志（最多 8 MiB）。日志达到保留上限后会轮转，较早记录可能已被清理。</p><dl class="desktop-diagnostics-facts"><div><dt>本机日志</dt><dd id="desktop-diagnostics-files">正在读取…</dd></div><div><dt>记录范围</dt><dd id="desktop-diagnostics-range">—</dd></div><div><dt>应用环境</dt><dd id="desktop-diagnostics-environment">—</dd></div></dl><p id="desktop-diagnostics-summary" class="desktop-diagnostics-summary">日志不包含小红书 Cookie、登录凭据和下载文件内容。</p><div class="desktop-diagnostics-actions"><button id="desktop-diagnostics-copy" class="button button-secondary" type="button">复制诊断信息</button><button id="desktop-diagnostics-export" class="button button-secondary" type="button">导出日志文件</button><button id="desktop-diagnostics-refresh" class="desktop-text-button" type="button">刷新日志概况</button></div><p id="desktop-diagnostics-result" class="desktop-field-help" role="status" aria-live="polite"></p></aside>
-          </div>
-        </section>
-
-        <section id="desktop-about-page" class="desktop-page" role="tabpanel" aria-labelledby="about-tab" tabindex="0" hidden>
-          <header class="desktop-page-heading"><div><span class="section-label">ABOUT / 关于软件</span><h1>Brclio 小红书下载器</h1><p>喜欢的内容，保存在自己的电脑。</p></div><div id="desktop-about-update-actions"></div></header>
-          <div class="desktop-about-identity"><img src="/aiyc.svg" alt="" width="76" height="76"><div><strong id="desktop-about-version">正在读取版本</strong><p id="desktop-about-system">Mac / Windows 桌面应用</p><span class="desktop-pill">运行环境完整内置</span></div></div>
-          <div id="desktop-about-update-mount"></div>
-          <section id="desktop-update-history" class="desktop-update-history" aria-labelledby="desktop-update-history-title" hidden>
-            <div class="desktop-update-history-heading"><h2 id="desktop-update-history-title">上次安装记录</h2><button id="desktop-update-history-dismiss" class="button button-secondary" type="button">知道了</button></div>
-            <p id="desktop-update-history-meta" class="desktop-update-history-meta"></p>
-            <p id="desktop-update-history-outcome"></p>
-            <p id="desktop-update-history-action"></p>
-            <p class="desktop-update-history-caption">这是此前安装的记录；当前更新进度请以上方更新状态为准。</p>
-            <p id="desktop-update-history-error" class="desktop-update-history-error" role="status" aria-live="polite" hidden></p>
-          </section>
-          <div class="desktop-about-details"><section><h2>账号与数据</h2><p>软件账号用于会员与设备授权，小红书登录用于读取笔记。单篇原图、实况和播放视频免费下载；无水印原视频与主页批量下载需要有效会员和已授权设备。</p><p>下载文件保存在你选择的本机文件夹。更新与会员状态变化不会主动删除已有文件和任务。</p></section><section><h2>更新与帮助</h2><p>检测到新版本会在导航中提示。你可以在线下载安装包，确认后安装更新；安装前会提示处理当前任务。</p><div class="desktop-about-links"><button id="desktop-about-feedback" class="desktop-text-button" type="button">提交问题反馈 ↗</button><a href="https://github.com/Brclio/brclio-xhs-media-downloader/releases" target="_blank" rel="noopener noreferrer">全部发布记录 ↗</a><a href="https://github.com/Brclio/brclio-design-system" target="_blank" rel="noopener noreferrer">© 2026 Brclio · CC BY-NC-SA 4.0</a></div></section></div>
-        </section>
-
-        <section id="desktop-update-panel" class="desktop-update-panel" aria-labelledby="desktop-update-title" hidden>
-          <div class="desktop-update-heading">
-            <div class="desktop-update-copy">
-              <strong id="desktop-update-title">应用更新</strong>
-              <p id="desktop-update-message" role="status" aria-live="polite">正在检查新版本……</p>
-            </div>
-            <div class="desktop-update-actions">
-              <button id="desktop-update-download" class="button button-primary" type="button" hidden>下载更新</button>
-              <button id="desktop-update-cancel" class="button button-secondary" type="button" hidden>暂停下载</button>
-              <button id="desktop-update-install" class="button button-primary" type="button" hidden>安装更新</button>
-              <button id="desktop-update-retry" class="button button-secondary" type="button" hidden>重新检查</button>
+            <div id="notes-empty-hint" style="text-align: center; color: var(--text-sub); padding: 60px 0; font-size: 14px; display: none;">
+              暂无已归档笔记<br />解析笔记后将自动永久保存到这里
             </div>
           </div>
-          <p id="desktop-update-check-note" class="desktop-update-check-note" role="status" aria-live="polite" hidden></p>
-          <div id="desktop-update-proxy" class="desktop-update-proxy" hidden>
-            <div><strong>升级代理</strong><p id="desktop-update-proxy-status" role="status" aria-live="polite"></p></div>
-            <button id="desktop-update-proxy-toggle" class="button button-secondary" type="button">关闭软件内置代理</button>
-          </div>
-          <div id="desktop-update-progress-wrap" class="desktop-update-progress-wrap" hidden>
-            <progress id="desktop-update-progress" max="100" aria-label="更新安装包下载进度"></progress>
-            <p id="desktop-update-progress-text"></p>
-          </div>
-          <p id="desktop-update-error" class="desktop-update-error" role="alert" hidden></p>
-          <section id="desktop-update-manual" class="desktop-update-manual" aria-label="手动安装新版" hidden>
-            <strong>请手动下载最新版，覆盖安装</strong>
-            <p>按钮会通过默认浏览器，下载适合当前系统与芯片的最新安装包。</p>
-            <p data-manual-install-guidance></p>
-            <p>覆盖安装通常会保留账号、任务和已下载文件。请保留原数据目录及下载文件夹，不要先卸载或删除数据。</p>
-            <button id="desktop-update-manual-download" class="button button-primary" type="button">手动下载安装包</button>
-            <p id="desktop-update-manual-status" class="desktop-manual-installer-status" role="status" aria-live="polite" hidden></p>
-          </section>
-          <p id="desktop-update-installation-hint" class="desktop-update-installation-hint" hidden></p>
-          <details id="desktop-update-notes-details" class="desktop-update-notes-details" hidden>
-            <summary>查看更新内容</summary>
-            <p id="desktop-update-notes"></p>
-          </details>
-        </section>
+        </div>
+      </aside>
+    </div>
 
-        <section id="profile-panel" class="profile-panel" role="tabpanel" aria-labelledby="profile-tab" tabindex="0" hidden>
-          <!-- Desktop design: © 2026 Brclio · brclio-design-system · CC BY-NC-SA 4.0. -->
-          <header class="profile-heading">
-            <div>
-              <span class="section-label">PROFILE / 主页归档</span>
-              <h1>整页收藏，慢慢保存。</h1>
-              <p>自动发现主页笔记，将图片、实况、视频与文案逐篇保存到电脑。</p>
+    <!-- 笔记详情与感想编辑弹窗 -->
+    <div id="modal-note-detail" class="modal-overlay">
+      <div class="modal">
+        <div class="modal-header">
+          <h3 id="modal-note-title" style="font-size: 17px; max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">笔记详情</h3>
+          <button id="btn-close-note-modal" class="drawer-close">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div id="modal-note-time" style="font-size: 12px; color: var(--text-sub); margin-bottom: 12px;"></div>
+          
+          <!-- 正文 -->
+          <div id="modal-note-content" class="note-content-box" style="margin-bottom: 16px;"></div>
+
+          <!-- 视频 (如果有) -->
+          <div id="modal-video-wrap" style="display: none; margin-bottom: 16px;">
+            <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
+          </div>
+
+          <!-- 图片展示 -->
+          <div id="modal-images-grid" class="image-grid" style="grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); margin-bottom: 20px;"></div>
+
+          <!-- 随笔感想编辑区 -->
+          <section class="thoughts-section">
+            <div class="thoughts-header">
+              <span>💡 我的笔记感想 / 随笔批注</span>
+              <button id="btn-save-thoughts" class="btn btn-primary" style="padding: 4px 12px; font-size: 12px;">
+                保存感想
+              </button>
             </div>
-            <div class="profile-account-tools">
-              <div class="profile-account-actions">
-                <button id="profile-login" class="button button-secondary" type="button" title="在本地版应用内登录，登录状态会保存在这台电脑。">
-                  <span id="profile-login-label" class="profile-login-label" aria-live="polite">登录小红书 / 完成验证</span>
-                  <span class="profile-login-icon" aria-hidden="true">↗</span>
-                </button>
-                <button id="profile-clear-login" class="button button-secondary profile-clear-login" type="button" aria-describedby="profile-login-clear-hint">清除登录记录</button>
-              </div>
-              <p id="profile-login-clear-hint" class="profile-account-hint">清空此软件保存的小红书登录与缓存，便于切换账号。</p>
-              <p id="profile-login-clear-status" class="profile-account-status" role="status" aria-live="polite" aria-atomic="true" hidden></p>
-            </div>
-          </header>
-
-          <div class="profile-workspace">
-            <form id="profile-form" class="profile-form">
-              <div class="profile-field">
-                <label class="field-label" for="profile-url">小红书主页链接</label>
-                <input id="profile-url" name="profileUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" maxlength="3000" placeholder="https://www.xiaohongshu.com/user/profile/5e413a430000000001000f4c" aria-describedby="profile-url-hint" required />
-                <p id="profile-url-hint" class="profile-hint">复制用户主页的完整链接；首次使用可先在上方登录。</p>
-              </div>
-
-              <div class="profile-field">
-                <label class="field-label" for="profile-directory">保存位置</label>
-                <div class="profile-directory-row">
-                  <input id="profile-directory" name="directory" type="text" placeholder="选择电脑上的文件夹" readonly aria-describedby="profile-directory-hint" />
-                  <button id="profile-choose-directory" class="button button-secondary" type="button">选择文件夹</button>
-                </div>
-                <p id="profile-directory-hint" class="profile-hint">每篇保存到“001-帖子名称”这样的独立文件夹，编号按发现顺序排列。保留进度，支持暂停后继续。</p>
-              </div>
-
-              <fieldset class="profile-timing">
-                <legend>抓取节奏</legend>
-                <div class="profile-timing-fields">
-                  <div class="profile-field">
-                    <label for="profile-interval">基础间隔</label>
-                    <div class="profile-number-input"><input id="profile-interval" name="intervalSeconds" type="number" min="3" max="3600" step="1" value="10" required aria-describedby="profile-timing-hint" /><span>秒</span></div>
-                  </div>
-                  <div class="profile-field">
-                    <label for="profile-jitter">随机额外等待</label>
-                    <div class="profile-number-input"><input id="profile-jitter" name="jitterSeconds" type="number" min="0" max="300" step="1" value="3" required aria-describedby="profile-timing-hint" /><span>秒内</span></div>
-                  </div>
-                </div>
-                <p id="profile-timing-hint" class="profile-hint">每次抓取前等待 10–13 秒。间隔适用于主页翻页、逐篇解析和媒体下载；延长间隔可减少请求频率，仍可能需要验证。</p>
-              </fieldset>
-
-              <div id="profile-error" class="profile-error" role="alert" hidden></div>
-              <button id="profile-start" class="button button-primary profile-start" type="submit">开始主页下载 <span aria-hidden="true">↓</span></button>
-              <p class="profile-scope-note">保存当前账号可访问的主页内容。登录、验证或访问受限时会暂停；尚未读到主页末尾时，不会标记为全部完成。</p>
-            </form>
-
-            <section class="profile-job" aria-labelledby="profile-job-title">
-              <div class="profile-job-heading">
-                <h2 id="profile-job-title">下载任务</h2>
-                <span id="profile-status" class="profile-status" data-status="idle">准备就绪</span>
-              </div>
-
-              <dl class="profile-counts">
-                <div><dt>已发现</dt><dd id="profile-discovered">0</dd></div>
-                <div><dt>已下载</dt><dd id="profile-completed">0</dd></div>
-                <div><dt>已存在</dt><dd id="profile-skipped">0</dd></div>
-                <div><dt>失败</dt><dd id="profile-failed">0</dd></div>
-              </dl>
-
-              <div class="profile-progress-wrap">
-                <progress id="profile-progress" max="1" value="0" aria-label="已发现笔记的处理进度"></progress>
-                <p id="profile-discovery-hint" class="profile-hint">主页尚未开始扫描。</p>
-              </div>
-
-              <div class="profile-job-message" role="status" aria-live="polite" aria-atomic="true">
-                <strong id="profile-message">选好主页和文件夹，就可以开始了。</strong>
-                <p id="profile-current" hidden></p>
-              </div>
-              <p id="profile-countdown" class="profile-countdown" hidden></p>
-
-              <div class="profile-controls">
-                <button id="profile-pause" class="button button-secondary" type="button" hidden>暂停</button>
-                <button id="profile-resume" class="button button-primary" type="button" hidden>继续任务</button>
-                <button id="profile-cancel" class="button button-secondary" type="button" hidden>停止任务</button>
-                <button id="profile-retry" class="button button-secondary" type="button" hidden>重试全部失败</button>
-                <button id="profile-open-directory" class="button button-secondary" type="button" disabled>打开下载文件夹</button>
-              </div>
-              <p id="profile-resume-hint" class="profile-hint" hidden>需要验证时，请打开上方小红书窗口完成验证，再继续任务。</p>
-
-              <details id="profile-items-details" class="profile-items-details">
-                <summary>笔记记录 <span id="profile-items-count">0</span></summary>
-                <div class="profile-item-filters" role="group" aria-label="筛选笔记记录">
-                  <button id="profile-items-all" class="profile-item-filter" type="button" aria-pressed="true">全部</button>
-                  <button id="profile-items-failed" class="profile-item-filter" type="button" aria-pressed="false">只看失败</button>
-                </div>
-                <p id="profile-items-hint" class="profile-hint">失败笔记优先显示，编号与文件夹顺序不变。</p>
-                <ol id="profile-items" class="profile-items" aria-label="笔记下载记录"></ol>
-                <p id="profile-items-empty" class="profile-hint">发现笔记后会在这里显示下载状态。</p>
-                <button id="profile-show-more" class="profile-show-more" type="button" hidden>显示更多记录</button>
-              </details>
-            </section>
-          </div>
-        </section>
-
-        <div id="single-note-panel">
-        <section class="hero" aria-labelledby="hero-title">
-          <div class="hero-copy">
-            <span class="eyebrow">PRIVATE MEDIA WORKBENCH</span>
-            <h1 id="hero-title">把喜欢的内容，<br /><span class="hl-yellow">干净地保存下来。</span></h1>
-            <p>
-              粘贴一段分享文案，就能解析公开笔记中的原图、实况图片与视频。无需安装额外 App，下载与打包都在当前浏览器完成。
-            </p>
-          </div>
-
-          <form id="parse-form" class="parse-card">
-            <div class="panel-heading">
-              <div>
-                <span class="panel-kicker">START HERE</span>
-                <h2>粘贴分享文案</h2>
-              </div>
-              <span class="panel-step" aria-hidden="true">01</span>
-            </div>
-
-            <label class="field-label" for="share-text">小红书分享文案或链接</label>
             <textarea
-              id="share-text"
-              name="shareText"
-              rows="5"
-              maxlength="3000"
-              placeholder="支持电脑端 xiaohongshu.com 长链、手机端 xhslink.cn 短链，也可粘贴整段分享文案……"
-              aria-describedby="engine-hint form-note"
-              required
+              id="modal-thoughts-input"
+              class="thoughts-textarea"
+              placeholder="记录你读完这篇笔记后的感想、灵感启发或行动备忘..."
             ></textarea>
-
-            <fieldset class="engine-picker">
-              <legend>后台抓取与下载引擎</legend>
-              <div class="engine-options">
-                <label class="engine-option">
-                  <input type="radio" name="engine" value="node" checked />
-                  <span>
-                    <strong>Node.js</strong>
-                    <small>默认推荐 · 启动更快</small>
-                  </span>
-                </label>
-                <label class="engine-option">
-                  <input type="radio" name="engine" value="python" />
-                  <span>
-                    <strong>Python</strong>
-                    <small>独立解析 · 故障时切换</small>
-                  </span>
-                </label>
-              </div>
-              <p id="engine-hint" class="engine-hint">
-                当前使用 Node.js 完成页面抓取、图片代理和媒体分段下载。
-              </p>
-            </fieldset>
-
-            <div class="form-actions">
-              <button id="paste-button" class="button button-secondary" type="button">
-                <span aria-hidden="true">⌘</span>
-                粘贴
-              </button>
-              <button id="parse-button" class="button button-primary" type="submit">
-                <span class="button-text">开始解析</span>
-                <span class="button-arrow" aria-hidden="true">↗</span>
-                <span class="button-loader" aria-hidden="true"></span>
-              </button>
-            </div>
-
-            <p id="member-video-entry-hint" class="original-video-hint member-video-entry-hint" hidden>已填入笔记链接。先点击「开始解析」，再选择「下载无水印原视频」；下载前需验证软件会员。</p>
-
-            <div id="form-note" class="form-note">
-              <span class="form-note-tag">使用提醒 ✦</span>
-              <p class="form-hint">仅处理公开可访问的笔记。请只下载你有权保存的内容，并尊重作者版权与平台规则。</p>
-            </div>
-          </form>
-
-          <div class="hero-index" aria-label="功能特点">
-            <div class="hero-index-item">
-              <span>01</span>
-              <strong>原图与实况</strong>
-            </div>
-            <div class="hero-index-item">
-              <span>02</span>
-              <strong>视频多清晰度</strong>
-            </div>
-            <div class="hero-index-item">
-              <span>03</span>
-              <strong>Node / Python 双引擎</strong>
-            </div>
-          </div>
-        </section>
-
-        <!-- desktop-only:start -->
-        <aside id="ios-shortcut" class="ios-shortcut" data-ios-shortcut aria-labelledby="ios-shortcut-title">
-          <div class="ios-shortcut-copy">
-            <span class="ios-shortcut-badge">送你一个福利 · iPhone</span>
-            <h2 id="ios-shortcut-title">小红书无水印下载快捷指令</h2>
-            <p>在 iPhone 上打开链接，前往「快捷指令」添加。也可复制链接，发送到自己的 iPhone 或分享给朋友。</p>
-            <a class="ios-shortcut-url" data-shortcut-link href="https://www.icloud.com/shortcuts/70ff1d35911f43c5be308e1f692ea530" target="_blank" rel="noopener noreferrer">https://www.icloud.com/shortcuts/70ff1d35911f43c5be308e1f692ea530</a>
-          </div>
-          <div class="ios-shortcut-actions">
-            <a class="ios-shortcut-action" href="https://www.icloud.com/shortcuts/70ff1d35911f43c5be308e1f692ea530" target="_blank" rel="noopener noreferrer">获取快捷指令 ↗</a>
-            <button class="ios-shortcut-action ios-shortcut-action-secondary" data-shortcut-copy type="button">复制链接</button>
-          </div>
-          <p class="ios-shortcut-status" data-shortcut-status role="status" aria-live="polite"></p>
-        </aside>
-        <!-- desktop-only:end -->
-
-        <section id="empty-state" class="empty-state" aria-labelledby="empty-title">
-          <div class="empty-state-copy">
-            <span class="empty-index">READY / 00</span>
-            <h2 id="empty-title">内容会在这里展开</h2>
-            <p>支持图文、实况与视频笔记，兼容手机 xhslink.cn 短链、电脑端完整链接，以及带文字的整段分享内容。</p>
-          </div>
-
-          <div class="system-flow" aria-label="使用流程：粘贴、解析、下载">
-            <div class="flow-step">
-              <span>01</span>
-              <strong>粘贴</strong>
-              <small>分享文案</small>
-            </div>
-            <span class="flow-arrow" aria-hidden="true">→</span>
-            <div class="flow-step">
-              <span>02</span>
-              <strong>解析</strong>
-              <small>公开媒体</small>
-            </div>
-            <span class="flow-arrow" aria-hidden="true">→</span>
-            <div class="flow-step">
-              <span>03</span>
-              <strong>下载</strong>
-              <small>图片 / 实况 / 视频</small>
-            </div>
-          </div>
-        </section>
-
-        <section id="result-section" class="result-section" hidden>
-          <div class="result-heading">
-            <div class="result-title-block">
-              <span class="section-label">RESULT / 解析成功</span>
-              <h2 id="note-title">小红书图片</h2>
-              <p id="result-meta">已找到 0 张无水印原图</p>
-            </div>
-
-            <div id="image-actions" class="result-actions">
-              <button id="select-all-button" class="button button-secondary" type="button">取消全选</button>
-              <button
-                id="copy-selected-images-button"
-                class="button button-copy-images"
-                type="button"
-                aria-describedby="clipboard-hint"
-              >复制所选静态图</button>
-              <button id="copy-links-button" class="button button-secondary" type="button">复制原图链接</button>
-              <button id="download-zip-button" class="button button-dark" type="button">下载所选 ZIP</button>
-            </div>
-          </div>
-
-          <aside
-            id="clipboard-fallback"
-            class="clipboard-fallback"
-            aria-labelledby="clipboard-fallback-title"
-            hidden
-          >
-            <span class="clipboard-fallback-label">CLIPBOARD / 浏览器限制</span>
-            <div>
-              <strong id="clipboard-fallback-title">权限已经生效，多图写入仍受 Chrome 限制。</strong>
-              <p>Chrome 暂不允许网页一次写入多张独立静态图片。你可以复制首张后逐张处理，或下载包含全部原图与配对实况片段的 ZIP。</p>
-            </div>
-            <button
-              id="copy-first-selected-image-button"
-              class="button button-secondary"
-              type="button"
-            >复制首张</button>
-          </aside>
-
-          <section id="caption-section" class="caption-panel" aria-labelledby="caption-heading" hidden>
-            <div class="caption-panel-heading">
-              <div>
-                <span class="section-label">CAPTION / 笔记文案</span>
-                <h3 id="caption-heading">正文也一起带走</h3>
-                <span class="caption-copy-hint">复制时会包含笔记标题与完整正文</span>
-              </div>
-              <button id="copy-caption-button" class="button button-secondary" type="button">
-                复制完整文案
-              </button>
-            </div>
-            <p id="note-caption" class="caption-text"></p>
           </section>
-
-          <div id="progress-panel" class="progress-panel" hidden>
-            <div class="progress-copy" role="status" aria-live="polite" aria-atomic="true">
-              <strong id="progress-title">正在下载</strong>
-              <span id="progress-text">0 / 0</span>
-            </div>
-            <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-          </div>
-
-          <section id="video-section" class="video-section" hidden>
-            <div class="video-intro">
-              <div class="media-section-heading">
-                <span class="section-label">VIDEO / 视频下载</span>
-                <h3>选好清晰度，<br />直接保存。</h3>
-              </div>
-
-              <div class="video-actions">
-                <label class="quality-picker">
-                  <span>播放视频清晰度 · 免费</span>
-                  <select id="video-quality"></select>
-                </label>
-                <button id="download-video-button" class="button button-dark" type="button">下载播放视频 · 免费</button>
-                <a id="open-video-link" class="button button-secondary" href="#" target="_blank" rel="noopener noreferrer">打开视频</a>
-                <button id="download-original-video-button" class="button button-member-video" type="button" aria-describedby="original-video-hint"><span>下载无水印原视频</span><span class="member-video-badge">会员</span></button>
-                <div id="video-download-progress" class="video-download-progress" aria-busy="false" hidden>
-                  <div class="video-download-heading">
-                    <strong id="video-download-stage" role="status" aria-live="polite" aria-atomic="true">准备下载视频</strong>
-                    <span id="video-download-percent">—</span>
-                  </div>
-                  <div id="video-download-track" class="video-download-track" role="progressbar" aria-label="视频下载进度" aria-valuemin="0" aria-valuemax="100">
-                    <span id="video-download-bar"></span>
-                  </div>
-                  <p id="video-download-detail">等待视频信息</p>
-                </div>
-                <p id="original-video-hint" class="original-video-hint" role="status" aria-live="polite">无水印原视频需要有效会员。能否下载取决于笔记页面是否提供原视频。</p>
-              </div>
-
-              <p class="video-hint">播放视频可能带有平台水印。会员下载页面提供的原视频；作者直接写入画面的水印会保留。下载期间请保持页面打开；开始保存后请查看保存提示或下载文件。</p>
-            </div>
-
-            <div class="video-card">
-              <video id="video-player" controls playsinline preload="metadata"></video>
-              <p id="video-meta">视频信息</p>
-            </div>
-          </section>
-
-          <section id="image-section" class="image-section">
-            <div class="media-section-heading image-section-heading">
-              <div>
-                <span class="section-label">IMAGES + LIVE / 图片与实况下载</span>
-                <h3>无水印原图与实况素材</h3>
-              </div>
-              <span id="clipboard-hint" class="section-aside">
-                实况可下载配对素材 ZIP，也可单独保存 MP4<br />
-                <small>素材 ZIP 内含同编号 JPG + MP4，不等同于自动生成 iOS 原生 Live Photo · 批量 ZIP 自动附带文案 TXT</small>
-              </span>
-            </div>
-            <div id="image-grid" class="image-grid"></div>
-          </section>
-        </section>
-
         </div>
 
-        <div id="public-reviews-mount"></div>
-        <section id="support" class="creator-hub" aria-labelledby="creator-hub-title">
-          <div class="creator-hub-intro">
-            <div class="creator-hub-copy">
-              <span class="creator-hub-kicker">SUPPORT · CONNECT · FOLLOW</span>
-              <h2 id="creator-hub-title">让免费、好用的工具，<br /><span>继续生长。</span></h2>
-              <p>
-                这个下载器会继续免费提供核心功能。如果它替你省下了时间，可以自愿请我喝杯咖啡；需要私人定制、想进粉丝群，或想在哔哩哔哩和视频号继续关注，也可以在这里找到我。
-              </p>
-              <div class="creator-hub-tags" role="list" aria-label="支持与联系内容">
-                <span role="listitem">自愿支持</span>
-                <span role="listitem">私人定制</span>
-                <span role="listitem">粉丝群</span>
-                <span role="listitem">微信公众号</span>
-                <span role="listitem">哔哩哔哩</span>
-                <span role="listitem">视频号</span>
-              </div>
-            </div>
-
-            <figure class="creator-character">
-              <img
-                src="/assets/support/ip-explorer.jpg"
-                alt="AI悦创蓝黄手绘 IP 角色，背着相机向前敬礼"
-                width="1024"
-                height="1536"
-                loading="lazy"
-                decoding="async"
-              />
-              <figcaption>AI悦创 IP · KEEP EXPLORING</figcaption>
-            </figure>
-          </div>
-
-          <div class="creator-hub-groups">
-            <section class="creator-group" aria-labelledby="tip-title">
-              <header class="creator-group-heading">
-                <span class="creator-group-index">01 / TIP JAR</span>
-                <h3 id="tip-title">请我喝杯咖啡</h3>
-                <p>微信或支付宝任选其一。点击二维码可打开清晰大图，手机上也可以长按保存后识别。</p>
-              </header>
-
-              <div class="creator-qr-grid" role="list" aria-label="打赏方式">
-                <article class="creator-qr-card creator-qr-card--wechat" role="listitem">
-                  <div class="creator-qr-heading">
-                    <span class="creator-qr-number">01</span>
-                    <div>
-                      <h4>微信支持</h4>
-                      <p>WECHAT PAY</p>
-                    </div>
-                  </div>
-                  <a
-                    class="creator-qr-link"
-                    href="/assets/support/wechat-tip-qr.png"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label="打开微信支持二维码大图"
-                  >
-                    <img
-                      class="creator-qr-image"
-                      src="/assets/support/wechat-tip-qr.png"
-                      alt="微信支持二维码"
-                      width="428"
-                      height="428"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  </a>
-                  <p class="creator-qr-hint">微信扫一扫 · 点击看大图</p>
-                </article>
-
-                <article class="creator-qr-card creator-qr-card--alipay" role="listitem">
-                  <div class="creator-qr-heading">
-                    <span class="creator-qr-number">02</span>
-                    <div>
-                      <h4>支付宝支持</h4>
-                      <p>ALIPAY</p>
-                    </div>
-                  </div>
-                  <a
-                    class="creator-qr-link"
-                    href="/assets/support/alipay-tip-qr.png"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label="打开支付宝支持二维码大图"
-                  >
-                    <img
-                      class="creator-qr-image"
-                      src="/assets/support/alipay-tip-qr.png"
-                      alt="支付宝支持二维码"
-                      width="1246"
-                      height="1246"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  </a>
-                  <p class="creator-qr-hint">支付宝扫一扫 · 点击看大图</p>
-                </article>
-              </div>
-
-              <p class="creator-safety-note">
-                打赏完全自愿，不会影响任何下载功能。付款前请确认收款方为“AI悦创”。
-              </p>
-            </section>
-
-            <section class="creator-group creator-group--connect" aria-labelledby="connect-title">
-              <header class="creator-group-heading">
-                <span class="creator-group-index">02 / SAY HELLO</span>
-                <h3 id="connect-title">定制、进群与持续关注</h3>
-                <p>根据你的需要选择入口，添加私人微信时写一句备注，我会更快知道你的来意。</p>
-              </header>
-
-              <div class="creator-qr-grid" role="list" aria-label="联系与关注方式">
-                <article class="creator-qr-card creator-qr-card--personal" role="listitem">
-                  <div class="creator-qr-heading">
-                    <span class="creator-qr-number">03</span>
-                    <div>
-                      <h4>私人微信</h4>
-                      <p>CUSTOM · COMMUNITY</p>
-                    </div>
-                  </div>
-                  <a
-                    class="creator-qr-link"
-                    href="/assets/support/wechat-personal-qr.png"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label="打开私人微信二维码大图"
-                  >
-                    <img
-                      class="creator-qr-image"
-                      src="/assets/support/wechat-personal-qr.png"
-                      alt="AI悦创私人微信二维码，用于私人定制或加入粉丝群"
-                      width="736"
-                      height="736"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  </a>
-                  <p class="creator-qr-hint">备注“定制”或“进群”</p>
-                </article>
-
-                <article class="creator-qr-card creator-qr-card--official" role="listitem">
-                  <div class="creator-qr-heading">
-                    <span class="creator-qr-number">04</span>
-                    <div>
-                      <h4>微信公众号</h4>
-                      <p>UPDATES · TUTORIALS</p>
-                    </div>
-                  </div>
-                  <a
-                    class="creator-qr-link"
-                    href="/assets/support/wechat-official-account-qr.png"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label="打开微信公众号二维码大图"
-                  >
-                    <img
-                      class="creator-qr-image"
-                      src="/assets/support/wechat-official-account-qr.png"
-                      alt="AI悦创微信公众号二维码"
-                      width="270"
-                      height="270"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  </a>
-                  <p class="creator-qr-hint">扫码关注 · 获取更新与教程</p>
-                </article>
-              </div>
-            </section>
-          </div>
-
-          <aside class="creator-follow-tip" aria-labelledby="creator-follow-title">
-            <div class="creator-follow-copy">
-              <span class="creator-follow-kicker">TIPS / KEEP IN TOUCH</span>
-              <h3 id="creator-follow-title">关注 AI悦创，<br />下一次更新不走丢。</h3>
-              <p>在哔哩哔哩打开账号主页，或用微信扫描视频号二维码，选择你更顺手的方式继续关注。</p>
-            </div>
-
-            <a
-              class="creator-follow-bilibili"
-              href="https://space.bilibili.com/405961705"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="前往哔哩哔哩关注账号，UID 405961705"
-            >
-              <span class="creator-follow-platform">BILIBILI</span>
-              <span class="creator-follow-account">
-                <strong>哔哩哔哩</strong>
-                <small>UID 405961705</small>
-              </span>
-              <span class="creator-follow-action">前往关注 <span aria-hidden="true">↗</span></span>
-            </a>
-
-            <figure class="creator-follow-channel">
-              <a
-                class="creator-follow-qr-link"
-                href="/assets/support/wechat-video-channel-qr-cropped.png"
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="打开 AI悦创视频号二维码大图"
-              >
-                <img
-                  src="/assets/support/wechat-video-channel-qr-cropped.png"
-                  alt="AI悦创视频号二维码"
-                  width="537"
-                  height="537"
-                  loading="lazy"
-                  decoding="async"
-                />
-              </a>
-              <figcaption>
-                <span>WECHAT CHANNELS</span>
-                <strong>视频号</strong>
-                <small>微信扫码关注 · 点击看大图</small>
-              </figcaption>
-            </figure>
-          </aside>
-
-          <div class="creator-signoff">
-            <img
-              src="/assets/support/ip-portrait.jpg"
-              alt="AI悦创蓝黄手绘 IP 角色点赞头像"
-              width="240"
-              height="240"
-              loading="lazy"
-              decoding="async"
-            />
-            <div>
-              <span>MADE WITH CARE</span>
-              <strong>AI悦创 · Bornforthis</strong>
-              <p>把复杂的保存流程，做成每个人都能直接使用的小工具。</p>
-            </div>
-            <span class="creator-signoff-stamp">KEEP<br />BUILDING</span>
-          </div>
-        </section>
-      </main>
-
-      <footer>
-        <div class="footer-brand">
-          <span class="footer-mark" aria-hidden="true">↓</span>
-          <strong>媒体只经过你的浏览器。</strong>
+        <div class="modal-footer">
+          <button id="btn-delete-note" class="btn btn-secondary" style="color: var(--primary);">
+            🗑️ 彻底删除本篇 (释放云端空间)
+          </button>
+          <button id="btn-modal-download-zip" class="btn btn-primary">
+            📦 打包整篇为 ZIP 下载
+          </button>
         </div>
-        <p>图片、实况 ZIP 与视频文件都在本地生成，不会上传到本站存储。</p>
-        <div class="footer-credits">
-          <a
-            class="design-credit"
-            href="https://github.com/Brclio/brclio-xhs-media-downloader"
-            target="_blank"
-            rel="noopener noreferrer"
-          >Built by Brclio · Project GitHub</a>
-          <a
-            class="design-license-credit"
-            href="https://github.com/Brclio/brclio-design-system"
-            target="_blank"
-            rel="noopener noreferrer"
-          >Design system: © 2026 Brclio · CC BY-NC-SA 4.0</a>
-        </div>
-      </footer>
-    </div>
-
-    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
-    <div id="alert-toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true"></div>
-
-    <div class="site-visits" data-visit-counter role="group" aria-label="网站访问统计">
-      <span class="site-visits-emblem" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M3 12s3-6 9-6 9 6 9 6-3 6-9 6-9-6-9-6Z" /><circle cx="12" cy="12" r="2.5" /></svg>
-      </span>
-      <div id="site-visit-content" class="site-visits-content" data-visit-content>
-        <div class="site-visits-heading">
-          <span>累计访问</span>
-          <span class="site-visits-badge">PV</span>
-        </div>
-        <p class="site-visits-summary">
-          <strong class="site-visits-total" data-visit-total aria-live="polite" aria-atomic="true">—</strong>
-          <span>次</span>
-        </p>
-        <p class="site-visits-note" data-visit-status>按当前域名汇总页面浏览次数</p>
-        <noscript><p class="site-visits-note">启用 JavaScript 后可查看统计。</p></noscript>
       </div>
-      <button class="site-visits-toggle" type="button" data-visit-toggle aria-expanded="true" aria-controls="site-visit-content" aria-label="收起访问统计" title="收起访问统计" hidden>
-        <svg class="site-visits-collapse-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5" /></svg>
-        <svg class="site-visits-expand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 16v-3m7 3V8m7 8V5M4 20h16" /></svg>
-        <span class="site-visits-mobile-label" aria-hidden="true">访问 <span class="site-visits-mobile-total" data-visit-mobile-total>—</span></span>
-      </button>
     </div>
 
-    <!-- © 2026 Brclio · Brclio/brclio-design-system · CC BY-NC-SA 4.0 -->
-    <section class="design-system-signature" aria-hidden="true">brclio-design-system</section>
+    <!-- 系统设置弹窗 (修改 PIN 码等) -->
+    <div id="modal-settings" class="modal-overlay">
+      <div class="modal" style="max-width: 440px;">
+        <div class="modal-header">
+          <h3 style="font-size: 17px;">⚙️ 系统与安全设置</h3>
+          <button id="btn-close-settings-modal" class="drawer-close">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <h4 style="font-size: 14px; margin-bottom: 8px;">修改个人管理 PIN 码</h4>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 14px;">
+            PIN 码用于解锁查看收藏知识库，并保护你的 Cloudflare 存储配额。
+          </p>
+
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px;">原 PIN 码</label>
+          <input type="password" id="settings-old-pin" class="search-input" placeholder="输入当前 PIN 码" style="margin-bottom: 12px;" />
+
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px;">新 PIN 码 (至少4位)</label>
+          <input type="password" id="settings-new-pin" class="search-input" placeholder="输入新 PIN 码" style="margin-bottom: 16px;" />
+
+          <button id="btn-submit-change-pin" class="btn btn-primary" style="width: 100%; justify-content: center;">
+            确认修改并保存
+          </button>
+          <p id="settings-msg" style="font-size: 13px; margin-top: 10px; text-align: center; display: none;"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部轻提示 Toast -->
+    <div id="toast-bar" class="toast-bar">操作提示</div>
+
+    <!-- 核心驱动脚本 -->
     <script type="module" src="/app.js"></script>
-    <script type="module" src="/account-ui.js"></script>
-    <script defer src="/visit-counter.js"></script>
-    <!-- desktop-only:start -->
-    <script src="/ios-shortcut.js" defer></script>
-    <!-- desktop-only:end -->
   </body>
 </html>

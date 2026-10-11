@@ -1,2412 +1,675 @@
-import {
-  estimateStoredZipSize,
-  makeNoteTextFileData,
-  makeZipBlob
-} from "./lib/archive.js";
-import {
-  clipboardWriteFailureKind,
-  clipboardWriteFailureMessageForKind,
-  refineClipboardWriteFailureKind
-} from "./lib/clipboard.js";
-import { initializeDesktopUI } from "./desktop-ui.js";
-import { inspectVideoBlob } from "./lib/media-tracks.js";
-import { imageDimensionsFromHeader, validateImageDimensions } from "./lib/image-dimensions.js";
-import { getAccountBridge } from "./lib/browser-account.js";
-import { openAccountUI } from "./account-ui.js";
+import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
 
+// 全局状态
 const state = {
-  title: "小红书图片",
-  content: "",
-  noteId: "",
-  sourceUrl: "",
-  shareText: "",
-  parseEngine: "node",
-  images: [],
-  videos: [],
-  hasOriginalVideo: null,
-  selected: new Set(),
-  busy: false,
-  multipleClipboardItemsSupported: null,
-  engine: localStorage.getItem("xhs-engine") === "python" ? "python" : "node",
-  strategy: ""
+  pin: localStorage.getItem("xhs_pin") || "1987",
+  autoClipboard: localStorage.getItem("xhs_auto_clipboard") !== "false",
+  lastProcessedClipboard: "",
+  currentParsedNote: null,
+  activeDetailNote: null,
+  selectedImages: new Set()
 };
 
-const MAX_CLIPBOARD_IMAGES = 12;
-const MAX_DESKTOP_CLIPBOARD_IMAGES = 50;
-const MAX_CLIPBOARD_SOURCE_BYTES = 30 * 1024 * 1024;
-const MAX_CLIPBOARD_TOTAL_BYTES = 120 * 1024 * 1024;
-const CLIPBOARD_IMAGE_TIMEOUT_MS = 20_000;
-const CLIPBOARD_WRITE_TIMEOUT_MS = 30_000;
-const IMAGE_HEADER_INSPECTION_BYTES = 1024 * 1024;
-const MEBIBYTE = 1024 * 1024;
-// Store ZIP 会同时持有媒体字节与最终 Blob，主动限制归档规模以保护浏览器内存。
-const DESKTOP_ARCHIVE_LIMIT_BYTES = 256 * MEBIBYTE;
-const CONSTRAINED_ARCHIVE_LIMIT_BYTES = 128 * MEBIBYTE;
-const ARCHIVE_OVERHEAD_RESERVE_BYTES = 256 * 1024;
-const ARCHIVE_SIZE_LIMIT_ERROR = "ArchiveSizeLimitError";
-const MAX_VIDEO_DOWNLOAD_BYTES = 512 * MEBIBYTE;
-
-const elements = {
-  form: document.querySelector("#parse-form"),
-  textarea: document.querySelector("#share-text"),
-  pasteButton: document.querySelector("#paste-button"),
-  parseButton: document.querySelector("#parse-button"),
-  emptyState: document.querySelector("#empty-state"),
-  resultSection: document.querySelector("#result-section"),
-  noteTitle: document.querySelector("#note-title"),
-  resultMeta: document.querySelector("#result-meta"),
-  captionSection: document.querySelector("#caption-section"),
-  noteCaption: document.querySelector("#note-caption"),
-  copyCaptionButton: document.querySelector("#copy-caption-button"),
-  imageActions: document.querySelector("#image-actions"),
-  imageSection: document.querySelector("#image-section"),
-  imageGrid: document.querySelector("#image-grid"),
-  videoSection: document.querySelector("#video-section"),
-  videoPlayer: document.querySelector("#video-player"),
-  videoQuality: document.querySelector("#video-quality"),
-  videoMeta: document.querySelector("#video-meta"),
-  downloadVideoButton: document.querySelector("#download-video-button"),
-  downloadOriginalVideoButton: document.querySelector("#download-original-video-button"),
-  originalVideoHint: document.querySelector("#original-video-hint"),
-  videoDownloadProgress: document.querySelector("#video-download-progress"),
-  videoDownloadStage: document.querySelector("#video-download-stage"),
-  videoDownloadDetail: document.querySelector("#video-download-detail"),
-  videoDownloadPercent: document.querySelector("#video-download-percent"),
-  videoDownloadTrack: document.querySelector("#video-download-track"),
-  videoDownloadBar: document.querySelector("#video-download-bar"),
-  openVideoLink: document.querySelector("#open-video-link"),
-  selectAllButton: document.querySelector("#select-all-button"),
-  copySelectedImagesButton: document.querySelector("#copy-selected-images-button"),
-  clipboardFallback: document.querySelector("#clipboard-fallback"),
-  copyFirstSelectedImageButton: document.querySelector(
-    "#copy-first-selected-image-button"
-  ),
-  copyLinksButton: document.querySelector("#copy-links-button"),
-  downloadZipButton: document.querySelector("#download-zip-button"),
-  progressPanel: document.querySelector("#progress-panel"),
-  progressTitle: document.querySelector("#progress-title"),
-  progressText: document.querySelector("#progress-text"),
-  progressBar: document.querySelector("#progress-bar"),
-  toast: document.querySelector("#toast"),
-  alertToast: document.querySelector("#alert-toast"),
-  engineInputs: [...document.querySelectorAll('input[name="engine"]')],
-  engineHint: document.querySelector("#engine-hint")
-};
-
-function showToast(message, type = "info", duration = 3200) {
-  const target = type === "error" ? elements.alertToast : elements.toast;
-  const inactive = type === "error" ? elements.toast : elements.alertToast;
-
-  inactive.classList.remove("toast-visible");
-  inactive.textContent = "";
-  target.textContent = message;
-  target.dataset.type = type;
-  target.classList.add("toast-visible");
+// 工具函数：轻提示
+function showToast(message, duration = 2400) {
+  const toast = document.getElementById("toast-bar");
+  if (!toast) return;
+  toast.textContent = message;
+  toast.classList.add("show");
   clearTimeout(showToast.timer);
-  clearTimeout(showToast.clearTimer);
-  showToast.timer = setTimeout(
-    () => {
-      target.classList.remove("toast-visible");
-      showToast.clearTimer = setTimeout(() => {
-        if (!target.classList.contains("toast-visible") && target.textContent === message) {
-          target.textContent = "";
+  showToast.timer = setTimeout(() => {
+    toast.classList.remove("show");
+  }, duration);
+}
+
+// 格式化时间戳
+function formatTime(timestamp) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+// 1. 剪贴板自动读取与解析
+async function checkAndAutoPasteClipboard() {
+  if (!state.autoClipboard) return;
+  if (!navigator.clipboard || !navigator.clipboard.readText) return;
+
+  try {
+    const text = (await navigator.clipboard.readText()).trim();
+    if (!text || text === state.lastProcessedClipboard) return;
+
+    // 智能正则检测小红书特征链接
+    const hasXhsLink = /https?:\/\/(?:[a-zA-Z0-9_-]+\.)?(?:xhslink\.com|xhslink\.cn|xiaohongshu\.com)\/[^\s<>'"()[\]{}，。！？、]+/i.test(text);
+
+    if (hasXhsLink) {
+      state.lastProcessedClipboard = text;
+      const input = document.getElementById("input-text");
+      if (input && input.value.trim() !== text) {
+        input.value = text;
+        const indicator = document.getElementById("auto-clip-indicator");
+        if (indicator) {
+          indicator.style.display = "inline-flex";
+          setTimeout(() => { indicator.style.display = "none"; }, 4000);
         }
-      }, 220);
-    },
-    duration
-  );
-}
-
-function setParsing(isParsing) {
-  state.busy = isParsing;
-  elements.parseButton.disabled = isParsing;
-  elements.parseButton.classList.toggle("is-loading", isParsing);
-  elements.textarea.disabled = isParsing;
-  elements.videoQuality.disabled = isParsing;
-  elements.downloadVideoButton.disabled = isParsing;
-  setEngineInputsDisabled(isParsing);
-  updateSelectionUI();
-}
-
-function sanitizeFilename(value) {
-  return (
-    String(value || "小红书原图")
-      .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60) || "小红书原图"
-  );
-}
-
-function imageFilename(image) {
-  return `${String(image.index).padStart(2, "0")}.jpg`;
-}
-
-function livePhotoVideoFilename(image) {
-  return `${String(image.index).padStart(2, "0")}-live.mp4`;
-}
-
-function livePhotoZipFilename(image) {
-  return `${String(image.index).padStart(2, "0")}-live-photo.zip`;
-}
-
-function livePhotoCount(images = state.images) {
-  return images.filter((image) => image.liveVideo?.url).length;
-}
-
-function declaredVideoSize(video) {
-  const rawSize = video?.size;
-  if (rawSize === undefined || rawSize === null || rawSize === "") return 0;
-  const size = Number(rawSize);
-  if (!Number.isFinite(size) || size < 0) return Number.MAX_SAFE_INTEGER;
-  if (size === 0) return 0;
-  const rounded = Math.ceil(size);
-  return Number.isSafeInteger(rounded) ? rounded : Number.MAX_SAFE_INTEGER;
-}
-
-function archiveLimitProfile() {
-  const userAgent = String(navigator.userAgent || "");
-  const mobileHint = navigator.userAgentData?.mobile === true
-    || /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)
-    || (/Macintosh/i.test(userAgent) && Number(navigator.maxTouchPoints || 0) > 1);
-  const deviceMemory = Number(navigator.deviceMemory || 0);
-  const lowMemory = Number.isFinite(deviceMemory) && deviceMemory > 0 && deviceMemory <= 4;
-  const constrained = mobileHint || lowMemory;
-
-  return {
-    constrained,
-    label: constrained ? "移动端或低内存设备" : "桌面端",
-    limitBytes: constrained
-      ? CONSTRAINED_ARCHIVE_LIMIT_BYTES
-      : DESKTOP_ARCHIVE_LIMIT_BYTES
-  };
-}
-
-function isArchiveSizeLimitError(error) {
-  return error?.name === ARCHIVE_SIZE_LIMIT_ERROR;
-}
-
-function createArchiveBudget(kind) {
-  const profile = archiveLimitProfile();
-  const payloadLimitBytes = profile.limitBytes - ARCHIVE_OVERHEAD_RESERVE_BYTES;
-  const subject = kind === "batch" ? "所选媒体" : "这张实况图片";
-  const advice = kind === "batch"
-    ? "请减少勾选数量或分批下载。"
-    : "请在内存更充足的桌面浏览器中重试，或只下载原图 / 实况 MP4。";
-  let committedBytes = 0;
-
-  function limitError(label, attemptedBytes = 0) {
-    const attempted = Number(attemptedBytes);
-    const normalizedAttempt = Number.isFinite(attempted)
-      ? Math.max(0, attempted)
-      : 0;
-    const projectedBytes = committedBytes
-      + normalizedAttempt
-      + ARCHIVE_OVERHEAD_RESERVE_BYTES;
-    const projected = normalizedAttempt > 0
-      ? `预计归档至少需要 ${formatBytes(projectedBytes)}，`
-      : "";
-    const error = new Error(
-      `${label || subject}${projected}超过当前${profile.label} ${formatBytes(profile.limitBytes)} 的浏览器归档上限。${advice}`
-    );
-    error.name = ARCHIVE_SIZE_LIMIT_ERROR;
-    error.limitBytes = profile.limitBytes;
-    return error;
-  }
-
-  function assertFits(byteLength, label) {
-    const bytes = Number(byteLength ?? 0);
-    if (!Number.isSafeInteger(bytes) || bytes < 0) throw limitError(label);
-    if (committedBytes + bytes > payloadLimitBytes) {
-      throw limitError(label, bytes);
-    }
-  }
-
-  function remainingBytes(label) {
-    const remaining = payloadLimitBytes - committedBytes;
-    if (remaining <= 0) throw limitError(label);
-    return remaining;
-  }
-
-  async function consumeBlob(blob, label) {
-    assertFits(blob.size, label);
-    const buffer = await blob.arrayBuffer();
-    assertFits(buffer.byteLength, label);
-    committedBytes += buffer.byteLength;
-    return new Uint8Array(buffer);
-  }
-
-  function consumeData(data, label) {
-    if (!(data instanceof Uint8Array)) throw limitError(label);
-    assertFits(data.byteLength, label);
-    committedBytes += data.byteLength;
-    return data;
-  }
-
-  function assertFilesFit(files) {
-    const estimatedSize = estimateStoredZipSize(files);
-    if (estimatedSize > profile.limitBytes) {
-      throw limitError(
-        `${subject}生成的 ZIP`,
-        Math.max(0, estimatedSize - committedBytes)
-      );
-    }
-    return estimatedSize;
-  }
-
-  function assertFinalZip(blob, expectedSize) {
-    if (blob.size > profile.limitBytes || blob.size !== expectedSize) {
-      throw limitError(`${subject}生成的 ZIP`);
-    }
-  }
-
-  return {
-    assertFilesFit,
-    assertFinalZip,
-    assertFits,
-    consumeBlob,
-    consumeData,
-    limitErrorFactory: (label) => () => limitError(label),
-    remainingBytes
-  };
-}
-
-function extractSourceUrl(text) {
-  const match = String(text ?? "").match(/https?:\/\/[^\s<>'"”]+/i);
-  return match?.[0].replace(/[.,;:!?\])}，。！？；：）】》]+$/g, "") || "";
-}
-
-function noteClipboardText() {
-  const title = String(state.title || "").trim();
-  const content = String(state.content || "").trim();
-
-  if (!content) return title;
-  if (!title || content === title || content.startsWith(`${title}\n`)) return content;
-  return `${title}\n\n${content}`;
-}
-
-function noteTextFileData() {
-  return makeNoteTextFileData({
-    title: state.title,
-    content: state.content,
-    sourceUrl: state.sourceUrl,
-    engine: engineLabel(state.parseEngine)
-  });
-}
-
-function fallbackCopyText(text) {
-  const activeElement = document.activeElement;
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.readOnly = true;
-  textarea.tabIndex = -1;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  textarea.style.top = "0";
-  let copied = false;
-  try {
-    document.body.append(textarea);
-    textarea.select();
-    textarea.setSelectionRange(0, textarea.value.length);
-    copied = document.execCommand("copy");
-  } finally {
-    textarea.remove();
-    if (activeElement instanceof HTMLElement) activeElement.focus({ preventScroll: true });
-  }
-  if (!copied) throw new Error("浏览器未允许复制文本。");
-}
-
-async function writeTextToClipboard(text) {
-  if (window.isSecureContext && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch (error) {
-      try {
-        fallbackCopyText(text);
-        return;
-      } catch {
-        throw error;
+        showToast("⚡ 已自动识别剪贴板小红书链接，开始解析...");
+        startParsing();
       }
     }
-  }
-  fallbackCopyText(text);
-}
-
-function textClipboardErrorMessage(error, label) {
-  if (!window.isSecureContext) {
-    return `${label}未复制：请通过 HTTPS 或 localhost 打开页面，或手动选择文本复制。`;
-  }
-  if (error?.name === "NotAllowedError") {
-    return `${label}未复制：浏览器未授予剪贴板权限，请允许访问后重试。`;
-  }
-  if (["NotSupportedError", "DataError"].includes(error?.name)) {
-    return `${label}未复制：当前浏览器不支持该剪贴板操作，请手动选择文本复制。`;
-  }
-  return `${label}未复制：${error?.message || "浏览器拒绝了剪贴板写入"} 请手动选择文本复制。`;
-}
-
-async function copyTextAction({ text, trigger, label, successMessage }) {
-  if (state.busy || !text) return;
-
-  state.busy = true;
-  trigger?.setAttribute("aria-busy", "true");
-  elements.parseButton.disabled = true;
-  elements.videoQuality.disabled = true;
-  elements.downloadVideoButton.disabled = true;
-  setEngineInputsDisabled(true);
-  updateSelectionUI();
-
-  try {
-    await writeTextToClipboard(text);
-    showToast(successMessage, "success");
-  } catch (error) {
-    showToast(textClipboardErrorMessage(error, label), "error", 6200);
-  } finally {
-    state.busy = false;
-    trigger?.removeAttribute("aria-busy");
-    elements.parseButton.disabled = false;
-    elements.videoQuality.disabled = false;
-    elements.downloadVideoButton.disabled = false;
-    setEngineInputsDisabled(false);
-    updateSelectionUI();
-    trigger?.focus({ preventScroll: true });
-  }
-}
-
-function engineLabel(engine = state.engine) {
-  return engine === "python" ? "Python" : "Node.js";
-}
-
-function setEngineInputsDisabled(disabled) {
-  for (const input of elements.engineInputs) {
-    input.disabled = disabled || input.dataset.unavailable === "true";
-  }
-}
-
-function updateEngineUI() {
-  for (const input of elements.engineInputs) {
-    input.checked = input.value === state.engine;
-  }
-
-  elements.engineHint.textContent = window.xhsDesktop
-    ? `当前使用内置 ${engineLabel()} 引擎，无需另行安装运行环境。`
-    : state.engine === "python"
-    ? "当前使用 Python 完成页面抓取、图片代理和媒体分段下载。"
-    : "当前使用 Node.js 完成页面抓取、图片代理和媒体分段下载。";
-}
-
-function updateResultMeta() {
-  if (!state.images.length && !state.videos.length) return;
-  const strategy = state.strategy ? ` · ${state.strategy}` : "";
-  const parts = [];
-  if (state.images.length) parts.push(`${state.images.length} 张无水印原图`);
-  const liveCount = livePhotoCount();
-  if (liveCount) parts.push(`${liveCount} 张实况图片`);
-  if (state.videos.length) parts.push(`${state.videos.length} 个视频清晰度`);
-  elements.resultMeta.textContent =
-    `已找到 ${parts.join("、")} · ${engineLabel(state.parseEngine)} 引擎${strategy}`;
-}
-
-function proxyUrl(image) {
-  const params = new URLSearchParams({
-    token: image.token,
-    name: imageFilename(image)
-  });
-  const endpoint = state.engine === "python"
-    ? "/api/python_image"
-    : "/api/image";
-  return `${endpoint}?${params.toString()}`;
-}
-
-function setProgress(current, total, title = "正在下载并打包", detail = "") {
-  elements.progressPanel.hidden = false;
-  elements.progressTitle.textContent = title;
-  elements.progressText.textContent = detail || `${current} / ${total}`;
-  const ratio = total ? Math.max(0, Math.min(1, current / total)) : 0;
-  elements.progressBar.style.width = `${Math.round(ratio * 100)}%`;
-}
-
-function hideProgress() {
-  elements.progressPanel.hidden = true;
-  elements.progressBar.style.width = "0%";
-}
-
-let activeVideoProgress = null;
-
-function startVideoProgress(phase, message) {
-  activeVideoProgress?.dispose();
-  clearTimeout(showToast.timer);
-  clearTimeout(showToast.clearTimer);
-  for (const toast of [elements.toast, elements.alertToast]) {
-    toast.classList.remove("toast-visible");
-    toast.textContent = "";
-  }
-  const panel = elements.videoDownloadProgress;
-  const startedAt = Date.now();
-  let transferStartedAt = startedAt;
-  let loadedBytes = 0;
-  let totalBytes = 0;
-  let detail = "";
-  let busy = true;
-  let lastRender = 0;
-  let lastPercent = null;
-  let timer;
-
-  const render = () => {
-    if (activeVideoProgress !== progress || !panel) return;
-    const percent = totalBytes > 0 ? Math.round(loadedBytes / totalBytes * 100) : null;
-    panel.dataset.indeterminate = String(percent === null && busy);
-    panel.setAttribute("aria-busy", String(busy));
-    elements.videoDownloadPercent.textContent = percent === null ? "—" : `${percent}%`;
-    elements.videoDownloadBar.style.width = percent === null ? "0%" : `${percent}%`;
-    if (percent === null) elements.videoDownloadTrack.removeAttribute("aria-valuenow");
-    else elements.videoDownloadTrack.setAttribute("aria-valuenow", String(percent));
-    const seconds = Math.floor((Date.now() - startedAt) / 1000);
-    const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
-    const bytes = totalBytes > 0
-      ? `${loadedBytes > 0 ? formatBytes(loadedBytes) : "0 B"} / ${formatBytes(totalBytes)}`
-      : loadedBytes > 0 ? `已读取 ${formatBytes(loadedBytes)} · 总大小待确认`
-        : panel.dataset.phase === "downloading" ? "等待视频数据 · 总大小待确认" : "等待视频信息";
-    const transferSeconds = (Date.now() - transferStartedAt) / 1000;
-    const speed = panel.dataset.phase === "downloading" && loadedBytes > 0 && transferSeconds >= 1
-      ? ` · 平均 ${formatBytes(loadedBytes / transferSeconds)}/秒` : "";
-    elements.videoDownloadDetail.textContent = `${detail ? `${detail} · ` : ""}${bytes}${speed} · 已耗时 ${elapsed}`;
-    lastRender = Date.now();
-    lastPercent = percent;
-  };
-
-  const progress = {
-    phase(nextPhase, text, { reset = false, description = "" } = {}) {
-      if (activeVideoProgress !== progress) return;
-      if (reset) { loadedBytes = 0; totalBytes = 0; transferStartedAt = Date.now(); }
-      detail = description;
-      if (panel) panel.dataset.phase = nextPhase;
-      if (elements.videoDownloadStage) elements.videoDownloadStage.textContent = text;
-      render();
-    },
-    report({ loadedBytes: loaded, totalBytes: total }) {
-      if (activeVideoProgress !== progress || !busy) return;
-      loadedBytes = Math.max(0, Number(loaded) || 0);
-      totalBytes = Math.max(0, Number(total) || 0);
-      if (totalBytes) loadedBytes = Math.min(loadedBytes, totalBytes);
-      if (panel?.dataset.phase !== "downloading") {
-        progress.phase("downloading", "正在下载视频");
-        return;
-      }
-      const percent = totalBytes ? Math.round(loadedBytes / totalBytes * 100) : null;
-      // Update each percentage change; limit repeated byte-only updates during fast reads.
-      if (percent !== lastPercent || loadedBytes === totalBytes || Date.now() - lastRender >= 180) render();
-    },
-    checking(blob) {
-      loadedBytes = blob.size;
-      totalBytes = blob.size;
-      progress.phase("checking", "下载完成，正在检查视频", { description: "检查文件与音轨" });
-    },
-    finish(nextPhase, text, description = "") {
-      busy = false;
-      clearInterval(timer);
-      progress.phase(nextPhase, text, { description });
-    },
-    dispose() { clearInterval(timer); }
-  };
-  activeVideoProgress = progress;
-  if (panel) panel.hidden = false;
-  progress.phase(phase, message);
-  timer = setInterval(render, 1000);
-  if (panel) {
-    // A previous result/focus scroll can still be animating while this panel is
-    // already visible. Stop that navigation once, before the first async step.
-    window.scrollTo?.({ top: window.scrollY, left: window.scrollX, behavior: "instant" });
-    for (let container = panel.parentElement; container; container = container.parentElement) {
-      if (container.scrollHeight > container.clientHeight || container.scrollWidth > container.clientWidth) {
-        container.scrollTo?.({ top: container.scrollTop, left: container.scrollLeft, behavior: "instant" });
-      }
-    }
-    const rect = panel.getBoundingClientRect();
-    if (rect.top < 0 || rect.bottom > window.innerHeight) {
-      panel.scrollIntoView({ block: "nearest", behavior: "instant" });
-    }
-  }
-  return progress;
-}
-
-function triggerBlobDownload(blob, filename) {
-  const href = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = href;
-  anchor.download = filename;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(href), 1500);
-}
-
-async function readApiError(response) {
-  try {
-    const body = await response.json();
-    return body.message || `请求失败：HTTP ${response.status}`;
   } catch {
-    return `请求失败：HTTP ${response.status}`;
+    // 浏览器权限未授权或静默拦截，不打扰用户
   }
 }
 
-function imageTooLargeError() {
-  const error = new Error("单张原图超过 30 MB，请改用下载原图或 ZIP。");
-  error.name = "ImageTooLargeError";
-  return error;
-}
-
-function responseSizeLimitError(limitErrorFactory) {
-  return typeof limitErrorFactory === "function"
-    ? limitErrorFactory()
-    : imageTooLargeError();
-}
-
-async function responseBlobWithLimit(
-  response,
-  maxBytes = 0,
-  limitErrorFactory = null,
-  onProgress = null
-) {
-  const contentType = response.headers.get("content-type") || "";
-  if (!maxBytes && typeof onProgress !== "function") return response.blob();
-
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  const total = Number.isSafeInteger(contentLength) && contentLength > 0 ? contentLength : 0;
-  if (maxBytes && Number.isFinite(contentLength) && contentLength > maxBytes) {
-    await response.body?.cancel().catch(() => {});
-    throw responseSizeLimitError(limitErrorFactory);
-  }
-
-  if (!response.body?.getReader) {
-    const blob = await response.blob();
-    if (maxBytes && blob.size > maxBytes) {
-      throw responseSizeLimitError(limitErrorFactory);
-    }
-    onProgress?.({ loadedBytes: blob.size, totalBytes: total });
-    return blob;
-  }
-
-  const reader = response.body.getReader();
-  const chunks = [];
-  let totalBytes = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalBytes += value.byteLength;
-      if (maxBytes && totalBytes > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw responseSizeLimitError(limitErrorFactory);
-      }
-      chunks.push(value);
-      onProgress?.({ loadedBytes: totalBytes, totalBytes: total });
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    chunks.length = 0;
-    throw error;
-  } finally {
-    reader.releaseLock?.();
-  }
-
-  return new Blob(chunks, { type: contentType });
-}
-
-async function fetchImageBlob(
-  image,
-  { signal, maxBytes = 0, limitErrorFactory = null } = {}
-) {
-  const response = await fetch(proxyUrl(image), { signal });
-
-  if (response.ok) {
-    return responseBlobWithLimit(response, maxBytes, limitErrorFactory);
-  }
-
-  if (response.status === 413) {
-    try {
-      const directResponse = await fetch(image.url, {
-        mode: "cors",
-        referrerPolicy: "no-referrer",
-        signal
-      });
-      if (directResponse.ok) {
-        return responseBlobWithLimit(
-          directResponse,
-          maxBytes,
-          limitErrorFactory
-        );
-      }
-    } catch (error) {
-      if (
-        ["AbortError", "ImageTooLargeError"].includes(error?.name)
-        || isArchiveSizeLimitError(error)
-      ) {
-        throw error;
-      }
-      // 继续抛出更明确的提示。
-    }
-
-    throw new Error(
-      "图片超过 Vercel 单次响应限制，且浏览器无法跨域读取原图。请点击“打开原图”。"
-    );
-  }
-
-  throw new Error(await readApiError(response));
-}
-
-function hasDesktopImageClipboard() {
-  return typeof window.xhsDesktop?.copyImages === "function";
-}
-
-function imageClipboardCapabilityError() {
-  if (hasDesktopImageClipboard()) return "";
-  if (!window.isSecureContext) {
-    return "图片未复制：请通过 HTTPS 或 localhost 打开页面后重试。";
-  }
-  if (!navigator.clipboard?.write || typeof window.ClipboardItem !== "function") {
-    return "图片未复制：当前浏览器不支持直接写入图片剪贴板，请下载原图或复制链接。";
-  }
-  if (
-    typeof window.ClipboardItem.supports === "function" &&
-    !window.ClipboardItem.supports("image/png")
-  ) {
-    return "图片未复制：当前浏览器剪贴板不支持 PNG 图片，请下载原图或复制链接。";
-  }
-  return "";
-}
-
-function abortError() {
-  const error = new Error("图片复制任务已停止。");
-  error.name = "AbortError";
-  return error;
-}
-
-function throwIfAborted(signal) {
-  if (signal?.aborted) throw abortError();
-}
-
-function raceWithAbort(promise, signal, onLateResolve) {
-  if (!signal) return promise;
-  if (signal.aborted) {
-    promise.then(onLateResolve, () => {});
-    return Promise.reject(abortError());
-  }
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const handleAbort = () => {
-      if (settled) return;
-      settled = true;
-      reject(abortError());
-    };
-    signal.addEventListener("abort", handleAbort, { once: true });
-    promise.then(
-      (value) => {
-        if (settled) {
-          onLateResolve?.(value);
-          return;
-        }
-        settled = true;
-        signal.removeEventListener("abort", handleAbort);
-        resolve(value);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", handleAbort);
-        reject(error);
-      }
-    );
-  });
-}
-
-async function inspectImageDimensions(blob, signal) {
-  const header = new Uint8Array(
-    await raceWithAbort(
-      blob.slice(0, IMAGE_HEADER_INSPECTION_BYTES).arrayBuffer(),
-      signal
-    )
-  );
-  return imageDimensionsFromHeader(header);
-}
-
-function canvasToPngBlob(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("浏览器无法把这张图片转换为 PNG。"));
-    }, "image/png");
-  });
-}
-
-async function imageBlobToPng(blob, signal) {
-  throwIfAborted(signal);
-  if (!String(blob.type || "").startsWith("image/")) {
-    throw new Error("原图响应不是可复制的图片格式。");
-  }
-  if (blob.size > MAX_CLIPBOARD_SOURCE_BYTES) {
-    throw new Error("单张原图超过 30 MB，请改用下载原图或 ZIP。");
-  }
-
-  const headerDimensions = await inspectImageDimensions(blob, signal);
-  if (headerDimensions) {
-    validateImageDimensions(headerDimensions.width, headerDimensions.height);
-  }
-
-  async function drawToPng(source, width, height) {
-    throwIfAborted(signal);
-    validateImageDimensions(width, height);
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("浏览器无法创建图片转换画布。");
-    try {
-      context.drawImage(source, 0, 0);
-      throwIfAborted(signal);
-      return await raceWithAbort(canvasToPngBlob(canvas), signal);
-    } finally {
-      canvas.width = 1;
-      canvas.height = 1;
-    }
-  }
-
-  if (typeof createImageBitmap === "function") {
-    let bitmap = null;
-    try {
-      bitmap = await raceWithAbort(
-        createImageBitmap(blob),
-        signal,
-        (lateBitmap) => lateBitmap?.close?.()
-      );
-    } catch (error) {
-      if (error?.name === "AbortError") throw error;
-      // 个别浏览器的 createImageBitmap 格式覆盖少于 <img>，继续尝试后者。
-    }
-    if (bitmap) {
-      try {
-        return await drawToPng(bitmap, bitmap.width, bitmap.height);
-      } finally {
-        bitmap.close?.();
-      }
-    }
-  }
-
-  const href = URL.createObjectURL(blob);
-  const image = new Image();
-  try {
-    image.decoding = "async";
-    const loadPromise = new Promise((resolve, reject) => {
-      image.addEventListener("load", resolve, { once: true });
-      image.addEventListener(
-        "error",
-        () => reject(new Error("浏览器无法读取这张原图。")),
-        { once: true }
-      );
-      image.src = href;
-    });
-    await raceWithAbort(loadPromise, signal);
-    return await drawToPng(image, image.naturalWidth, image.naturalHeight);
-  } finally {
-    image.removeAttribute("src");
-    URL.revokeObjectURL(href);
-  }
-}
-
-async function clipboardPngBlob(image, operationSignal) {
-  const controller = new AbortController();
-  let timedOut = false;
-  const abortFromOperation = () => controller.abort();
-  operationSignal?.addEventListener("abort", abortFromOperation, { once: true });
-  if (operationSignal?.aborted) controller.abort();
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, CLIPBOARD_IMAGE_TIMEOUT_MS);
-
-  try {
-    return await imageBlobToPng(
-      await fetchImageBlob(image, {
-        signal: controller.signal,
-        maxBytes: MAX_CLIPBOARD_SOURCE_BYTES
-      }),
-      controller.signal
-    );
-  } catch (error) {
-    if (timedOut && error?.name === "AbortError") {
-      throw new Error("读取单张原图超过 20 秒，已停止复制。请检查网络后重试。");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-    operationSignal?.removeEventListener("abort", abortFromOperation);
-  }
-}
-
-function createQueuedClipboardTasks(images) {
-  let nextIndex = 0;
-  let completed = 0;
-  let totalBytes = 0;
-  let started = false;
-  let cancelled = false;
-  const operationController = new AbortController();
-  const deferred = images.map(() => {
-    let resolve;
-    let reject;
-    const promise = new Promise((promiseResolve, promiseReject) => {
-      resolve = promiseResolve;
-      reject = promiseReject;
-    });
-    // 某些平台只消费第一个 ClipboardItem；仍要接住其他任务的失败。
-    promise.catch(() => {});
-    return { promise, resolve, reject, settled: false };
-  });
-
-  function settle(index, method, value) {
-    const item = deferred[index];
-    if (item.settled) return;
-    item.settled = true;
-    item[method](value);
-  }
-
-  async function worker() {
-    while (!cancelled && nextIndex < images.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      try {
-        const pngBlob = await clipboardPngBlob(
-          images[index],
-          operationController.signal
-        );
-        totalBytes += pngBlob.size;
-        if (totalBytes > MAX_CLIPBOARD_TOTAL_BYTES) {
-          throw new Error("所选图片转换后超过 120 MB，请减少勾选数量后重试。");
-        }
-        settle(index, "resolve", pngBlob);
-      } catch (error) {
-        if (error && typeof error === "object") error.clipboardStage = "conversion";
-        settle(index, "reject", error);
-      } finally {
-        if (!cancelled) {
-          completed += 1;
-          setProgress(completed, images.length, "正在准备复制图片");
-        }
-      }
-    }
-  }
-
-  function start() {
-    if (started || cancelled) return;
-    started = true;
-    const workerCount = Math.min(2, images.length);
-    for (let index = 0; index < workerCount; index += 1) void worker();
-  }
-
-  function cancel() {
-    if (cancelled) return;
-    cancelled = true;
-    operationController.abort();
-    const error = new Error("图片复制任务已停止。");
-    error.name = "AbortError";
-    for (let index = 0; index < deferred.length; index += 1) {
-      settle(index, "reject", error);
-    }
-  }
-
-  return {
-    promises: deferred.map((item) => item.promise),
-    start,
-    cancel
-  };
-}
-
-async function writeDesktopImagesToClipboard(images) {
-  setProgress(0, images.length, "正在准备复制原图");
-  let unsubscribe;
-  try {
-    if (typeof window.xhsDesktop.onClipboardProgress === "function") {
-      unsubscribe = window.xhsDesktop.onClipboardProgress((progress) => {
-        setProgress(
-          progress.completed,
-          progress.total,
-          progress.phase === "writing" ? "正在写入系统剪贴板" : "正在准备复制原图"
-        );
-      });
-    }
-    const result = await window.xhsDesktop.copyImages({
-      images: images.map((image) => ({ url: image.url, index: image.index })),
-      title: state.title
-    });
-    if (result?.ok !== true || result.count !== images.length) {
-      throw new Error("客户端未确认全部图片已复制，请重试。");
-    }
-    return result;
-  } finally {
-    if (typeof unsubscribe === "function") unsubscribe();
-  }
-}
-
-async function writeImagesToClipboard(images) {
-  if (hasDesktopImageClipboard()) return writeDesktopImagesToClipboard(images);
-  const capabilityError = imageClipboardCapabilityError();
-  if (capabilityError) throw new Error(capabilityError);
-
-  setProgress(0, images.length, "正在准备复制图片");
-  const tasks = createQueuedClipboardTasks(images);
-
-  try {
-    const clipboardItems = tasks.promises.map(
-      (pngPromise) => new window.ClipboardItem({ "image/png": pngPromise })
-    );
-
-    // write() 必须仍在点击手势调用栈中触发；图片数据可通过 Promise 后续完成。
-    const writePromise = navigator.clipboard.write(clipboardItems);
-    // 超时后 writePromise 仍可能由系统结束，预先接住避免迟到拒绝泄漏。
-    writePromise.catch(() => {});
-    tasks.start();
-    // 以平台实际的 write() 结果为准；Chromium 会直接拒绝多个 ClipboardItem。
-    let timeoutId;
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => {
-        const error = new Error("系统剪贴板 30 秒未完成写入，已停止这次复制。");
-        error.name = "TimeoutError";
-        reject(error);
-      }, CLIPBOARD_WRITE_TIMEOUT_MS);
-    });
-    try {
-      await Promise.race([writePromise, timeoutPromise]);
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  } finally {
-    tasks.cancel();
-  }
-}
-
-async function resolvedClipboardWriteFailureKind(error, imageCount) {
-  const detectedKind = clipboardWriteFailureKind(error, imageCount);
-  if (
-    detectedKind !== "permission" ||
-    imageCount <= 1 ||
-    !navigator.permissions?.query
-  ) {
-    return detectedKind;
-  }
-
-  try {
-    const permission = await navigator.permissions.query({
-      name: "clipboard-write"
-    });
-    return refineClipboardWriteFailureKind(
-      detectedKind,
-      imageCount,
-      permission.state
-    );
-  } catch {
-    // 并非所有浏览器都在 Permissions API 中暴露 clipboard-write。
-  }
-  return detectedKind;
-}
-
-function imageClipboardErrorMessage(error, imageCount = 1, failureKind = null) {
-  const capabilityError = imageClipboardCapabilityError();
-  if (capabilityError) return capabilityError;
-  const writeFailureMessage = clipboardWriteFailureMessageForKind(
-    failureKind || clipboardWriteFailureKind(error, imageCount)
-  );
-  if (writeFailureMessage) return writeFailureMessage;
-  if (error?.clipboardStage === "conversion" && imageCount > 1) {
-    return `多图复制未完整完成：${error.message || "至少一张原图读取失败"} 请减少勾选、逐张复制或下载 ZIP。`;
-  }
-  return `图片未复制：${error?.message || "读取原图失败"} 可改用下载原图、打开原图或复制链接。`;
-}
-
-async function copyImages(images, trigger) {
-  if (state.busy || images.length === 0) return;
-
-  const desktopClipboard = hasDesktopImageClipboard();
-  const imageLimit = desktopClipboard ? MAX_DESKTOP_CLIPBOARD_IMAGES : MAX_CLIPBOARD_IMAGES;
-  if (images.length > imageLimit) {
-    showToast(
-      desktopClipboard
-        ? `客户端一次最多复制 ${imageLimit} 张图片。请减少勾选数量，或直接下载 ZIP。`
-        : `为避免浏览器内存过高，一次最多复制 ${imageLimit} 张图片。请减少勾选数量，或直接下载 ZIP。`,
-      "error",
-      7200
-    );
-    return;
-  }
-
-  const capabilityError = imageClipboardCapabilityError();
-  if (capabilityError) {
-    showToast(capabilityError, "error", 6200);
-    return;
-  }
-
-  state.busy = true;
-  trigger?.setAttribute("aria-busy", "true");
-  elements.parseButton.disabled = true;
-  elements.videoQuality.disabled = true;
-  elements.downloadVideoButton.disabled = true;
-  setEngineInputsDisabled(true);
-  updateSelectionUI();
-
-  try {
-    const result = await writeImagesToClipboard(images);
-    if (desktopClipboard && result.kind === "files") {
-      showToast(
-        `已复制 ${images.length} 个独立图片文件，可粘贴到支持${images.length > 1 ? "多张" : ""}图片或文件的应用中。`,
-        "success",
-        7200
-      );
-    } else if (images.length === 1) {
-      showToast("图片已写入剪贴板，可以直接粘贴。", "success");
-    } else {
-      state.multipleClipboardItemsSupported = true;
-      showToast(
-        "浏览器已接收所选图片；目标应用若只粘贴一张，请逐张复制或下载 ZIP。",
-        "success",
-        7200
-      );
-    }
-  } catch (error) {
-    if (desktopClipboard) {
-      const message = String(error?.message || "客户端无法写入系统剪贴板")
-        .replace(/^Error invoking remote method 'desktop:copy-images': Error: /, "");
-      showToast(
-        `图片未复制：${message} 可重试或下载原图。`,
-        "error",
-        7200
-      );
-      return;
-    }
-    const failureKind = await resolvedClipboardWriteFailureKind(
-      error,
-      images.length
-    );
-    if (failureKind === "multiple-items") {
-      state.multipleClipboardItemsSupported = false;
-      updateSelectionUI();
-    }
-    showToast(
-      imageClipboardErrorMessage(error, images.length, failureKind),
-      "error",
-      7200
-    );
-  } finally {
-    state.busy = false;
-    trigger?.removeAttribute("aria-busy");
-    elements.parseButton.disabled = false;
-    elements.videoQuality.disabled = false;
-    elements.downloadVideoButton.disabled = false;
-    setEngineInputsDisabled(false);
-    hideProgress();
-    updateSelectionUI();
-    trigger?.focus({ preventScroll: true });
-  }
-}
-
-async function downloadSingle(image) {
-  if (state.busy) return;
-  try {
-    showToast(`正在下载第 ${image.index} 张图片……`);
-    const blob = await fetchImageBlob(image);
-    triggerBlobDownload(blob, imageFilename(image));
-    showToast(`第 ${image.index} 张图片已开始保存`, "success");
-  } catch (error) {
-    showToast(error.message, "error");
-  }
-}
-
-
-function formatBytes(value) {
-  const bytes = Number(value || 0);
-  if (!Number.isFinite(bytes) || bytes <= 0) return "大小未知";
-  const units = ["B", "KB", "MB", "GB"];
-  let size = bytes;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return `${size >= 100 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
-}
-
-function currentVideo() {
-  if (!state.videos.length) return null;
-  const selected = Number(elements.videoQuality.value || 1);
-  return state.videos.find((video) => video.index === selected) || state.videos[0];
-}
-
-function videoFilename() {
-  return `${sanitizeFilename(state.title || "小红书视频")}.mp4`;
-}
-
-function hasNativeVideoDownload() {
-  return typeof window.xhsDesktop?.saveVideo === "function"
-    && typeof window.xhsDesktop?.onVideoDownloadProgress === "function";
-}
-
-async function saveNativeVideo(video, filename, { progress, requireAudio = true, signal } = {}) {
-  const bridge = window.xhsDesktop;
-  const requestId = globalThis.crypto.randomUUID();
-  const cancel = () => { void bridge.cancelVideoDownload?.(requestId).catch(() => {}); };
-  const unsubscribe = bridge.onVideoDownloadProgress(event => {
-    if (event.requestId !== requestId) return;
-    if (event.phase === "checking") {
-      progress?.checking({ size: event.loadedBytes });
-    } else if (event.phase === "saving") {
-      progress?.phase("saving", "正在保存视频");
-    } else {
-      if (event.phase === "preparing") progress?.phase("preparing", "正在连接视频来源", { reset: true });
-      else progress?.report(event);
-    }
-  });
-  signal?.addEventListener("abort", cancel, { once: true });
-  try {
-    if (signal?.aborted) throw Object.assign(new Error("原视频保存已停止。"), { name: "AbortError" });
-    progress?.phase("preparing", "请选择视频保存位置");
-    const result = await bridge.saveVideo({ requestId, filename, video, requireAudio });
-    if (!result?.ok) {
-      throw Object.assign(new Error(result?.error?.message || "视频下载失败，请稍后重试。"), {
-        code: result?.error?.code, status: result?.error?.status
-      });
-    }
-    if (result.cancelled) {
-      progress?.finish("cancelled", "已取消保存视频");
-      return result;
-    }
-    progress?.report({ loadedBytes: result.bytes, totalBytes: result.bytes });
-    progress?.finish("complete", "视频已保存", result.path || "已完成文件与音轨检查");
-    return result;
-  } finally {
-    unsubscribe();
-    signal?.removeEventListener("abort", cancel);
-  }
-}
-
-function videoApiUrl(action, sourceUrl, extra = {}) {
-  if (String(sourceUrl).startsWith("member-video:")) {
-    const params = new URLSearchParams({ action, ticket: sourceUrl.slice("member-video:".length), ...extra });
-    return `/api/member_video?${params.toString()}`;
-  }
-  const endpoint = state.engine === "python" ? "/api/python_video" : "/api/video";
-  const params = new URLSearchParams({ action, url: sourceUrl, ...extra });
-  return `${endpoint}?${params.toString()}`;
-}
-
-function updateVideoSelection() {
-  const video = currentVideo();
-  if (!video) return;
-
-  elements.videoPlayer.src = video.url;
-  elements.videoPlayer.poster = state.images[0]?.url || "";
-  elements.openVideoLink.href = video.url;
-  const resolution = video.width && video.height ? `${video.width}×${video.height}` : "原始清晰度";
-  const codec = String(video.codec || "video").toUpperCase();
-  elements.videoMeta.textContent = `${resolution} · ${codec} · ${formatBytes(video.size)}`;
-  elements.videoPlayer.load();
-}
-
-function renderVideo() {
-  const hasVideo = state.videos.length > 0;
-  elements.videoSection.hidden = !hasVideo && state.hasOriginalVideo !== true;
-  elements.videoQuality.closest("label").hidden = !hasVideo;
-  elements.downloadVideoButton.hidden = !hasVideo;
-  elements.openVideoLink.hidden = !hasVideo;
-  updateMemberVideoUI();
-  if (!hasVideo) {
-    elements.videoPlayer.removeAttribute("src");
-    elements.videoPlayer.load();
-    elements.videoQuality.replaceChildren();
-    elements.videoPlayer.poster = state.images[0]?.url || "";
-    elements.videoMeta.textContent = state.hasOriginalVideo === true ? "网页提供原视频 · 会员可下载" : "视频信息";
-    return;
-  }
-
-  elements.videoQuality.replaceChildren();
-  for (const video of state.videos) {
-    const option = document.createElement("option");
-    option.value = String(video.index);
-    option.textContent = video.label || `视频线路 ${video.index}`;
-    option.selected = Boolean(video.isDefault);
-    elements.videoQuality.append(option);
-  }
-  updateVideoSelection();
-}
-
-async function readVideoApiError(response) {
-  let body = {};
-  try {
-    body = await response.json() || {};
-  } catch { /* Include the HTTP status when a proxy cannot return JSON. */ }
-  const error = new Error(body.message || body.error?.message || `视频请求失败：HTTP ${response.status}`);
-  error.code = body.code || body.error?.code;
-  error.status = response.status;
-  return error;
-}
-
-async function getVideoMeta(sourceUrl, fallbackSize = 0) {
-  const response = await fetch(videoApiUrl("meta", sourceUrl));
-  if (!response.ok) throw await readVideoApiError(response);
-  const meta = await response.json();
-  const size = Number(meta.size || fallbackSize || 0);
-  if (!Number.isSafeInteger(size) || size <= 0) {
-    throw new Error("无法确定安全的视频大小，不能执行分段下载。");
-  }
-  const requestedChunkSize = Number(meta.chunkSize || 3_500_000);
-  if (!Number.isSafeInteger(requestedChunkSize) || requestedChunkSize <= 0) {
-    throw new Error("视频分段大小无效，已停止下载。");
-  }
-  return {
-    size,
-    contentType: meta.contentType || "video/mp4",
-    chunkSize: Math.min(requestedChunkSize, 3_500_000)
-  };
-}
-
-function videoTooLargeError(maxBytes, label = "视频") {
-  const error = new Error(
-    `${label}超过当前 ${formatBytes(maxBytes)} 的安全读取上限。`
-  );
-  error.name = "VideoTooLargeError";
-  return error;
-}
-
-function videoSizeLimitError(limitErrorFactory, maxBytes) {
-  return typeof limitErrorFactory === "function"
-    ? limitErrorFactory()
-    : videoTooLargeError(maxBytes);
-}
-
-function assertVideoSizeWithinLimit(byteLength, maxBytes, limitErrorFactory) {
-  if (!maxBytes) return;
-  const bytes = Number(byteLength ?? 0);
-  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxBytes) {
-    throw videoSizeLimitError(limitErrorFactory, maxBytes);
-  }
-}
-
-async function downloadVideoByChunks(
-  sourceUrl,
-  video,
-  { onProgress, maxBytes = 0, limitErrorFactory = null } = {}
-) {
-  assertVideoSizeWithinLimit(
-    declaredVideoSize(video),
-    maxBytes,
-    limitErrorFactory
-  );
-  const meta = await getVideoMeta(sourceUrl, video.size);
-  assertVideoSizeWithinLimit(meta.size, maxBytes, limitErrorFactory);
-  const chunks = [];
-  const totalChunks = Math.ceil(meta.size / meta.chunkSize);
-  let receivedBytes = 0;
-
-  const reportProgress = (loadedBytes, chunkIndex) => {
-    if (typeof onProgress === "function") {
-      onProgress({
-        loadedBytes,
-        totalBytes: meta.size,
-        chunkIndex,
-        totalChunks
-      });
-      return;
-    }
-    setProgress(
-      chunkIndex,
-      totalChunks,
-      `正在分段下载视频 ${formatBytes(loadedBytes)} / ${formatBytes(meta.size)}`
-    );
-  };
-
-  try {
-    for (let index = 0; index < totalChunks; index += 1) {
-      const start = index * meta.chunkSize;
-      const end = Math.min(meta.size - 1, start + meta.chunkSize - 1);
-      const expected = end - start + 1;
-      reportProgress(start, index);
-
-      const response = await fetch(
-        videoApiUrl("chunk", sourceUrl, {
-          start: String(start),
-          end: String(end)
-        })
-      );
-      if (!response.ok) throw await readVideoApiError(response);
-
-      const declaredChunkLength = Number(
-        response.headers.get("content-length") || 0
-      );
-      if (
-        Number.isFinite(declaredChunkLength)
-        && declaredChunkLength > 0
-        && declaredChunkLength !== expected
-      ) {
-        await response.body?.cancel().catch(() => {});
-        throw new Error(`视频第 ${index + 1} 段声明长度异常。`);
-      }
-
-      const chunk = await responseBlobWithLimit(
-        response,
-        expected,
-        () => new Error(`视频第 ${index + 1} 段长度异常。`),
-        ({ loadedBytes }) => reportProgress(receivedBytes + loadedBytes, index)
-      );
-      if (chunk.size !== expected) {
-        throw new Error(`视频第 ${index + 1} 段长度异常。`);
-      }
-      receivedBytes += chunk.size;
-      assertVideoSizeWithinLimit(
-        receivedBytes,
-        maxBytes,
-        limitErrorFactory
-      );
-      chunks.push(chunk);
-      reportProgress(Math.min(meta.size, end + 1), index + 1);
-    }
-  } catch (error) {
-    // 当前线路失败后先释放分段引用，再由上层尝试备用 CDN 或直连。
-    chunks.length = 0;
-    throw error;
-  }
-
-  const blob = new Blob(chunks, { type: meta.contentType || "video/mp4" });
-  if (blob.size !== meta.size) {
-    throw new Error("视频合并后的长度与元数据不一致。");
-  }
-  assertVideoSizeWithinLimit(blob.size, maxBytes, limitErrorFactory);
-  return blob;
-}
-
-async function tryDirectVideoDownload(
-  sourceUrl,
-  { maxBytes = 0, limitErrorFactory = null, onProgress } = {}
-) {
-  if (String(sourceUrl).startsWith("member-video:")) throw new Error("会员原视频需要通过授权下载接口读取。");
-  const response = await fetch(sourceUrl, {
-    mode: "cors",
-    referrerPolicy: "no-referrer"
-  });
-  if (!response.ok) throw new Error(`视频 CDN 返回 HTTP ${response.status}`);
-  const factory = limitErrorFactory
-    || (maxBytes ? () => videoTooLargeError(maxBytes) : null);
-  onProgress?.({ loadedBytes: 0, totalBytes: 0 });
-  const blob = await responseBlobWithLimit(response, maxBytes, factory, onProgress);
-  assertVideoSizeWithinLimit(blob.size, maxBytes, factory);
-  return blob;
-}
-
-async function fetchVideoBlobWithFallback(video, options = {}) {
-  const { maxBytes = 0, limitErrorFactory = null, onProgress } = options;
-  assertVideoSizeWithinLimit(
-    declaredVideoSize(video),
-    maxBytes,
-    limitErrorFactory
-  );
-  const candidates = [
-    ...new Set([video.url, ...(video.backupUrls || [])].filter(Boolean))
-  ];
-  let lastError = null;
-
-  for (const sourceUrl of candidates) {
-    try {
-      return await downloadVideoByChunks(sourceUrl, video, options);
-    } catch (error) {
-      if (isArchiveSizeLimitError(error) || error?.name === "VideoTooLargeError") {
-        throw error;
-      }
-      lastError = error;
-    }
-  }
-
-  for (const sourceUrl of candidates) {
-    try {
-      return await tryDirectVideoDownload(sourceUrl, {
-        maxBytes,
-        limitErrorFactory,
-        onProgress
-      });
-    } catch (error) {
-      if (isArchiveSizeLimitError(error) || error?.name === "VideoTooLargeError") {
-        throw error;
-      }
-      lastError = error;
-    }
-  }
-
-  throw lastError || new Error("实况动态片段下载失败。");
-}
-
-function preflightLiveArchive(images, archiveBudget, label) {
-  const declaredBytes = images.reduce(
-    (total, image) => total + declaredVideoSize(image.liveVideo),
-    0
-  );
-  if (!Number.isSafeInteger(declaredBytes)) {
-    throw archiveBudget.limitErrorFactory(label)();
-  }
-  if (declaredBytes > 0) archiveBudget.assertFits(declaredBytes, label);
-}
-
-async function fetchImageArchiveData(image, archiveBudget, label) {
-  const limitErrorFactory = archiveBudget.limitErrorFactory(label);
-  const blob = await fetchImageBlob(image, {
-    maxBytes: archiveBudget.remainingBytes(label),
-    limitErrorFactory
-  });
-  return archiveBudget.consumeBlob(blob, label);
-}
-
-async function fetchVideoArchiveData(
-  video,
-  archiveBudget,
-  label,
-  onProgress
-) {
-  const limitErrorFactory = archiveBudget.limitErrorFactory(label);
-  const blob = await fetchVideoBlobWithFallback(video, {
-    maxBytes: archiveBudget.remainingBytes(label),
-    limitErrorFactory,
-    onProgress
-  });
-  return archiveBudget.consumeBlob(blob, label);
-}
-
-function setLiveDownloadBusy(isBusy, trigger) {
-  state.busy = isBusy;
-  if (isBusy) trigger?.setAttribute("aria-busy", "true");
-  else trigger?.removeAttribute("aria-busy");
-  elements.parseButton.disabled = isBusy;
-  elements.videoQuality.disabled = isBusy;
-  elements.downloadVideoButton.disabled = isBusy;
-  setEngineInputsDisabled(isBusy);
-  updateSelectionUI();
-}
-
-async function downloadLivePhoto(image, trigger) {
-  if (state.busy || !image.liveVideo?.url) return;
-
-  const archiveBudget = createArchiveBudget("single");
-  try {
-    preflightLiveArchive(
-      [image],
-      archiveBudget,
-      `第 ${image.index} 张实况动态片段`
-    );
-  } catch (error) {
-    showToast(error.message, "error", 7200);
-    return;
-  }
-
-  setLiveDownloadBusy(true, trigger);
-  try {
-    setProgress(0, 2, `正在准备第 ${image.index} 张实况图片`);
-    const imageData = await fetchImageArchiveData(
-      image,
-      archiveBudget,
-      `第 ${image.index} 张原图`
-    );
-    setProgress(1, 2, `正在下载第 ${image.index} 张实况动态片段`);
-    const liveVideoData = await fetchVideoArchiveData(
-      image.liveVideo,
-      archiveBudget,
-      `第 ${image.index} 张实况动态片段`,
-      ({ loadedBytes, totalBytes }) => {
-        const ratio = totalBytes ? loadedBytes / totalBytes : 0;
-        setProgress(
-          1 + ratio,
-          2,
-          `正在下载第 ${image.index} 张实况动态片段`,
-          `${loadedBytes ? formatBytes(loadedBytes) : "0 B"} / ${formatBytes(totalBytes)}`
-        );
-      }
-    );
-    const files = [
-      { name: imageFilename(image), data: imageData },
-      { name: livePhotoVideoFilename(image), data: liveVideoData }
-    ];
-    const expectedSize = archiveBudget.assertFilesFit(files);
-    const zipBlob = makeZipBlob(files);
-    archiveBudget.assertFinalZip(zipBlob, expectedSize);
-    triggerBlobDownload(zipBlob, livePhotoZipFilename(image));
-    showToast(
-      `第 ${image.index} 张实况图片已打包为 JPG + MP4 并开始保存`,
-      "success"
-    );
-  } catch (error) {
-    showToast(
-      `第 ${image.index} 张实况图片下载失败：${error.message}`,
-      "error",
-      isArchiveSizeLimitError(error) ? 7200 : 6200
-    );
-  } finally {
-    setLiveDownloadBusy(false, trigger);
-    hideProgress();
-    trigger?.focus({ preventScroll: true });
-  }
-}
-
-async function downloadLiveVideo(image, trigger) {
-  if (state.busy || !image.liveVideo?.url) return;
-
-  if (hasNativeVideoDownload()) {
-    setLiveDownloadBusy(true, trigger);
-    const progress = startVideoProgress("preparing", "正在准备实况 MP4");
-    try {
-      const result = await saveNativeVideo(image.liveVideo, livePhotoVideoFilename(image), { progress, requireAudio: false });
-      if (!result.cancelled) showToast(`第 ${image.index} 张实况 MP4 已保存`, "success");
-    } catch (error) {
-      progress.finish("error", "实况 MP4 下载未完成", error.message);
-      showToast(error.message, "error", 6200);
-    } finally {
-      progress.dispose();
-      setLiveDownloadBusy(false, trigger);
-      trigger?.focus({ preventScroll: true });
-    }
-    return;
-  }
-
-  const profile = archiveLimitProfile();
-  const limitErrorFactory = () => videoTooLargeError(
-    profile.limitBytes,
-    `第 ${image.index} 张实况视频`
-  );
-  try {
-    assertVideoSizeWithinLimit(
-      declaredVideoSize(image.liveVideo),
-      profile.limitBytes,
-      limitErrorFactory
-    );
-  } catch (error) {
-    showToast(`${error.message} 请在桌面端重试。`, "error", 7200);
-    return;
-  }
-
-  setLiveDownloadBusy(true, trigger);
-  try {
-    setProgress(0, 1, `正在下载第 ${image.index} 张实况 MP4`);
-    const blob = await fetchVideoBlobWithFallback(image.liveVideo, {
-      maxBytes: profile.limitBytes,
-      limitErrorFactory,
-      onProgress: ({ loadedBytes, totalBytes }) => {
-        setProgress(
-          loadedBytes,
-          totalBytes,
-          `正在下载第 ${image.index} 张实况 MP4`,
-          `${loadedBytes ? formatBytes(loadedBytes) : "0 B"} / ${formatBytes(totalBytes)}`
-        );
-      }
-    });
-    triggerBlobDownload(blob, livePhotoVideoFilename(image));
-    showToast(`第 ${image.index} 张实况 MP4 已开始保存`, "success");
-  } catch (error) {
-    showToast(
-      `第 ${image.index} 张实况 MP4 下载失败：${error.message}`,
-      "error",
-      6200
-    );
-  } finally {
-    setLiveDownloadBusy(false, trigger);
-    hideProgress();
-    trigger?.focus({ preventScroll: true });
-  }
-}
-
-async function downloadCurrentVideo() {
-  if (state.busy) return;
-  const video = currentVideo();
-  if (!video) {
-    showToast("当前笔记没有可下载的视频。", "error");
-    return;
-  }
-
-  state.busy = true;
-  updateSelectionUI();
-  elements.downloadVideoButton.disabled = true;
-  elements.parseButton.disabled = true;
-  elements.videoQuality.disabled = true;
-  elements.selectAllButton.disabled = true;
-  elements.copySelectedImagesButton.disabled = true;
-  elements.copyLinksButton.disabled = true;
-  elements.copyCaptionButton.disabled = true;
-  elements.downloadZipButton.disabled = true;
-  setEngineInputsDisabled(true);
-  const progress = startVideoProgress("preparing", "正在读取视频信息");
-
-  const alternatives = state.videos.filter(item => item !== video && item.hasAudio !== false);
-  const candidates = [...new Set([
-    video.url, ...alternatives.map(item => item.url), ...(video.backupUrls || []),
-    ...alternatives.flatMap(item => item.backupUrls || [])
-  ].filter(Boolean))];
-  let lastError = null;
-
-  try {
-    if (hasNativeVideoDownload()) {
-      const result = await saveNativeVideo({ ...video, backupUrls: candidates.filter(url => url !== video.url) }, videoFilename(), { progress });
-      if (!result.cancelled) showToast("视频已保存", "success");
-      return;
-    }
-    for (const sourceUrl of candidates) {
-      try {
-        progress.phase("preparing", "正在读取视频信息", { reset: true });
-        const blob = await downloadVideoByChunks(sourceUrl, video, {
-          maxBytes: MAX_VIDEO_DOWNLOAD_BYTES,
-          onProgress: progress.report
-        });
-        progress.checking(blob);
-        await inspectVideoBlob(blob, { requireAudio: true });
-        progress.phase("saving", "正在开始保存视频");
-        triggerBlobDownload(blob, videoFilename());
-        progress.finish("complete", "已开始保存视频", "请查看保存提示或下载文件");
-        showToast("视频已经合并完成并开始保存", "success");
-        return;
-      } catch (error) {
-        if (error?.name === "VideoTooLargeError") throw error;
-        lastError = error;
-      }
-    }
-
-    // CDN 不支持 Range 或分段接口受限时，再尝试浏览器直连。
-    for (const sourceUrl of candidates) {
-      try {
-        progress.phase("preparing", "正在尝试备用下载方式", { reset: true });
-        const blob = await tryDirectVideoDownload(sourceUrl, {
-          maxBytes: MAX_VIDEO_DOWNLOAD_BYTES,
-          onProgress: progress.report
-        });
-        progress.checking(blob);
-        await inspectVideoBlob(blob, { requireAudio: true });
-        progress.phase("saving", "正在开始保存视频");
-        triggerBlobDownload(blob, videoFilename());
-        progress.finish("complete", "已开始保存视频", "请查看保存提示或下载文件");
-        showToast("视频已通过浏览器直连开始保存", "success");
-        return;
-      } catch (error) {
-        if (error?.name === "VideoTooLargeError") throw error;
-        lastError = error;
-      }
-    }
-
-    if (['VIDEO_AUDIO_MISSING', 'VIDEO_INVALID'].includes(lastError?.code)) throw lastError;
-    window.open(video.url, "_blank", "noopener,noreferrer");
-    throw new Error(
-      `${lastError?.message || "自动下载失败"}，已打开视频原地址，可在新页面中保存。`
-    );
-  } catch (error) {
-    progress.finish("error", "视频下载未完成", error.message || "请稍后重试");
-    if (error?.name === "VideoTooLargeError") {
-      window.open(video.url, "_blank", "noopener,noreferrer");
-      showToast(
-        `${error.message} 已尝试打开视频原地址；若新页面被拦截，请点击“打开原地址”。`,
-        "error",
-        7200
-      );
-    } else {
-      showToast(error.message, "error");
-    }
-  } finally {
-    progress.dispose();
-    state.busy = false;
-    elements.downloadVideoButton.disabled = false;
-    elements.parseButton.disabled = false;
-    elements.videoQuality.disabled = false;
-    elements.selectAllButton.disabled = false;
-    elements.copySelectedImagesButton.disabled = false;
-    elements.copyLinksButton.disabled = false;
-    elements.copyCaptionButton.disabled = false;
-    setEngineInputsDisabled(false);
-    hideProgress();
-    updateSelectionUI();
-  }
-}
-
-function updateMemberVideoUI() {
-  if (!elements.downloadOriginalVideoButton) return;
-  elements.downloadOriginalVideoButton.disabled = state.busy || state.hasOriginalVideo === false;
-  elements.originalVideoHint.textContent = state.hasOriginalVideo === false
-    ? "当前页面未提供原视频，暂不能下载无水印原视频；可保存上方播放视频。"
-    : state.hasOriginalVideo === true
-      ? "页面提供了原视频。有效会员可下载；作者写入画面的水印可能仍保留。"
-      : "无水印原视频需要有效会员。能否下载取决于笔记页面是否提供原视频。";
-}
-
-async function downloadOriginalVideo() {
-  if (state.busy || state.hasOriginalVideo === false) return;
-  if (!state.shareText) {
-    showToast("请先解析小红书笔记，再下载原视频。", "error");
-    return;
-  }
-  const trigger = elements.downloadOriginalVideoButton;
-  setLiveDownloadBusy(true, trigger);
-  const progress = startVideoProgress("verifying", "正在验证会员权益");
-  const nativeAbort = new AbortController();
-  let unsubscribe = () => {};
-  try {
-    const bridge = getAccountBridge();
-    const accountState = await bridge.getAccountState();
-    if (!accountState?.authenticated) {
-      progress.finish("error", "请先登录软件账号", "无水印原视频仅限有效会员下载，登录后请重新点击下载");
-      showToast("请先登录软件账号；无水印原视频仅限会员下载。");
-      await openAccountUI();
-      return;
-    }
-    if (accountState.verified && !accountState.account?.membership?.active) {
-      progress.finish("error", "需要有效会员权益", "开通或兑换会员后请重新点击下载");
-      showToast("无水印原视频是会员权益，请先开通或兑换会员。");
-      await openAccountUI({ purchase: true });
-      return;
-    }
-    const userId = accountState.account?.user?.id;
-    let invalidated;
-    const accountError = (message, code, status) => Object.assign(new Error(message), { code, status });
-    const observeAccount = current => {
-      if (!current?.authenticated || current.account?.user?.id !== userId) {
-        invalidated ||= accountError('软件账号已退出或切换，已停止原视频保存，请重新下载。', 'SESSION_CHANGED', 401);
-      } else if (current.verified && (!current.account?.membership?.active || current.account?.features?.['watermark-free-video']?.allowed === false)) {
-        invalidated ||= accountError('会员权益已失效，已停止原视频保存，请重新下载。', 'MEMBERSHIP_EXPIRED', 403);
-      }
-      if (invalidated) nativeAbort.abort();
-    };
-    unsubscribe = bridge.onAccountUpdate?.(observeAccount) || unsubscribe;
-    progress.phase("resolving", "正在读取网页原视频");
-    const response = await fetch("/api/member_video", {
-      method: "POST", credentials: "same-origin", cache: "no-store",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: state.shareText })
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.success) {
-      const error = new Error(payload.message || payload.error?.message || `原视频读取失败：HTTP ${response.status}`);
-      error.code = payload.code || payload.error?.code;
-      error.status = response.status;
-      throw error;
-    }
-    const videos = Array.isArray(payload.videos) ? payload.videos.filter(video => video.hasAudio !== false) : [];
-    if (!videos.length) throw new Error("当前页面未提供可下载的原视频，请保存播放视频或换一篇笔记。");
-    const preferred = videos.find(video => video.isDefault) || videos[0];
-    const candidates = [preferred, ...videos.filter(video => video !== preferred)];
-    if (hasNativeVideoDownload()) {
-      const sources = [...new Set(candidates.flatMap(video => [video.url, ...(video.backupUrls || [])]).filter(Boolean))];
-      if (sources.some(url => !String(url).startsWith("member-video:"))) throw new Error("原视频授权响应无效，请更新客户端后重试。");
-      const result = await saveNativeVideo({ ...preferred, backupUrls: sources.filter(url => url !== preferred.url) },
-        `${sanitizeFilename(state.title || "小红书视频")}-原视频.mp4`, { progress, signal: nativeAbort.signal });
-      if (invalidated) throw invalidated;
-      if (!result.cancelled) showToast("原视频已保存；作者写入画面的水印可能仍保留。", "success", 6200);
-      return;
-    }
-    let lastError;
-    for (const video of candidates) {
-      for (const sourceUrl of [...new Set([video.url, ...(video.backupUrls || [])].filter(Boolean))]) {
-        if (!String(sourceUrl).startsWith("member-video:")) throw new Error("原视频授权响应无效，请更新客户端后重试。");
-        try {
-          progress.phase("preparing", "正在读取原视频信息", { reset: true });
-          const blob = await downloadVideoByChunks(sourceUrl, video, {
-            maxBytes: MAX_VIDEO_DOWNLOAD_BYTES,
-            onProgress: progress.report
-          });
-          progress.checking(blob);
-          await inspectVideoBlob(blob, { requireAudio: true });
-          progress.phase("checking", "正在复查原视频与会员权益", { description: "视频检查已通过，确认保存权限" });
-          const finalMeta = await getVideoMeta(sourceUrl, blob.size);
-          if (finalMeta.size !== blob.size) throw new Error("原视频大小在保存前发生变化，已停止保存，请重新下载。");
-          const currentAccount = await bridge.getAccountState();
-          observeAccount(currentAccount);
-          if (invalidated) throw invalidated;
-          if (!currentAccount.verified || !currentAccount.account?.membership?.active) {
-            throw accountError('无法确认当前会员权益，已停止原视频保存，请刷新账号后重试。', 'MEMBERSHIP_REQUIRED', 403);
-          }
-          progress.phase("saving", "正在开始保存原视频");
-          triggerBlobDownload(blob, `${sanitizeFilename(state.title || "小红书视频")}-原视频.mp4`);
-          progress.finish("complete", "已开始保存原视频", "作者写入画面的水印可能仍保留，请查看保存提示或下载文件");
-          showToast("网页原视频已完成并开始保存；作者写入画面的水印可能仍保留。", "success", 6200);
-          return;
-        } catch (error) {
-          if (error?.name === "VideoTooLargeError" || error.status === 401 || ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_INACTIVE", "MEMBERSHIP_EXPIRED"].includes(error.code)) throw error;
-          lastError = error;
-        }
-      }
-    }
-    throw lastError || new Error("原视频下载失败，请稍后重试。");
-  } catch (error) {
-    progress.finish("error", "原视频下载未完成", error.message || "请稍后重试");
-    showToast(error.message || "原视频下载失败，请稍后重试。", "error", 6200);
-    if (error.status === 401 || ["UNAUTHENTICATED", "SESSION_INVALID", "SESSION_REVOKED"].includes(error.code)) {
-      await openAccountUI();
-    } else if (["MEMBERSHIP_REQUIRED", "MEMBERSHIP_INACTIVE", "MEMBERSHIP_EXPIRED"].includes(error.code)) {
-      await openAccountUI({ purchase: true });
-    }
-  } finally {
-    progress.dispose();
-    unsubscribe();
-    setLiveDownloadBusy(false, trigger);
-    hideProgress();
-    if (!document.querySelector("dialog[open]")) trigger?.focus({ preventScroll: true });
-  }
-}
-
-function updateSelectionUI() {
-  updateMemberVideoUI();
-  const checkboxes = elements.imageGrid.querySelectorAll(
-    'input[type="checkbox"]'
-  );
-
-  for (const checkbox of checkboxes) {
-    checkbox.checked = state.selected.has(Number(checkbox.dataset.index));
-    checkbox.disabled = state.busy;
-  }
-
-  for (const button of elements.imageGrid.querySelectorAll("button")) {
-    button.disabled = state.busy;
-  }
-
-  const allSelected =
-    state.images.length > 0 && state.selected.size === state.images.length;
-  const selectedCount = state.selected.size;
-  const noSelection = selectedCount === 0;
-  const firstSelectedImage = state.images.find((image) =>
-    state.selected.has(image.index)
-  );
-  const selectedLiveCount = state.images.filter(
-    (image) => state.selected.has(image.index) && image.liveVideo?.url
-  ).length;
-  const multipleItemsBlocked =
-    !hasDesktopImageClipboard() &&
-    state.multipleClipboardItemsSupported === false && selectedCount > 1;
-  elements.selectAllButton.textContent = allSelected ? "取消全选" : "全部选择";
-  elements.copySelectedImagesButton.textContent = multipleItemsBlocked
-    ? `多图复制受限（${selectedCount}）`
-    : `复制静态图（${selectedCount}）`;
-  elements.copySelectedImagesButton.setAttribute(
-    "aria-label",
-    multipleItemsBlocked
-      ? `当前浏览器不支持一次复制 ${selectedCount} 张独立图片`
-      : `复制所选静态图片（${selectedCount} 张）`
-  );
-  elements.copySelectedImagesButton.setAttribute(
-    "aria-describedby",
-    multipleItemsBlocked
-      ? "clipboard-fallback-title clipboard-hint"
-      : "clipboard-hint"
-  );
-  elements.copyLinksButton.textContent = `复制原图链接（${selectedCount}）`;
-  elements.downloadZipButton.textContent = selectedLiveCount
-    ? `下载 ZIP（${selectedCount} 张 · ${selectedLiveCount} 实况）`
-    : `下载 ZIP（${selectedCount} 张）`;
-  elements.selectAllButton.disabled = state.busy || state.images.length === 0;
-  elements.copySelectedImagesButton.disabled =
-    state.busy || noSelection || multipleItemsBlocked;
-  elements.clipboardFallback.hidden = !multipleItemsBlocked;
-  elements.copyFirstSelectedImageButton.textContent = firstSelectedImage
-    ? `复制第 ${firstSelectedImage.index} 张`
-    : "复制首张";
-  elements.copyFirstSelectedImageButton.disabled =
-    state.busy || !firstSelectedImage;
-  elements.copyLinksButton.disabled = state.busy || noSelection;
-  elements.downloadZipButton.disabled = state.busy || noSelection;
-  elements.copyCaptionButton.disabled = state.busy || !String(state.content || "").trim();
-}
-
-function renderCaption() {
-  const content = String(state.content || "").trim();
-  elements.captionSection.hidden = !content;
-  elements.noteCaption.textContent = content;
-  elements.copyCaptionButton.disabled = !content;
-}
-
-function renderResults() {
-  activeVideoProgress?.dispose();
-  activeVideoProgress = null;
-  if (elements.videoDownloadProgress) elements.videoDownloadProgress.hidden = true;
-  elements.emptyState.hidden = true;
-  elements.resultSection.hidden = false;
-  elements.noteTitle.textContent = state.title;
-  updateResultMeta();
-  renderCaption();
-  renderVideo();
-
-  const hasImages = state.images.length > 0;
-  elements.imageActions.hidden = !hasImages;
-  elements.imageSection.hidden = !hasImages;
-  elements.imageGrid.replaceChildren();
-
-  for (const image of state.images) {
-    const hasLiveVideo = Boolean(image.liveVideo?.url);
-    const isLivePhoto = Boolean(image.livePhoto || hasLiveVideo);
-    const card = document.createElement("article");
-    card.className = `image-card${isLivePhoto ? " is-live-photo" : ""}`;
-    card.innerHTML = `
-      <label class="select-control" title="选择第 ${image.index} 张图片">
-        <input type="checkbox" data-index="${image.index}" checked />
-        <span></span>
-      </label>
-      <div class="image-frame">
-        <img src="${image.url}" alt="第 ${image.index} 张原图预览" loading="lazy" referrerpolicy="no-referrer" />
-        ${isLivePhoto ? `
-          <span class="live-photo-badge${hasLiveVideo ? "" : " is-unavailable"}">
-            <span aria-hidden="true">●</span>
-            ${hasLiveVideo ? "实况" : "实况源暂不可用"}
-          </span>
-        ` : ""}
-        <span class="image-number">${String(image.index).padStart(2, "0")}</span>
-      </div>
-      <div class="image-card-actions">
-        ${hasLiveVideo ? `
-          <button class="card-button card-button-live download-live-photo" type="button" aria-label="下载第 ${image.index} 张实况图片的 JPG 与 MP4 素材 ZIP">下载实况 ZIP</button>
-          <button class="card-button card-button-live-video download-live-video" type="button" aria-label="单独下载第 ${image.index} 张实况视频 MP4">下载实况 MP4</button>
-        ` : ""}
-        <button class="card-button download-one" type="button">下载原图</button>
-        <button class="card-button card-button-copy copy-image" type="button" aria-label="复制第 ${image.index} 张图片">复制图片</button>
-        <a class="card-button card-button-muted" href="${image.url}" target="_blank" rel="noopener noreferrer">打开原图</a>
-      </div>
-    `;
-
-    card
-      .querySelector('input[type="checkbox"]')
-      .addEventListener("change", (event) => {
-        const index = Number(event.currentTarget.dataset.index);
-        if (event.currentTarget.checked) state.selected.add(index);
-        else state.selected.delete(index);
-        updateSelectionUI();
-      });
-
-    card
-      .querySelector(".download-one")
-      .addEventListener("click", () => downloadSingle(image));
-    const livePhotoButton = card.querySelector(".download-live-photo");
-    livePhotoButton?.addEventListener("click", () =>
-      downloadLivePhoto(image, livePhotoButton)
-    );
-    const liveVideoButton = card.querySelector(".download-live-video");
-    liveVideoButton?.addEventListener("click", () =>
-      downloadLiveVideo(image, liveVideoButton)
-    );
-    const copyButton = card.querySelector(".copy-image");
-    copyButton.addEventListener("click", () => copyImages([image], copyButton));
-    elements.imageGrid.append(card);
-  }
-
-  updateSelectionUI();
-  elements.resultSection.scrollIntoView({
-    behavior: "smooth",
-    block: "start"
-  });
-}
-
-async function parseShareText(text, engine) {
-  const endpoint = engine === "python"
-    ? "/api/python_parse"
-    : "/api/parse";
-
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text })
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.success) {
-    throw new Error(payload.message || `解析失败：HTTP ${response.status}`);
-  }
-
-  return payload;
-}
-
-async function downloadSelectedZip() {
-  if (state.busy) return;
-
-  const selectedImages = state.images.filter((image) =>
-    state.selected.has(image.index)
-  );
-  if (selectedImages.length === 0) {
-    showToast("请先选择至少一张图片。", "error");
-    return;
-  }
-
-  const archiveBudget = createArchiveBudget("batch");
-  try {
-    preflightLiveArchive(
-      selectedImages,
-      archiveBudget,
-      "所选实况动态片段"
-    );
-  } catch (error) {
-    showToast(error.message, "error", 7200);
-    return;
-  }
-
-  state.busy = true;
-  elements.downloadZipButton.disabled = true;
-  elements.selectAllButton.disabled = true;
-  elements.copySelectedImagesButton.disabled = true;
-  elements.copyLinksButton.disabled = true;
-  elements.copyCaptionButton.disabled = true;
-  elements.parseButton.disabled = true;
-  elements.videoQuality.disabled = true;
-  elements.downloadVideoButton.disabled = true;
-  setEngineInputsDisabled(true);
-  updateSelectionUI();
-  const files = [];
-  const failures = [];
-  let completedAssets = 0;
-  let downloadedImages = 0;
-  let downloadedLiveVideos = 0;
-  const totalAssets = selectedImages.length + livePhotoCount(selectedImages);
-
-  const reportAssetProgress = (title, fraction = 0, detail = "") => {
-    setProgress(
-      completedAssets + fraction,
-      totalAssets,
-      title,
-      detail || `${completedAssets} / ${totalAssets} 个媒体文件`
-    );
-  };
-
-  try {
-    reportAssetProgress("正在下载并打包图片与实况素材");
-
-    for (const image of selectedImages) {
-      reportAssetProgress(`正在下载第 ${image.index} 张原图`);
-      let imageDownloaded = false;
-
-      try {
-        files.push({
-          name: imageFilename(image),
-          data: await fetchImageArchiveData(
-            image,
-            archiveBudget,
-            `第 ${image.index} 张原图`
-          )
-        });
-        imageDownloaded = true;
-        downloadedImages += 1;
-      } catch (error) {
-        if (isArchiveSizeLimitError(error)) throw error;
-        failures.push({ kind: "image", image, message: error.message });
-      } finally {
-        completedAssets += 1;
-      }
-
-      if (image.liveVideo?.url) {
-        if (!imageDownloaded) {
-          failures.push({
-            kind: "live",
-            image,
-            message: "配对原图下载失败，未加入孤立的实况 MP4。"
-          });
-          completedAssets += 1;
-          reportAssetProgress("正在整理已下载的媒体文件");
-          continue;
-        }
-
-        reportAssetProgress(`正在下载第 ${image.index} 张实况动态片段`);
-        try {
-          const data = await fetchVideoArchiveData(
-            image.liveVideo,
-            archiveBudget,
-            `第 ${image.index} 张实况动态片段`,
-            ({ loadedBytes, totalBytes }) => {
-              const ratio = totalBytes ? loadedBytes / totalBytes : 0;
-              reportAssetProgress(
-                `正在下载第 ${image.index} 张实况动态片段`,
-                ratio,
-                `${completedAssets + 1} / ${totalAssets} · ${
-                  loadedBytes ? formatBytes(loadedBytes) : "0 B"
-                } / ${formatBytes(totalBytes)}`
-              );
-            }
-          );
-          files.push({
-            name: livePhotoVideoFilename(image),
-            data
-          });
-          downloadedLiveVideos += 1;
-        } catch (error) {
-          if (isArchiveSizeLimitError(error)) throw error;
-          failures.push({ kind: "live", image, message: error.message });
-        } finally {
-          completedAssets += 1;
-        }
-      }
-
-      reportAssetProgress("正在整理已下载的媒体文件");
-    }
-
-    if (files.length === 0) {
-      throw new Error(failures[0]?.message || "所有图片均下载失败。");
-    }
-
-    const noteData = archiveBudget.consumeData(
-      noteTextFileData(),
-      "文案 TXT"
-    );
-    files.push({
-      name: "文案.txt",
-      data: noteData
-    });
-
-    setProgress(
-      totalAssets,
-      totalAssets,
-      "正在浏览器中生成 ZIP 文件"
-    );
-    const expectedSize = archiveBudget.assertFilesFit(files);
-    const zipBlob = makeZipBlob(files);
-    archiveBudget.assertFinalZip(zipBlob, expectedSize);
-    triggerBlobDownload(zipBlob, `${sanitizeFilename(state.title)}.zip`);
-
-    if (failures.length > 0) {
-      const imageFailures = failures.filter((failure) => failure.kind === "image").length;
-      const liveFailures = failures.filter((failure) => failure.kind === "live").length;
-      const failureParts = [];
-      if (imageFailures) failureParts.push(`${imageFailures} 张原图`);
-      if (liveFailures) failureParts.push(`${liveFailures} 个实况动态片段`);
-      showToast(
-        `ZIP 与文案 TXT 已生成，其中 ${failureParts.join("、")}因大小或网络限制未加入。`,
-        "error",
-        6200
-      );
-    } else {
-      const liveSummary = downloadedLiveVideos
-        ? `、${downloadedLiveVideos} 个实况动态片段`
-        : "";
-      showToast(
-        `${downloadedImages} 张原图${liveSummary}与文案 TXT 已打包，ZIP 开始保存。`,
-        "success"
-      );
-    }
-  } catch (error) {
-    showToast(
-      error.message,
-      "error",
-      isArchiveSizeLimitError(error) ? 7200 : 3200
-    );
-  } finally {
-    state.busy = false;
-    elements.selectAllButton.disabled = false;
-    elements.copySelectedImagesButton.disabled = false;
-    elements.copyLinksButton.disabled = false;
-    elements.copyCaptionButton.disabled = false;
-    elements.parseButton.disabled = false;
-    elements.videoQuality.disabled = false;
-    elements.downloadVideoButton.disabled = false;
-    setEngineInputsDisabled(false);
-    hideProgress();
-    updateSelectionUI();
-  }
-}
-
-for (const input of elements.engineInputs) {
-  input.addEventListener("change", () => {
-    if (!input.checked) return;
-    state.engine = input.value === "python" ? "python" : "node";
-    localStorage.setItem("xhs-engine", state.engine);
-    updateEngineUI();
-    updateResultMeta();
-    showToast(`已切换到 ${engineLabel()} 后台`, "success");
-  });
-}
-
-updateEngineUI();
-
-elements.form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const text = elements.textarea.value.trim();
-
+// 2. 解析核心函数
+async function startParsing() {
+  const input = document.getElementById("input-text");
+  const text = (input?.value || "").trim();
   if (!text) {
-    showToast("请先粘贴小红书分享文案或链接。", "error");
-    elements.textarea.focus();
+    showToast("请先输入或粘贴小红书链接");
     return;
   }
 
-  const selectedEngine = elements.engineInputs.find((input) => input.checked)?.value || "node";
-  state.engine = selectedEngine === "python" ? "python" : "node";
-  localStorage.setItem("xhs-engine", state.engine);
-  updateEngineUI();
+  const btnText = document.getElementById("btn-parse-text");
+  const spinner = document.getElementById("btn-parse-spinner");
+  const btn = document.getElementById("btn-parse");
 
-  setParsing(true);
-  showToast(`正在使用 ${engineLabel()} 解析公开笔记页面……`);
+  if (btn) btn.disabled = true;
+  if (btnText) btnText.style.display = "none";
+  if (spinner) spinner.style.display = "inline-block";
 
   try {
-    const payload = await parseShareText(text, state.engine);
-    state.title = payload.title || "小红书媒体";
-    state.content = typeof payload.content === "string" ? payload.content.trim() : "";
-    state.noteId = String(payload.noteId || "");
-    state.sourceUrl = extractSourceUrl(text);
-    state.shareText = text;
-    state.parseEngine = payload.engine === "python" ? "python" : "node";
-    state.images = payload.images || [];
-    state.videos = payload.videos || [];
-    state.hasOriginalVideo = typeof payload.hasOriginalVideo === "boolean"
-      ? payload.hasOriginalVideo
-      : typeof payload.originalVideoCount === "number" ? payload.originalVideoCount > 0 : null;
-    state.strategy = payload.strategy || "";
-    state.selected = new Set(state.images.map((image) => image.index));
-    const entryHint = document.querySelector("#member-video-entry-hint");
-    if (entryHint) entryHint.hidden = true;
-    renderResults();
-    const parsedLivePhotoCount = livePhotoCount();
-    const summary = [
-      state.content ? "完整文案" : "",
-      state.images.length ? `${state.images.length} 张无水印原图` : "",
-      parsedLivePhotoCount ? `${parsedLivePhotoCount} 张实况图片` : "",
-      state.videos.length ? `${state.videos.length} 个视频清晰度` : ""
-    ].filter(Boolean).join("、");
-    showToast(`${engineLabel()} 成功解析${summary ? `：${summary}` : ""}`, "success");
-  } catch (error) {
-    showToast(error.message, "error");
+    const res = await fetch("/api/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.message || "解析失败，请检查链接有效性");
+    }
+
+    state.currentParsedNote = data;
+    renderParseResult(data);
+    showToast("🎉 解析成功！");
+
+    // 触发后台转存至 Cloudflare 知识库
+    triggerCloudSync(data);
+  } catch (err) {
+    console.error(err);
+    showToast(`❌ ${err.message || "解析出错"}`);
   } finally {
-    setParsing(false);
-  }
-});
-
-elements.pasteButton.addEventListener("click", async () => {
-  try {
-    const text = await navigator.clipboard.readText();
-    elements.textarea.value = text;
-    elements.textarea.focus();
-    showToast("已粘贴剪贴板内容", "success");
-  } catch {
-    showToast("浏览器未授予剪贴板权限，请手动粘贴。", "error");
-  }
-});
-
-elements.selectAllButton.addEventListener("click", () => {
-  if (state.busy) return;
-  const allSelected = state.selected.size === state.images.length;
-  state.selected = allSelected
-    ? new Set()
-    : new Set(state.images.map((image) => image.index));
-  updateSelectionUI();
-});
-
-elements.copyCaptionButton.addEventListener("click", (event) => {
-  if (state.busy) return;
-  const text = noteClipboardText();
-  if (!state.content || !text) {
-    showToast("当前笔记没有可复制的正文文案。", "error");
-    return;
-  }
-  void copyTextAction({
-    text,
-    trigger: event.currentTarget,
-    label: "文案",
-    successMessage: "笔记标题与完整文案已复制"
-  });
-});
-
-elements.copySelectedImagesButton.addEventListener("click", (event) => {
-  const selectedImages = state.images.filter((image) =>
-    state.selected.has(image.index)
-  );
-  void copyImages(selectedImages, event.currentTarget);
-});
-
-elements.copyFirstSelectedImageButton.addEventListener("click", (event) => {
-  const firstSelectedImage = state.images.find((image) =>
-    state.selected.has(image.index)
-  );
-  if (!firstSelectedImage) {
-    showToast("请先选择至少一张图片。", "error");
-    return;
-  }
-  void copyImages([firstSelectedImage], event.currentTarget);
-});
-
-elements.copyLinksButton.addEventListener("click", (event) => {
-  if (state.busy) return;
-  const links = state.images
-    .filter((image) => state.selected.has(image.index))
-    .map((image) => image.url)
-    .join("\n");
-
-  if (!links) {
-    showToast("请先选择图片。", "error");
-    return;
-  }
-
-  void copyTextAction({
-    text: links,
-    trigger: event.currentTarget,
-    label: "链接",
-    successMessage: "所选静态原图链接已复制"
-  });
-});
-
-elements.videoQuality.addEventListener("change", updateVideoSelection);
-elements.downloadVideoButton.addEventListener("click", downloadCurrentVideo);
-elements.downloadOriginalVideoButton?.addEventListener("click", downloadOriginalVideo);
-
-elements.downloadZipButton.addEventListener("click", downloadSelectedZip);
-
-// Android opens this ordinary website entry so its account remains in the
-// external browser's same-origin HttpOnly cookie. Prefill never starts a paid action.
-if (typeof location !== "undefined") {
-  const entryUrl = new URL(location.href);
-  const note = entryUrl.searchParams.get("note") || "";
-  if (note && note.length <= 3000) {
-    try {
-      const parsed = new URL(note);
-      const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
-      const allowedHost = ["xiaohongshu.com", "xhslink.com", "xhslink.cn"].some(value => host === value || host.endsWith(`.${value}`));
-      if (parsed.protocol === "https:" && allowedHost && !parsed.username && !parsed.password && (!parsed.port || parsed.port === "443")) {
-        elements.textarea.value = parsed.href;
-        const hint = document.querySelector("#member-video-entry-hint");
-        if (hint) hint.hidden = entryUrl.searchParams.get("memberVideo") !== "1";
-        // Do not retain the signed note link in navigation URLs after prefill.
-        entryUrl.searchParams.delete("note"); entryUrl.searchParams.delete("memberVideo");
-        history.replaceState(null, "", `${entryUrl.pathname}${entryUrl.search}${entryUrl.hash}`);
-      }
-    } catch { /* Invalid external entry leaves the normal paste form available. */ }
+    if (btn) btn.disabled = false;
+    if (btnText) btnText.style.display = "inline";
+    if (spinner) spinner.style.display = "none";
   }
 }
 
-void initializeDesktopUI({
-  onCopyNoteLink(text, trigger) {
-    if (state.busy) {
-      showToast("单篇下载正在处理，请完成后再复制链接。", "error");
+// 渲染解析结果
+function renderParseResult(note) {
+  const section = document.getElementById("result-section");
+  if (!section) return;
+  section.style.display = "block";
+
+  // 标题与文案
+  document.getElementById("result-title").textContent = note.title || "小红书笔记";
+  document.getElementById("result-content").textContent = note.content || "（无文案描述）";
+
+  // 图片处理
+  const imgSection = document.getElementById("image-section");
+  const imgGrid = document.getElementById("image-grid");
+  const imgCountLabel = document.getElementById("image-count-label");
+
+  state.selectedImages.clear();
+
+  if (note.images && note.images.length > 0) {
+    imgSection.style.display = "block";
+    imgCountLabel.textContent = `🖼️ 高清无水印图片 (${note.images.length} 张)`;
+    imgGrid.innerHTML = "";
+
+    note.images.forEach((img, i) => {
+      state.selectedImages.add(img.url);
+      const item = document.createElement("div");
+      item.className = "image-item";
+      item.innerHTML = `
+        <img src="${img.url}" alt="原图 ${i + 1}" loading="lazy" />
+        ${img.livePhoto ? '<span class="live-badge">LIVE 实况</span>' : ""}
+        <div class="image-actions-overlay">
+          <button class="img-btn-dl" data-url="${img.url}" data-name="${String(i + 1).padStart(2, "0")}.jpg">下载单张</button>
+        </div>
+      `;
+
+      item.querySelector(".img-btn-dl").addEventListener("click", (e) => {
+        e.stopPropagation();
+        downloadDirectFile(img.url, `${String(i + 1).padStart(2, "0")}.jpg`);
+      });
+
+      item.addEventListener("click", () => {
+        window.open(img.url, "_blank");
+      });
+
+      imgGrid.appendChild(item);
+    });
+  } else {
+    imgSection.style.display = "none";
+  }
+
+  // 视频处理
+  const vidSection = document.getElementById("video-section");
+  const videoPlayer = document.getElementById("video-player");
+  const qualitySelect = document.getElementById("video-quality-select");
+
+  if (note.videos && note.videos.length > 0) {
+    vidSection.style.display = "block";
+    qualitySelect.innerHTML = "";
+
+    note.videos.forEach((v, index) => {
+      const opt = document.createElement("option");
+      opt.value = v.url;
+      opt.textContent = v.label || `${v.quality || "原画"} · 线路 ${index + 1}`;
+      qualitySelect.appendChild(opt);
+    });
+
+    const activeUrl = note.videos[0].url;
+    videoPlayer.src = activeUrl;
+
+    qualitySelect.onchange = () => {
+      videoPlayer.src = qualitySelect.value;
+      videoPlayer.play().catch(() => {});
+    };
+  } else {
+    vidSection.style.display = "none";
+    videoPlayer.removeAttribute("src");
+  }
+
+  // 平滑滚动至结果区
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// 触发后台转存至 Cloudflare R2 & D1
+async function triggerCloudSync(note) {
+  const statusBadge = document.getElementById("cloud-sync-status");
+  if (statusBadge) {
+    statusBadge.textContent = "☁️ 正在自动同步保存至 Cloudflare...";
+    statusBadge.style.color = "var(--text-muted)";
+    statusBadge.style.background = "var(--surface-alt)";
+  }
+
+  try {
+    const res = await fetch("/api/archive", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-auth-pin": state.pin
+      },
+      body: JSON.stringify({
+        note: {
+          noteId: note.noteId || `note_${Date.now()}`,
+          title: note.title,
+          content: note.content,
+          sourceUrl: note.sourceUrl || document.getElementById("input-text")?.value,
+          images: note.images || [],
+          videos: note.videos || []
+        }
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok && data.success) {
+      if (statusBadge) {
+        statusBadge.textContent = "✅ 已永久离线保存至 Cloudflare 知识库";
+        statusBadge.style.color = "var(--success)";
+        statusBadge.style.background = "var(--success-bg)";
+      }
+      refreshNotesBadge();
+    }
+  } catch (err) {
+    console.warn("Auto sync error:", err);
+  }
+}
+
+// 单文件直接触发浏览器下载
+async function downloadDirectFile(url, filename) {
+  try {
+    showToast("正在获取媒体文件...");
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+    showToast(`已开始下载 ${filename}`);
+  } catch (err) {
+    // 降级新窗口打开
+    window.open(url, "_blank");
+  }
+}
+
+// 批量打包 ZIP 下载
+async function downloadZipArchive(images, title = "小红书高清图集", content = "") {
+  if (!images || images.length === 0) {
+    showToast("没有可下载的图片");
+    return;
+  }
+
+  showToast(`正在批量下载并打包 ${images.length} 张原图...`);
+
+  try {
+    const files = [];
+
+    // 添加文案说明 TXT
+    const txtContent = makeNoteTextFileData({
+      title,
+      content,
+      sourceUrl: window.location.href,
+      engine: "Cloudflare R2"
+    });
+    files.push({
+      name: `${title.slice(0, 30)}_文案.txt`,
+      data: new TextEncoder().encode(txtContent)
+    });
+
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      const url = typeof img === "string" ? img : img.url;
+      const res = await fetch(url);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      files.push({
+        name: `${String(i + 1).padStart(2, "0")}.jpg`,
+        data: buf
+      });
+    }
+
+    const zipBlob = makeZipBlob(files);
+    const downloadUrl = URL.createObjectURL(zipBlob);
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = `${title.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 40)}_无水印原图包.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(downloadUrl);
+
+    showToast("🎉 ZIP 打包下载完成！");
+  } catch (err) {
+    console.error(err);
+    showToast(`打包失败: ${err.message}`);
+  }
+}
+
+// 3. 抽屉与收藏知识库管理
+async function refreshNotesBadge() {
+  try {
+    const res = await fetch(`/api/notes?limit=1`, {
+      headers: { "x-auth-pin": state.pin }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const badge = document.getElementById("notes-badge");
+      if (badge && data.total !== undefined) {
+        badge.textContent = data.total;
+        badge.style.display = data.total > 0 ? "inline-block" : "none";
+      }
+    }
+  } catch {}
+}
+
+async function loadNotes(search = "") {
+  const listContainer = document.getElementById("notes-list");
+  const emptyHint = document.getElementById("notes-empty-hint");
+  const countLabel = document.getElementById("drawer-total-count");
+
+  listContainer.innerHTML = `<div style="text-align:center; padding: 40px; color: var(--text-sub);">正在加载知识库...</div>`;
+
+  try {
+    const url = `/api/notes?limit=50&q=${encodeURIComponent(search)}`;
+    const res = await fetch(url, {
+      headers: { "x-auth-pin": state.pin }
+    });
+
+    if (res.status === 401) {
+      showPinLockView(true);
       return;
     }
-    return copyTextAction({ text, trigger, label: "笔记链接", successMessage: "失败笔记链接已复制" });
-  },
-  onOpenNote(url) {
-    if (state.busy) {
-      showToast("单篇下载正在处理，请完成后再打开另一篇笔记。", "error");
-      return false;
+
+    const data = await res.json();
+    showPinLockView(false);
+
+    if (countLabel) countLabel.textContent = `(${data.total || 0}篇)`;
+
+    if (!data.items || data.items.length === 0) {
+      listContainer.innerHTML = "";
+      if (emptyHint) emptyHint.style.display = "block";
+      return;
     }
-    elements.textarea.value = url;
-    state.title = "小红书图片";
-    state.content = "";
-    state.noteId = "";
-    state.sourceUrl = "";
-    state.shareText = "";
-    state.images = [];
-    state.videos = [];
-    state.hasOriginalVideo = null;
-    state.selected.clear();
-    state.strategy = "";
-    elements.imageGrid.replaceChildren();
-    renderVideo();
-    elements.resultSection.hidden = true;
-    elements.emptyState.hidden = false;
-    updateSelectionUI();
-    showToast("已填入失败笔记链接，点击「开始解析」后即可下载。", "success");
-    return true;
-  },
-  onInfo(info) {
-    if (info.pythonAvailable !== false) return;
-    const pythonInput = elements.engineInputs.find((input) => input.value === "python");
-    if (!pythonInput) return;
-    pythonInput.dataset.unavailable = "true";
-    pythonInput.closest("label").querySelector("small").textContent = "此开发环境暂不可用";
-    if (state.engine === "python") {
-      state.engine = "node";
-      localStorage.setItem("xhs-engine", state.engine);
-    }
-    setEngineInputsDisabled(state.busy);
-    updateEngineUI();
+
+    if (emptyHint) emptyHint.style.display = "none";
+    listContainer.innerHTML = "";
+
+    data.items.forEach((item) => {
+      const card = document.createElement("div");
+      card.className = "note-card";
+      card.innerHTML = `
+        <img class="note-cover" src="${item.cover_url || '/favicon.svg'}" alt="封面" loading="lazy" />
+        <div class="note-info">
+          <div>
+            <div class="note-card-title">${item.title || "无标题笔记"}</div>
+            <div class="note-card-preview">${item.content_preview || "暂无正文描述..."}</div>
+          </div>
+          <div class="note-card-meta">
+            <span>📅 ${formatTime(item.created_at)}</span>
+            ${item.thoughts_preview ? '<span class="thoughts-tag">💡 有随笔感想</span>' : ""}
+          </div>
+        </div>
+      `;
+
+      card.addEventListener("click", () => openNoteDetail(item.id));
+      listContainer.appendChild(card);
+    });
+  } catch (err) {
+    listContainer.innerHTML = `<div style="color:var(--primary); padding:20px; text-align:center;">加载失败: ${err.message}</div>`;
   }
+}
+
+function showPinLockView(showLock) {
+  const lockView = document.getElementById("pin-lock-view");
+  const contentView = document.getElementById("notes-content-view");
+  if (lockView) lockView.style.display = showLock ? "block" : "none";
+  if (contentView) contentView.style.display = showLock ? "none" : "flex";
+}
+
+// 展开单篇笔记详情弹窗
+async function openNoteDetail(noteId) {
+  showToast("正在载入笔记详情...");
+  try {
+    const res = await fetch(`/api/notes/${noteId}`, {
+      headers: { "x-auth-pin": state.pin }
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.message || "读取失败");
+
+    const note = data.note;
+    state.activeDetailNote = note;
+
+    document.getElementById("modal-note-title").textContent = note.title;
+    document.getElementById("modal-note-time").textContent = `归档时间：${formatTime(note.createdAt)}`;
+    document.getElementById("modal-note-content").textContent = note.content || "（无文案）";
+    document.getElementById("modal-thoughts-input").value = note.thoughts || "";
+
+    // 渲染图片
+    const grid = document.getElementById("modal-images-grid");
+    grid.innerHTML = "";
+    if (note.images && note.images.length > 0) {
+      grid.style.display = "grid";
+      note.images.forEach((img, i) => {
+        const item = document.createElement("div");
+        item.className = "image-item";
+        item.innerHTML = `
+          <img src="${img.url}" alt="图片 ${i + 1}" />
+          ${img.livePhoto ? '<span class="live-badge">LIVE</span>' : ""}
+          <div class="image-actions-overlay">
+            <button class="img-btn-dl">查看大图</button>
+          </div>
+        `;
+        item.addEventListener("click", () => window.open(img.url, "_blank"));
+        grid.appendChild(item);
+      });
+    } else {
+      grid.style.display = "none";
+    }
+
+    // 渲染视频
+    const vidWrap = document.getElementById("modal-video-wrap");
+    const vidPlayer = document.getElementById("modal-video-player");
+    if (note.videos && note.videos.length > 0) {
+      vidWrap.style.display = "block";
+      vidPlayer.src = note.videos[0].url;
+    } else {
+      vidWrap.style.display = "none";
+      vidPlayer.removeAttribute("src");
+    }
+
+    // 显示弹窗
+    document.getElementById("modal-note-detail").classList.add("active");
+  } catch (err) {
+    showToast(`无法打开详情: ${err.message}`);
+  }
+}
+
+// 4. 事件监听与初始化绑定
+document.addEventListener("DOMContentLoaded", () => {
+  // 剪贴板开关初始化
+  const clipSwitch = document.getElementById("clipboard-switch");
+  if (clipSwitch) {
+    clipSwitch.checked = state.autoClipboard;
+    clipSwitch.addEventListener("change", (e) => {
+      state.autoClipboard = e.target.checked;
+      localStorage.setItem("xhs_auto_clipboard", String(e.target.checked));
+      showToast(state.autoClipboard ? "已开启剪贴板自动解析" : "已关闭剪贴板自动解析");
+    });
+  }
+
+  // 绑定自动剪贴板检测
+  window.addEventListener("focus", checkAndAutoPasteClipboard);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) checkAndAutoPasteClipboard();
+  });
+  setTimeout(checkAndAutoPasteClipboard, 400);
+
+  // 输入操作按钮
+  document.getElementById("btn-paste")?.addEventListener("click", async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const input = document.getElementById("input-text");
+      if (input && text) {
+        input.value = text;
+        showToast("已粘贴剪贴板内容");
+      }
+    } catch {
+      showToast("无法访问剪贴板，请手动按 Ctrl+V 粘贴");
+    }
+  });
+
+  document.getElementById("btn-clear")?.addEventListener("click", () => {
+    const input = document.getElementById("input-text");
+    if (input) input.value = "";
+  });
+
+  document.getElementById("btn-parse")?.addEventListener("click", startParsing);
+
+  // 复制完整正文
+  document.getElementById("btn-copy-content")?.addEventListener("click", async () => {
+    const title = document.getElementById("result-title")?.textContent || "";
+    const content = document.getElementById("result-content")?.textContent || "";
+    const full = `${title}\n\n${content}`;
+    await navigator.clipboard.writeText(full);
+    showToast("📋 已复制完整文案到剪贴板");
+  });
+
+  // 全选/反选图片
+  document.getElementById("btn-select-all")?.addEventListener("click", () => {
+    if (!state.currentParsedNote?.images) return;
+    if (state.selectedImages.size === state.currentParsedNote.images.length) {
+      state.selectedImages.clear();
+      showToast("已取消全选");
+    } else {
+      state.currentParsedNote.images.forEach((img) => state.selectedImages.add(img.url));
+      showToast("已全选所有图片");
+    }
+  });
+
+  // 主页 ZIP 下载
+  document.getElementById("btn-download-zip")?.addEventListener("click", () => {
+    if (!state.currentParsedNote?.images) return;
+    const selected = state.currentParsedNote.images.filter((img) => state.selectedImages.has(img.url));
+    downloadZipArchive(selected, state.currentParsedNote.title, state.currentParsedNote.content);
+  });
+
+  // 视频下载按钮
+  document.getElementById("btn-download-video")?.addEventListener("click", () => {
+    const player = document.getElementById("video-player");
+    if (player?.src) {
+      downloadDirectFile(player.src, "video.mp4");
+    }
+  });
+
+  // 抽屉展开/关闭
+  const drawerBackdrop = document.getElementById("drawer-backdrop");
+  document.getElementById("btn-open-drawer")?.addEventListener("click", () => {
+    drawerBackdrop?.classList.add("active");
+    loadNotes();
+  });
+
+  document.getElementById("btn-close-drawer")?.addEventListener("click", () => {
+    drawerBackdrop?.classList.remove("active");
+  });
+
+  drawerBackdrop?.addEventListener("click", (e) => {
+    if (e.target === drawerBackdrop) drawerBackdrop.classList.remove("active");
+  });
+
+  // 抽屉解锁 PIN
+  document.getElementById("btn-unlock-pin")?.addEventListener("click", async () => {
+    const input = document.getElementById("drawer-pin-input");
+    const pin = (input?.value || "").trim();
+    const res = await fetch("/api/verify-pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin })
+    });
+    const data = await res.json();
+    if (data.valid) {
+      state.pin = pin;
+      localStorage.setItem("xhs_pin", pin);
+      showPinLockView(false);
+      loadNotes();
+      showToast("🔓 PIN 码验证成功");
+    } else {
+      const hint = document.getElementById("pin-error-hint");
+      if (hint) hint.style.display = "block";
+    }
+  });
+
+  // 实时搜索
+  let searchTimer;
+  document.getElementById("search-notes-input")?.addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      loadNotes(e.target.value);
+    }, 300);
+  });
+
+  // 详情弹窗关闭
+  const noteModal = document.getElementById("modal-note-detail");
+  document.getElementById("btn-close-note-modal")?.addEventListener("click", () => {
+    noteModal?.classList.remove("active");
+  });
+
+  // 保存感想随笔
+  document.getElementById("btn-save-thoughts")?.addEventListener("click", async () => {
+    if (!state.activeDetailNote) return;
+    const thoughts = document.getElementById("modal-thoughts-input")?.value || "";
+    try {
+      const res = await fetch(`/api/notes/${state.activeDetailNote.id}/thoughts`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({ thoughts })
+      });
+      if (res.ok) {
+        showToast("💡 随笔感想已成功保存！");
+        loadNotes(document.getElementById("search-notes-input")?.value || "");
+      }
+    } catch (err) {
+      showToast(`保存失败: ${err.message}`);
+    }
+  });
+
+  // 详情页 ZIP 打包
+  document.getElementById("btn-modal-download-zip")?.addEventListener("click", () => {
+    if (!state.activeDetailNote) return;
+    downloadZipArchive(state.activeDetailNote.images, state.activeDetailNote.title, state.activeDetailNote.content);
+  });
+
+  // 彻底删除笔记
+  document.getElementById("btn-delete-note")?.addEventListener("click", async () => {
+    if (!state.activeDetailNote) return;
+    if (!confirm("确定要彻底删除这篇笔记吗？这将从 Cloudflare R2 和数据库中永久清理所占空间。")) return;
+
+    try {
+      const res = await fetch(`/api/notes/${state.activeDetailNote.id}`, {
+        method: "DELETE",
+        headers: { "x-auth-pin": state.pin }
+      });
+      if (res.ok) {
+        showToast("🗑️ 笔记已成功删除");
+        noteModal?.classList.remove("active");
+        loadNotes(document.getElementById("search-notes-input")?.value || "");
+        refreshNotesBadge();
+      }
+    } catch (err) {
+      showToast(`删除失败: ${err.message}`);
+    }
+  });
+
+  // 设置弹窗
+  const settingsModal = document.getElementById("modal-settings");
+  document.getElementById("btn-open-settings")?.addEventListener("click", () => {
+    settingsModal?.classList.add("active");
+  });
+  document.getElementById("btn-close-settings-modal")?.addEventListener("click", () => {
+    settingsModal?.classList.remove("active");
+  });
+
+  // 修改 PIN 码提交
+  document.getElementById("btn-submit-change-pin")?.addEventListener("click", async () => {
+    const oldPin = document.getElementById("settings-old-pin")?.value.trim();
+    const newPin = document.getElementById("settings-new-pin")?.value.trim();
+    const msg = document.getElementById("settings-msg");
+
+    if (!oldPin || !newPin) {
+      if (msg) {
+        msg.textContent = "请完整填写原 PIN 码和新 PIN 码";
+        msg.style.color = "var(--primary)";
+        msg.style.display = "block";
+      }
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/change-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ oldPin, newPin })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        state.pin = newPin;
+        localStorage.setItem("xhs_pin", newPin);
+        if (msg) {
+          msg.textContent = "✅ PIN 码修改成功并已保存！";
+          msg.style.color = "var(--success)";
+          msg.style.display = "block";
+        }
+        showToast("PIN 码修改成功！");
+        setTimeout(() => { settingsModal?.classList.remove("active"); }, 1500);
+      } else {
+        throw new Error(data.message || "原 PIN 码错误");
+      }
+    } catch (err) {
+      if (msg) {
+        msg.textContent = `❌ ${err.message}`;
+        msg.style.color = "var(--primary)";
+        msg.style.display = "block";
+      }
+    }
+  });
+
+  // 初始获取一次徽标计数
+  refreshNotesBadge();
 });
