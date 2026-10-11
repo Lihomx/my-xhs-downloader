@@ -8,6 +8,8 @@ import {
   initDb,
   verifyPin,
   changePin,
+  getSetting,
+  setSetting,
   archiveNote,
   listNotes,
   getNote,
@@ -56,65 +58,6 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           });
         }
 
-        // 诊断追踪接口
-        if (path === '/api/debug-trace') {
-          const noteTarget = 'https://www.xiaohongshu.com/discovery/item/6ac82df70000000015003230?app_platform=ios&app_version=9.49.1&share_from_user_hidden=true&xsec_source=app_share&type=video&xsec_token=CBPglKQq33eGh7sjGi4t_5RE7sSQQS5wy0QfAl_Lcrnlw=&author_share=1&xhsshare=CopyLink';
-          const customCookie = url.searchParams.get('cookie') || '';
-
-          // 1. 先访问首页获取基础 cookies
-          let initialCookies = '';
-          try {
-            const homeRes = await fetch('https://www.xiaohongshu.com/', {
-              headers: {
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-              }
-            });
-            const setCookies = homeRes.headers.getSetCookie ? homeRes.headers.getSetCookie() : [homeRes.headers.get('set-cookie')];
-            initialCookies = setCookies.filter(Boolean).map(c => c.split(';')[0]).join('; ');
-          } catch {}
-
-          const tests = [
-            {
-              name: 'With initial cookies from homepage',
-              url: noteTarget,
-              headers: {
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'cookie': initialCookies
-              }
-            },
-            {
-              name: 'With custom cookie provided',
-              url: noteTarget,
-              headers: {
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'cookie': customCookie || initialCookies
-              }
-            }
-          ];
-
-          const results = [];
-          for (const t of tests) {
-            try {
-              const res = await fetch(t.url, {
-                method: 'GET',
-                redirect: 'manual',
-                headers: t.headers
-              });
-              results.push({
-                name: t.name,
-                status: res.status,
-                location: res.headers.get('location')
-              });
-            } catch (e) {
-              results.push({ name: t.name, error: e.message });
-            }
-          }
-
-          return json({ initialCookies, results });
-        }
-
         // 3. 校验 PIN 码
         if (path === '/api/verify-pin' && request.method === 'POST') {
           const body = await request.json().catch(() => ({}));
@@ -122,7 +65,33 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           return json({ valid });
         }
 
-        // 4. 修改 PIN 码
+        // 4. 读取 / 保存通用设置 (包括 PIN 码与小红书 Cookie)
+        if (path === '/api/settings') {
+          if (request.method === 'GET') {
+            const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+            const isAuthed = await verifyPin(env.DB, pin);
+            if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+            const xhsCookie = await getSetting(env.DB, 'xhs_cookie', '');
+            return json({ success: true, hasCookie: Boolean(xhsCookie), xhsCookie });
+          }
+
+          if (request.method === 'POST') {
+            const body = await request.json().catch(() => ({}));
+            const pin = request.headers.get('x-auth-pin') || body.pin || body.oldPin;
+            const isAuthed = await verifyPin(env.DB, pin);
+            if (!isAuthed) return json({ success: false, message: "原 PIN 码验证失败" }, 401);
+
+            if (body.newPin) {
+              await changePin(env.DB, pin, body.newPin);
+            }
+            if (typeof body.xhsCookie === 'string') {
+              await setSetting(env.DB, 'xhs_cookie', body.xhsCookie.trim());
+            }
+            return json({ success: true, message: "设置已保存成功" });
+          }
+        }
+
+        // 兼容旧接口：修改 PIN 码
         if (path === '/api/change-pin' && request.method === 'POST') {
           const body = await request.json().catch(() => ({}));
           await changePin(env.DB, body.oldPin, body.newPin);
@@ -188,7 +157,17 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
         // 8. 核心解析与下载路由 (Node.js 引擎)
         if (Object.hasOwn(nodeRoutes, path)) {
-          const resp = await parseWithFallback(request, env, nativeRequest => invokeHandler(nodeRoutes[path], nativeRequest));
+          let reqToProcess = request;
+          if (path === '/api/parse' && !request.headers.get('x-xhs-cookie') && env.DB) {
+            const savedCookie = await getSetting(env.DB, 'xhs_cookie', '');
+            if (savedCookie) {
+              const headers = new Headers(request.headers);
+              headers.set('x-xhs-cookie', savedCookie);
+              reqToProcess = new Request(request, { headers });
+            }
+          }
+
+          const resp = await parseWithFallback(reqToProcess, env, nativeRequest => invokeHandler(nodeRoutes[path], nativeRequest));
 
           // 如果是解析成功的请求，自动后台静默转存到 R2 和 D1
           if (path === '/api/parse' && resp.status === 200 && env.DB && env.R2_BUCKET) {

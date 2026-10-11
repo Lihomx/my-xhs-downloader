@@ -65,7 +65,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const { finalUrl, html } = await fetchNotePage(inputUrl);
+    const cookie = req.headers?.["x-xhs-cookie"] || body.cookie || "";
+    const { finalUrl, html } = await fetchNotePage(inputUrl, { cookie });
     let noteId = extractNoteId(finalUrl) || extractNoteId(inputUrl);
 
     if (!noteId) {

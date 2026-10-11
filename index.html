@@ -215,28 +215,34 @@
       </div>
     </div>
 
-    <!-- 系统设置弹窗 (修改 PIN 码等) -->
+    <!-- 系统设置弹窗 (修改 PIN 码与小红书 Cookie) -->
     <div id="modal-settings" class="modal-overlay">
-      <div class="modal" style="max-width: 440px;">
+      <div class="modal" style="max-width: 480px;">
         <div class="modal-header">
           <h3 style="font-size: 17px;">⚙️ 系统与安全设置</h3>
           <button id="btn-close-settings-modal" class="drawer-close">✕</button>
         </div>
 
         <div class="modal-body">
-          <h4 style="font-size: 14px; margin-bottom: 8px;">修改个人管理 PIN 码</h4>
-          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 14px;">
-            PIN 码用于解锁查看收藏知识库，并保护你的 Cloudflare 存储配额。
+          <h4 style="font-size: 14px; margin-bottom: 6px;">🍪 小红书 Cookie 凭据 (防风控必备)</h4>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.5;">
+            由于 Cloudflare Workers 运行于海外机房 IP，小红书偶尔会触发滑块拦截 (461)。在浏览器打开小红书网页版，按 F12 复制请求头中的 <code>Cookie</code>（或包含 <code>a1=...</code> 字段）粘贴于此，即可长久稳定直通抓取：
+          </p>
+          <textarea id="settings-xhs-cookie" class="thoughts-textarea" style="min-height: 70px; font-family: monospace; font-size: 12px; margin-bottom: 16px;" placeholder="例如: a1=19280d...; webId=..."></textarea>
+
+          <h4 style="font-size: 14px; margin-bottom: 6px;">🔒 修改个人管理 PIN 码</h4>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
+            保护你的私有 Cloudflare 知识库与设置配置（初始 PIN 码：1987）。
           </p>
 
-          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px;">原 PIN 码</label>
-          <input type="password" id="settings-old-pin" class="search-input" placeholder="输入当前 PIN 码" style="margin-bottom: 12px;" />
+          <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">当前验证 PIN 码</label>
+          <input type="password" id="settings-old-pin" class="search-input" placeholder="输入当前 PIN 码 (默认 1987)" style="margin-bottom: 10px;" />
 
-          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px;">新 PIN 码 (至少4位)</label>
-          <input type="password" id="settings-new-pin" class="search-input" placeholder="输入新 PIN 码" style="margin-bottom: 16px;" />
+          <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">新 PIN 码 (若不修改请留空)</label>
+          <input type="password" id="settings-new-pin" class="search-input" placeholder="留空则保持原 PIN 码不变" style="margin-bottom: 16px;" />
 
           <button id="btn-submit-change-pin" class="btn btn-primary" style="width: 100%; justify-content: center;">
-            确认修改并保存
+            💾 保存设置到 Cloudflare
           </button>
           <p id="settings-msg" style="font-size: 13px; margin-top: 10px; text-align: center; display: none;"></p>
         </div>

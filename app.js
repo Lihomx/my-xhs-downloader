@@ -4,6 +4,7 @@ import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
 const state = {
   pin: localStorage.getItem("xhs_pin") || "1987",
   autoClipboard: localStorage.getItem("xhs_auto_clipboard") !== "false",
+  xhsCookie: localStorage.getItem("xhs_cookie") || "",
   lastProcessedClipboard: "",
   currentParsedNote: null,
   activeDetailNote: null,
@@ -78,10 +79,15 @@ async function startParsing() {
   if (spinner) spinner.style.display = "inline-block";
 
   try {
+    const reqHeaders = { "Content-Type": "application/json" };
+    if (state.xhsCookie) {
+      reqHeaders["x-xhs-cookie"] = state.xhsCookie;
+    }
+
     const res = await fetch("/api/parse", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
+      headers: reqHeaders,
+      body: JSON.stringify({ text, cookie: state.xhsCookie || "" })
     });
 
     const data = await res.json();
@@ -619,22 +625,41 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 设置弹窗
   const settingsModal = document.getElementById("modal-settings");
-  document.getElementById("btn-open-settings")?.addEventListener("click", () => {
+  document.getElementById("btn-open-settings")?.addEventListener("click", async () => {
     settingsModal?.classList.add("active");
+    const cookieEl = document.getElementById("settings-xhs-cookie");
+    if (cookieEl) cookieEl.value = state.xhsCookie || "";
+    const oldPinEl = document.getElementById("settings-old-pin");
+    if (oldPinEl) oldPinEl.value = state.pin || "1987";
+    const msg = document.getElementById("settings-msg");
+    if (msg) msg.style.display = "none";
+
+    // 尝试从云端加载已保存的配置
+    try {
+      const res = await fetch(`/api/settings?pin=${encodeURIComponent(state.pin)}`);
+      const data = await res.json();
+      if (data?.success && data.xhsCookie && cookieEl && !cookieEl.value) {
+        cookieEl.value = data.xhsCookie;
+        state.xhsCookie = data.xhsCookie;
+        localStorage.setItem("xhs_cookie", data.xhsCookie);
+      }
+    } catch {}
   });
+
   document.getElementById("btn-close-settings-modal")?.addEventListener("click", () => {
     settingsModal?.classList.remove("active");
   });
 
-  // 修改 PIN 码提交
+  // 保存设置（Cookie 与 PIN 码）提交
   document.getElementById("btn-submit-change-pin")?.addEventListener("click", async () => {
-    const oldPin = document.getElementById("settings-old-pin")?.value.trim();
+    const oldPin = document.getElementById("settings-old-pin")?.value.trim() || state.pin;
     const newPin = document.getElementById("settings-new-pin")?.value.trim();
+    const cookieVal = document.getElementById("settings-xhs-cookie")?.value.trim() || "";
     const msg = document.getElementById("settings-msg");
 
-    if (!oldPin || !newPin) {
+    if (!oldPin) {
       if (msg) {
-        msg.textContent = "请完整填写原 PIN 码和新 PIN 码";
+        msg.textContent = "请填写当前验证 PIN 码";
         msg.style.color = "var(--primary)";
         msg.style.display = "block";
       }
@@ -642,24 +667,33 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      const res = await fetch("/api/change-pin", {
+      const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ oldPin, newPin })
+        body: JSON.stringify({
+          pin: oldPin,
+          newPin: newPin || undefined,
+          xhsCookie: cookieVal
+        })
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        state.pin = newPin;
-        localStorage.setItem("xhs_pin", newPin);
+        if (newPin && newPin.length >= 4) {
+          state.pin = newPin;
+          localStorage.setItem("xhs_pin", newPin);
+        }
+        state.xhsCookie = cookieVal;
+        localStorage.setItem("xhs_cookie", cookieVal);
+
         if (msg) {
-          msg.textContent = "✅ PIN 码修改成功并已保存！";
+          msg.textContent = "✅ 设置已成功保存并同步到 Cloudflare！";
           msg.style.color = "var(--success)";
           msg.style.display = "block";
         }
-        showToast("PIN 码修改成功！");
+        showToast("系统设置保存成功！");
         setTimeout(() => { settingsModal?.classList.remove("active"); }, 1500);
       } else {
-        throw new Error(data.message || "原 PIN 码错误");
+        throw new Error(data.message || "PIN 码验证失败或保存出错");
       }
     } catch (err) {
       if (msg) {

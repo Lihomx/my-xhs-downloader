@@ -71,6 +71,38 @@ export async function changePin(db, oldPin, newPin) {
 }
 
 /**
+ * 读取通用系统设置
+ */
+export async function getSetting(db, key, defaultValue = '') {
+  if (!db) return defaultValue;
+  try {
+    await initDb(db);
+    const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first();
+    return row?.value ?? defaultValue;
+  } catch (err) {
+    console.error("getSetting err:", err);
+    return defaultValue;
+  }
+}
+
+/**
+ * 保存通用系统设置
+ */
+export async function setSetting(db, key, value) {
+  if (!db) return false;
+  try {
+    await initDb(db);
+    await db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+      .bind(key, String(value ?? ''), String(value ?? ''))
+      .run();
+    return true;
+  } catch (err) {
+    console.error("setSetting err:", err);
+    return false;
+  }
+}
+
+/**
  * 抓取远程资源并存储到 Cloudflare R2
  */
 async function fetchAndStoreToR2(r2, remoteUrl, key, contentType = "image/jpeg") {
