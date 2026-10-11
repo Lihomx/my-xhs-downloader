@@ -66,10 +66,27 @@ export default async function handler(req, res) {
     }
 
     const { finalUrl, html } = await fetchNotePage(inputUrl);
-    const noteId = extractNoteId(finalUrl) || extractNoteId(inputUrl);
+    let noteId = extractNoteId(finalUrl) || extractNoteId(inputUrl);
 
     if (!noteId) {
-      throw new XhsError("无法从分享链接中识别当前笔记 ID。", 422);
+      const shareLinkMatch = html.match(/shareLink["']\s*:\s*["']([^"']+)["']/i)
+        || html.match(/<meta[^>]*property=["']og:url["'][^>]*content=["']([^"']+)["']/i)
+        || html.match(/<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i);
+      if (shareLinkMatch?.[1]) {
+        const unescaped = shareLinkMatch[1].replace(/\\u002F/gi, "/").replace(/\\\//g, "/");
+        noteId = extractNoteId(unescaped);
+      }
+    }
+
+    if (!noteId) {
+      const rawIdMatch = html.match(/["'](?:firstNoteId|currentNoteId|noteId|note_id)["']\s*:\s*["']([A-Za-z0-9_-]{12,64})["']/i);
+      if (rawIdMatch?.[1]) {
+        noteId = rawIdMatch[1];
+      }
+    }
+
+    if (!noteId) {
+      throw new XhsError("无法从分享链接中识别当前笔记 ID。链接可能已失效或被删除。", 422);
     }
 
     const parsed = parseNoteHtml(html, { noteId });
@@ -128,6 +145,7 @@ export default async function handler(req, res) {
       title: parsed.title,
       content: parsed.content,
       noteId,
+      sourceUrl: inputUrl,
       strategy: parsed.strategy,
       type: videos.length > 0 || parsed.originalVideos?.length > 0 ? (images.length > 0 ? "mixed" : "video") : "image",
       count: images.length,

@@ -876,3 +876,63 @@ test("文案按 Unicode 字符安全截断并兼容 description 字段", () => {
   assert.equal(Array.from(parsed.content).at(-1), "😀");
   assert.ok(!parsed.content.includes("\ufffd"));
 });
+
+test("fetchNotePage 能够自动消歧短链接混淆字符 (l vs I) 并成功解析", async () => {
+  const typoUrl = "https://xhslink.cn/o/6aciUClEkgl";
+  const correctCandidate = "https://xhslink.cn/o/6aciUCIEkgl";
+  const targetNoteUrl = "https://www.xiaohongshu.com/discovery/item/6ac82df70000000015003230";
+
+  const customFetch = async (input, init) => {
+    const urlStr = String(input);
+    if (urlStr === typoUrl) {
+      // 模拟误码短链跳转到首页
+      return new Response("", {
+        status: 302,
+        headers: { location: "https://www.xiaohongshu.com" }
+      });
+    }
+    if (urlStr === correctCandidate) {
+      // 模拟修正后的短链跳转到目标笔记
+      return new Response("", {
+        status: 302,
+        headers: { location: targetNoteUrl }
+      });
+    }
+    if (urlStr.startsWith(targetNoteUrl)) {
+      return new Response("<html><head><title>测试笔记</title></head><body>ok</body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" }
+      });
+    }
+    return new Response("", {
+      status: 302,
+      headers: { location: "https://www.xiaohongshu.com" }
+    });
+  };
+
+  const { finalUrl, html } = await fetchNotePage(typoUrl, { fetchImpl: customFetch });
+  assert.equal(finalUrl, targetNoteUrl);
+  assert.ok(html.includes("测试笔记"));
+});
+
+test("fetchNotePage 当短链接跳转至小红书首页时给出明确失效提示", async () => {
+  const expiredUrl = "https://xhslink.cn/o/xxxxExpired";
+
+  const customFetch = async () => {
+    return new Response("", {
+      status: 302,
+      headers: { location: "https://www.xiaohongshu.com" }
+    });
+  };
+
+  await assert.rejects(
+    () => fetchNotePage(expiredUrl, { fetchImpl: customFetch }),
+    (err) => {
+      assert.equal(err.name, "XhsError");
+      assert.equal(err.statusCode, 422);
+      assert.ok(err.message.includes("首页"));
+      return true;
+    }
+  );
+});
+

@@ -136,14 +136,14 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             try {
               const clone = resp.clone();
               const parsed = await clone.json();
-              if (parsed?.success && parsed?.images?.length) {
+              if (parsed?.success && (parsed?.images?.length || parsed?.videos?.length)) {
                 const bgTask = archiveNote(env, {
                   noteId: parsed.noteId || parsed.id || `xhs_${Date.now()}`,
                   title: parsed.title,
                   content: parsed.content,
-                  sourceUrl: parsed.sourceUrl,
-                  images: parsed.images,
-                  videos: parsed.videos
+                  sourceUrl: parsed.sourceUrl || "",
+                  images: parsed.images || [],
+                  videos: parsed.videos || []
                 }).catch(err => console.error("Auto archive background error:", err));
 
                 if (ctx?.waitUntil) {
