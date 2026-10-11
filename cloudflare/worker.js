@@ -58,25 +58,67 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
         // 诊断追踪接口
         if (path === '/api/debug-trace') {
-          const testUrl = url.searchParams.get('url') || 'https://xhslink.cn/o/6aciUClEkgl';
-          const logs = [];
-          try {
-            const { fetchNotePage } = await import('../lib/xhs.js');
-            const res = await fetchNotePage(testUrl, {
-              fetchImpl: async (u, opt) => {
-                const r = await fetch(u, opt);
-                logs.push({
-                  url: String(u),
-                  status: r.status,
-                  location: r.headers.get('location')
-                });
-                return r;
+          const noteTarget = 'https://www.xiaohongshu.com/discovery/item/6ac82df70000000015003230?app_platform=ios&app_version=9.49.1&share_from_user_hidden=true&xsec_source=app_share&type=video&xsec_token=CBPglKQq33eGh7sjGi4t_5RE7sSQQS5wy0QfAl_Lcrnlw=&author_share=1&xhsshare=CopyLink';
+          const exploreTarget = 'https://www.xiaohongshu.com/explore/6ac82df70000000015003230?xsec_token=CBPglKQq33eGh7sjGi4t_5RE7sSQQS5wy0QfAl_Lcrnlw=';
+
+          const tests = [
+            {
+              name: 'iPhone UA (current default)',
+              url: noteTarget,
+              headers: {
+                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.7'
               }
-            });
-            return json({ ok: true, finalUrl: res.finalUrl, htmlLen: res.html.length, logs });
-          } catch (err) {
-            return json({ ok: false, error: err.message, stack: err.stack, logs }, 200);
+            },
+            {
+              name: 'Desktop Chrome UA',
+              url: noteTarget,
+              headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.7'
+              }
+            },
+            {
+              name: 'Desktop Chrome UA with /explore/',
+              url: exploreTarget,
+              headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.7'
+              }
+            },
+            {
+              name: 'WeChat Mobile UA',
+              url: noteTarget,
+              headers: {
+                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.49 NetType/WIFI Language/zh_CN',
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'accept-language': 'zh-CN,zh;q=0.9'
+              }
+            }
+          ];
+
+          const results = [];
+          for (const t of tests) {
+            try {
+              const res = await fetch(t.url, {
+                method: 'GET',
+                redirect: 'manual',
+                headers: t.headers
+              });
+              results.push({
+                name: t.name,
+                status: res.status,
+                location: res.headers.get('location')
+              });
+            } catch (e) {
+              results.push({ name: t.name, error: e.message });
+            }
           }
+
+          return json({ results });
         }
 
         // 3. 校验 PIN 码
