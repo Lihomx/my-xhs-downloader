@@ -172,20 +172,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             const errors = [];
             const uint8 = new Uint8Array(audioBuffer);
 
-            // 策略 1: Uint8Array 二进制对象 (直接传递，0 内存膨胀，符合 Cloudflare AI 'binary' 规范)
-            try {
-              const aiResp = await env.AI.run('@cf/openai/whisper', {
-                audio: uint8,
-                initial_prompt: zhPrompt
-              });
-              if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-uint8' });
-              }
-            } catch (err) {
-              errors.push(`whisper-uint8: ${err.message}`);
-            }
-
-            // 策略 2: @cf/openai/whisper-large-v3-turbo (Uint8Array)
+            // 策略 1: 优先使用 @cf/openai/whisper-large-v3-turbo (800M 大模型，中文成语与词汇识别率高数倍)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
                 audio: uint8,
@@ -198,18 +185,31 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               errors.push(`turbo-uint8: ${err.message}`);
             }
 
-            // 策略 3: 如果音频体积较小 (<= 1.5MB)，降级使用 number[] 数组 (符合 'array' 规范)
+            // 策略 2: 降级使用 @cf/openai/whisper (轻量基础模型)
+            try {
+              const aiResp = await env.AI.run('@cf/openai/whisper', {
+                audio: uint8,
+                initial_prompt: zhPrompt
+              });
+              if (aiResp && typeof aiResp.text === 'string') {
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-uint8' });
+              }
+            } catch (err) {
+              errors.push(`whisper-uint8: ${err.message}`);
+            }
+
+            // 策略 3: 如果音频体积较小 (<= 1.5MB)，降级使用 number[] 数组
             if (audioBuffer.byteLength <= 1.5 * 1024 * 1024) {
               try {
-                const aiResp = await env.AI.run('@cf/openai/whisper', {
+                const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
                   audio: Array.from(uint8),
                   initial_prompt: zhPrompt
                 });
                 if (aiResp && typeof aiResp.text === 'string') {
-                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-array' });
+                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo-array' });
                 }
               } catch (err) {
-                errors.push(`whisper-array: ${err.message}`);
+                errors.push(`turbo-array: ${err.message}`);
               }
             }
 
@@ -256,7 +256,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
           let punctuatedText = '';
           if (env.AI) {
-            const systemPrompt = "你是一个专业的中文排版与标点符号修正大师。你的任务是将语音识别出的中文文本合并整理为最易阅读的排版：\n1. 规范添加所有中文标点符号（逗号、句号、问号、感叹号、冒号、顿号），严禁使用英文标点；\n2. 核心要求：【一个句号为一个自然段落换行】！每一个独立的完整句子（以句号、问号、感叹号结尾）都必须单独独立成一行（单独一段），段内必须有自然的逗号停顿，切忌多句话堆在同一段；\n3. 严格保持原文字词不变，绝对不要改变、增减或替换任何字词，严禁添加任何开场白或解释说明，直接输出分段换行的纯文本：";
+            const systemPrompt = "你是一个专业的中文口语整理与语音识别（ASR）错别字纠错大师。你将接收一段由语音识别生成的中文文本，其中可能包含因发音相似导致的同音错别字与听写错误（例如：区利避害->趋利避害，是号一个劳的->是好逸恶劳的，不知的任务不跟进->布置的任务不跟进，用线机盘->期限拖延，技在心里->记在心里，东平吸凑->东拼西凑，争议之眼必之一眼->睁一只眼闭一只眼，气权->弃权，堵薄->赌博等）。\n你的核心任务：\n1. 结合上下文语境，精准将同音错别字和被听错的词语还原为规范正确的成语与词汇；\n2. 规范添加全角中文标点符号（逗号、句号、问号、感叹号、冒号），严禁使用英文标点；\n3. 核心分段要求：【一个句号为一个自然段落换行】！每一个完整句子（以句号、问号、感叹号结尾）必须单独独立成一行（单独一段），段内必须有自然的逗号停顿，切忌多句话堆在同一段；\n4. 严禁添加任何开场白、解释说明、前言或总结，直接输出修正和分段后的纯文本：";
             const candidateModels = [
               '@cf/meta/llama-3.2-3b-instruct',
               '@cf/meta/llama-3.2-1b-instruct',

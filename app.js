@@ -1065,9 +1065,31 @@ function escapeHtml(str) {
 // 语音文案智能分段、高亮重点标注与持久化系统
 // ========================================================
 
+// 常见语音识别（ASR）同音错别字与成语语义修正表
+function correctSpeechTypos(text) {
+  if (!text) return "";
+  let s = String(text);
+  s = s.replace(/区利避害/g, "趋利避害");
+  s = s.replace(/是号一个劳的|是号一个劳/g, "是好逸恶劳的");
+  s = s.replace(/不知的任务不跟[，\s]*进|不知的任务不跟进/g, "布置的任务不跟进");
+  s = s.replace(/用线机盘到最后|用线机盘/g, "期限拖到最后");
+  s = s.replace(/下属技在心里|技在心里/g, "下属记在心里");
+  s = s.replace(/东平吸凑/g, "东拼西凑");
+  s = s.replace(/争议之眼必之一眼|争议之眼/g, "睁一只眼闭一只眼");
+  s = s.replace(/直接汽权|直接气权/g, "直接弃权");
+  s = s.replace(/在堵薄|在堵博/g, "在赌博");
+  s = s.replace(/彻底点响了我/g, "彻底点醒了我");
+  s = s.replace(/天涯隐学理/g, "天涯隐学里");
+  s = s.replace(/下属感互怒/g, "下属敢怒不敢言");
+  s = s.replace(/向了监工/g, "像个监工");
+  s = s.replace(/彻底放全/g, "彻底放权");
+  s = s.replace(/很抓检查/g, "狠抓检查");
+  return s;
+}
+
 // 智能中文启发式标点恢复与精准断句引擎
 function autoPunctuateChinese(raw) {
-  let s = String(raw || "").trim();
+  let s = correctSpeechTypos(String(raw || "").trim());
   if (!s) return "";
 
   // 1. 独立感叹与强调词（如：错！、对！、绝对不行！）
@@ -1676,7 +1698,7 @@ function renderTranscriptBox(container, rawText, noteId) {
           ✨ 智能标点断句
         </button>
         <button type="button" class="transcript-btn btn-toggle-filter" title="只显示标记了重点的段落和文字">
-          ⭐ 仅看重点
+          <span class="btn-star-mark">⭐</span> 仅看重点
         </button>
         <button type="button" class="transcript-btn btn-append-thoughts" title="将高亮重点或全文追加到下方感想批注">
           📌 追加重点到感想
@@ -1728,7 +1750,9 @@ function renderTranscriptBox(container, rawText, noteId) {
     toggleFilterBtn.addEventListener("click", () => {
       const isFilterActive = container.classList.toggle("filter-highlights-only");
       toggleFilterBtn.classList.toggle("active", isFilterActive);
-      toggleFilterBtn.textContent = isFilterActive ? "👀 查看全部段落" : "⭐ 仅看重点";
+      toggleFilterBtn.innerHTML = isFilterActive
+        ? `<span class="btn-star-mark">⭐</span> 查看全部段落`
+        : `<span class="btn-star-mark">⭐</span> 仅看重点`;
       updateTranscriptStatsBadge(container);
       showToast(isFilterActive ? "🔍 已开启「仅看重点」速览过滤" : "已恢复显示全部段落");
     });

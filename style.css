@@ -1873,6 +1873,39 @@ input:checked + .slider:before {
   font-weight: 700;
 }
 
+/* 仅看重点过滤按钮：未激活状态为低调中性灰，激活开启重点后转为明亮暖黄色 */
+.btn-toggle-filter {
+  background: #f8fafc !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #64748b !important;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.btn-toggle-filter .btn-star-mark {
+  filter: grayscale(1) opacity(0.55);
+  display: inline-block;
+  transition: all 0.2s ease;
+}
+
+.btn-toggle-filter:hover {
+  background: #e2e8f0 !important;
+  color: #334155 !important;
+}
+
+.btn-toggle-filter.active {
+  background: #fef08a !important;
+  border-color: #eab308 !important;
+  color: #854d0e !important;
+  font-weight: 700 !important;
+  box-shadow: 0 1px 3px rgba(234, 179, 8, 0.25);
+}
+
+.btn-toggle-filter.active .btn-star-mark {
+  filter: none !important;
+  opacity: 1 !important;
+}
+
 /* 段落列表容器 */
 .transcript-paragraphs-wrap {
   display: flex;
