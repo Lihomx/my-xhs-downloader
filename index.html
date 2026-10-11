@@ -309,27 +309,44 @@
             <div id="detail-tags-chips" class="detail-tags-chips"></div>
           </section>
 
-          <!-- 视频与语音文案置顶区 (如果有视频，优先在最上方展示) -->
+          <!-- 视频与语音文案置顶区 (如果有视频或音频或文案，优先在最上方展示) -->
           <div id="modal-video-wrap" style="display: none; margin-bottom: 20px;">
+            <!-- 媒体已清理提示横幅 (若音视频已清理但文案保留) -->
+            <div id="modal-media-freed-banner" style="display: none; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 9px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 12px;">
+              💾 <strong>音视频媒体已从云端删除（已释放 Cloudflare 硬盘空间）</strong>，当前文字笔记与提取语音文案已完整保留。
+            </div>
+
+            <!-- 视频播放器 -->
             <div id="modal-video-player-container">
               <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
             </div>
+
+            <!-- 音频播放器 -->
             <div id="modal-audio-player-wrap" style="display: none; margin-top: 8px;">
+              <div id="modal-audio-status-tag" style="display: none; font-size: 11px; color: #0369a1; background: #e0f2fe; padding: 3px 8px; border-radius: 4px; margin-bottom: 6px; font-weight: 500;">
+                🎧 纯音频模式（视频文件已从云端删除，节约 ~95% 空间）
+              </div>
               <audio id="modal-audio-player" controls style="width: 100%;"></audio>
             </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
-              <div style="display: flex; gap: 8px;">
+
+            <!-- 媒体操作按钮栏 -->
+            <div id="modal-media-actions" style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 <button id="btn-modal-toggle-audio" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
                   🎧 纯听音频
                 </button>
                 <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
                   🎙️ 提取语音文案
                 </button>
+                <button id="btn-modal-cleanup-media" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; color: #b45309; border-color: #fde68a; background: #fffbeb;" type="button" title="选择性删除视频或语音以腾出 Cloudflare 空间，文案与笔记完整保留">
+                  ⚡ 释放媒体空间
+                </button>
               </div>
               <button id="btn-modal-download-video" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
                 🎬 下载视频 (按标题拼音命名)
               </button>
             </div>
+
             <!-- 语音文案面板 (高优先级置顶显示于视频下方) -->
             <div id="modal-transcript-panel" class="transcript-box" style="display: none;"></div>
           </div>
@@ -383,12 +400,65 @@
         </div>
 
         <div class="modal-footer">
-          <button id="btn-delete-note" class="btn btn-secondary" style="color: var(--primary);">
-            🗑️ 彻底删除本篇 (释放云端空间)
-          </button>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button id="btn-delete-note" class="btn btn-secondary" style="color: var(--primary);">
+              🗑️ 彻底删除本篇
+            </button>
+            <button id="btn-modal-footer-cleanup" class="btn btn-secondary" style="color: #b45309; border-color: #fde68a; background: #fffbeb;" type="button" title="选择性删除视频或语音以释放云端硬盘，文案与笔记完整保留">
+              ⚡ 腾出音视频空间
+            </button>
+          </div>
           <button id="btn-modal-download-zip" class="btn btn-primary">
             📦 打包整篇为 ZIP 下载
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 释放媒体存储空间弹窗 (选择删除视频 / 语音 / 两者一起删除，保留笔记与语音文案) -->
+    <div id="modal-media-cleanup" class="modal-overlay">
+      <div class="modal" style="max-width: 460px;">
+        <div class="modal-header">
+          <h3 style="font-size: 16px;">⚡ 释放 Cloudflare 硬盘空间</h3>
+          <button id="btn-close-cleanup-modal" class="drawer-close" type="button">✕</button>
+        </div>
+        <div class="modal-body" style="padding: 16px 20px;">
+          <p style="font-size: 13px; color: var(--text-sub); line-height: 1.5; margin-bottom: 14px;">
+            从 Cloudflare R2 对象存储中删除大文件，腾出免费额度空间。<br>
+            <strong style="color: #10b981;">✅ 当前笔记标题、正文描述、批注感想及【提取语音文案】将 100% 完整保留！</strong>
+          </p>
+
+          <div class="cleanup-options" style="display: flex; flex-direction: column; gap: 10px;">
+            <!-- 选项 1: 仅删除视频 -->
+            <button id="btn-cleanup-video-only" type="button" class="cleanup-opt-btn">
+              <div class="cleanup-opt-icon">🎬</div>
+              <div class="cleanup-opt-text">
+                <div class="cleanup-opt-title">仅删除视频 (保留音频/语音)</div>
+                <div class="cleanup-opt-desc">转存轻量纯音频，彻底删除数十兆大视频文件（释放 ~95% 空间）。之后仍可在笔记中播放声音并查阅文案。</div>
+              </div>
+            </button>
+
+            <!-- 选项 2: 仅删除语音 -->
+            <button id="btn-cleanup-audio-only" type="button" class="cleanup-opt-btn">
+              <div class="cleanup-opt-icon">🎧</div>
+              <div class="cleanup-opt-text">
+                <div class="cleanup-opt-title">仅删除语音 (保留视频画面)</div>
+                <div class="cleanup-opt-desc">仅从云端删除独立音频文件，保留高清视频画面。</div>
+              </div>
+            </button>
+
+            <!-- 选项 3: 视频和语音一起删除 -->
+            <button id="btn-cleanup-both" type="button" class="cleanup-opt-btn cleanup-opt-danger">
+              <div class="cleanup-opt-icon">💥</div>
+              <div class="cleanup-opt-text">
+                <div class="cleanup-opt-title">视频和语音一起删除 (最大化腾出空间)</div>
+                <div class="cleanup-opt-desc">从 Cloudflare R2 中彻底删除视频与语音文件，释放全部音视频硬盘空间！文案与笔记安全留存。</div>
+              </div>
+            </button>
+          </div>
+        </div>
+        <div class="modal-footer" style="justify-content: flex-end;">
+          <button id="btn-cancel-cleanup" class="btn btn-secondary" type="button">取消</button>
         </div>
       </div>
     </div>

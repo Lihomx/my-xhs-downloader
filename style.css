@@ -2649,4 +2649,74 @@ mark.transcript-hl:hover {
   border: 1px solid #bae6fd;
 }
 
+/* ========================================================
+   媒体空间释放与选择性删除弹窗样式
+   ======================================================== */
+.cleanup-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cleanup-opt-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.cleanup-opt-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+}
+
+.cleanup-opt-icon {
+  font-size: 22px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.cleanup-opt-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 3px;
+}
+
+.cleanup-opt-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.cleanup-opt-danger {
+  border-color: #fecaca;
+  background: #fff5f5;
+}
+
+.cleanup-opt-danger:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.cleanup-opt-danger .cleanup-opt-title {
+  color: #b91c1c;
+}
+
+.cleanup-opt-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
 

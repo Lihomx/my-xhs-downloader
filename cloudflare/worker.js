@@ -24,6 +24,8 @@ import {
   updateNoteTags,
   updateTranscript,
   updateNoteDetail,
+  deleteNoteMedia,
+  saveNoteAudio,
   getStorageUsage
 } from './storage-service.js';
 
@@ -547,6 +549,24 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (parts[1] === 'transcript' && request.method === 'PUT') {
             const body = await request.json().catch(() => ({}));
             const res = await updateTranscript(env.DB, noteId, body.transcript);
+            return json({ success: true, ...res });
+          }
+
+          // 释放媒体存储空间 (仅删除视频 / 仅删除语音 / 视频和语音一起删除): POST /api/notes/:id/delete-media
+          if (parts[1] === 'delete-media' && request.method === 'POST') {
+            const body = await request.json().catch(() => ({}));
+            const res = await deleteNoteMedia(env, noteId, { target: body.target });
+            return json({ success: true, ...res });
+          }
+
+          // 上传/保存轻量纯音频: POST /api/notes/:id/audio
+          if (parts[1] === 'audio' && request.method === 'POST') {
+            const audioBuffer = await request.arrayBuffer();
+            if (!audioBuffer || audioBuffer.byteLength === 0) {
+              return json({ success: false, message: "音频数据不能为空" }, 400);
+            }
+            const contentType = request.headers.get('content-type') || 'audio/wav';
+            const res = await saveNoteAudio(env, noteId, audioBuffer, contentType);
             return json({ success: true, ...res });
           }
 

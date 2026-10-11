@@ -1,6 +1,6 @@
 import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
 import { toPinyinFilename } from "./lib/pinyin.js";
-import { extractWavFromMedia, extractAudioChunksFromMedia } from "./lib/audio.js";
+import { extractWavFromMedia, extractFullWavFromMedia, extractAudioChunksFromMedia } from "./lib/audio.js";
 
 // 智能规范化 Cookie 格式 (支持自动解析插件导出的 JSON 数组与多行文本)
 export function normalizeCookieString(raw) {
@@ -2505,25 +2505,42 @@ async function openNoteDetail(noteId) {
       grid.style.display = "none";
     }
 
-    // 渲染视频与纯音频模式
+    // 渲染视频、纯音频与语音文案置顶展示
     const vidWrap = document.getElementById("modal-video-wrap");
     const vidPlayer = document.getElementById("modal-video-player");
     const audioWrap = document.getElementById("modal-audio-player-wrap");
     const audioPlayer = document.getElementById("modal-audio-player");
+    const audioStatusTag = document.getElementById("modal-audio-status-tag");
     const vidContainer = document.getElementById("modal-video-player-container");
+    const mediaActions = document.getElementById("modal-media-actions");
+    const mediaFreedBanner = document.getElementById("modal-media-freed-banner");
     const toggleAudioBtn = document.getElementById("btn-modal-toggle-audio");
     const transcribeBtn = document.getElementById("btn-modal-transcribe");
+    const downloadVideoBtn = document.getElementById("btn-modal-download-video");
+    const cleanupMediaBtn = document.getElementById("btn-modal-cleanup-media");
     const transcriptPanel = document.getElementById("modal-transcript-panel");
 
-    if (note.videos && note.videos.length > 0) {
-      const activeVideoUrl = note.videos[0].url;
-      vidWrap.style.display = "block";
+    const hasVideo = Array.isArray(note.videos) && note.videos.length > 0 && Boolean(note.videos[0]?.url);
+    const activeVideoUrl = hasVideo ? note.videos[0].url : "";
+    const hasAudio = Boolean(note.audioUrl);
+    const activeAudioUrl = hasAudio ? note.audioUrl : (hasVideo ? activeVideoUrl : "");
+    const hasTranscript = Boolean(note.transcript && String(note.transcript).trim());
+
+    if (hasVideo) {
+      if (vidWrap) vidWrap.style.display = "block";
       if (vidContainer) vidContainer.style.display = "block";
       if (audioWrap) audioWrap.style.display = "none";
-      vidPlayer.src = activeVideoUrl;
-      if (audioPlayer) audioPlayer.src = activeVideoUrl;
+      if (audioStatusTag) audioStatusTag.style.display = "none";
+      if (mediaActions) mediaActions.style.display = "flex";
+      if (mediaFreedBanner) mediaFreedBanner.style.display = "none";
+      if (vidPlayer) vidPlayer.src = activeVideoUrl;
+      if (audioPlayer) audioPlayer.src = activeAudioUrl;
+
+      if (downloadVideoBtn) downloadVideoBtn.style.display = "inline-flex";
+      if (cleanupMediaBtn) cleanupMediaBtn.style.display = "inline-flex";
 
       if (toggleAudioBtn) {
+        toggleAudioBtn.style.display = "inline-flex";
         toggleAudioBtn.textContent = "🎧 纯听音频";
         toggleAudioBtn.onclick = () => {
           const isAudioActive = audioWrap?.style.display === "block";
@@ -2543,26 +2560,54 @@ async function openNoteDetail(noteId) {
       }
 
       if (transcribeBtn) {
+        transcribeBtn.style.display = "inline-flex";
         transcribeBtn.onclick = () => {
           transcribeAudio(activeVideoUrl, "#modal-transcript-panel", note.id);
         };
       }
+    } else if (hasAudio) {
+      // 视频已清理，但纯音频保留
+      if (vidWrap) vidWrap.style.display = "block";
+      if (vidContainer) vidContainer.style.display = "none";
+      vidPlayer?.removeAttribute("src");
+      if (audioWrap) audioWrap.style.display = "block";
+      if (audioStatusTag) audioStatusTag.style.display = "inline-block";
+      if (mediaActions) mediaActions.style.display = "flex";
+      if (mediaFreedBanner) mediaFreedBanner.style.display = "none";
+      if (audioPlayer) audioPlayer.src = activeAudioUrl;
 
-      // 如果笔记已保存过语音文案，自动渲染
-      if (note.transcript) {
-        renderTranscriptBox(transcriptPanel, note.transcript, note.id);
-      } else if (transcriptPanel) {
-        transcriptPanel.style.display = "none";
-        transcriptPanel.innerHTML = "";
+      if (downloadVideoBtn) downloadVideoBtn.style.display = "none";
+      if (toggleAudioBtn) toggleAudioBtn.style.display = "none";
+      if (cleanupMediaBtn) cleanupMediaBtn.style.display = "inline-flex";
+
+      if (transcribeBtn) {
+        transcribeBtn.style.display = "inline-flex";
+        transcribeBtn.onclick = () => {
+          transcribeAudio(activeAudioUrl, "#modal-transcript-panel", note.id);
+        };
       }
-    } else {
-      vidWrap.style.display = "none";
-      vidPlayer.removeAttribute("src");
+    } else if (hasTranscript) {
+      // 视频与音频均已删除，但提取的语音文案完整保留
+      if (vidWrap) vidWrap.style.display = "block";
+      if (vidContainer) vidContainer.style.display = "none";
+      if (audioWrap) audioWrap.style.display = "none";
+      if (mediaActions) mediaActions.style.display = "none";
+      if (mediaFreedBanner) mediaFreedBanner.style.display = "block";
+      vidPlayer?.removeAttribute("src");
       audioPlayer?.removeAttribute("src");
-      if (transcriptPanel) {
-        transcriptPanel.style.display = "none";
-        transcriptPanel.innerHTML = "";
-      }
+    } else {
+      // 普通图文笔记或无任何媒体
+      if (vidWrap) vidWrap.style.display = "none";
+      vidPlayer?.removeAttribute("src");
+      audioPlayer?.removeAttribute("src");
+    }
+
+    // 只要有提取过的语音文案，一律置顶稳定呈现
+    if (hasTranscript) {
+      renderTranscriptBox(transcriptPanel, note.transcript, note.id);
+    } else if (transcriptPanel) {
+      transcriptPanel.style.display = "none";
+      transcriptPanel.innerHTML = "";
     }
 
     // 显示弹窗
@@ -3148,6 +3193,153 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast(`删除失败: ${err.message}`);
     }
   });
+
+  // ========================================================
+  // 释放媒体存储空间操作 (选择删除视频 / 语音 / 两者一起删除，保留笔记与文案)
+  // ========================================================
+  const cleanupModal = document.getElementById("modal-media-cleanup");
+  const closeCleanupModal = () => {
+    cleanupModal?.classList.remove("active");
+  };
+
+  document.getElementById("btn-close-cleanup-modal")?.addEventListener("click", closeCleanupModal);
+  document.getElementById("btn-cancel-cleanup")?.addEventListener("click", closeCleanupModal);
+  cleanupModal?.addEventListener("click", (e) => {
+    if (e.target === cleanupModal) closeCleanupModal();
+  });
+
+  const openMediaCleanupModal = (note) => {
+    const targetNote = note || state.activeDetailNote;
+    if (!targetNote) return;
+
+    const btnVideoOnly = document.getElementById("btn-cleanup-video-only");
+    const btnAudioOnly = document.getElementById("btn-cleanup-audio-only");
+    const btnBoth = document.getElementById("btn-cleanup-both");
+
+    const hasVideo = Array.isArray(targetNote.videos) && targetNote.videos.length > 0 && Boolean(targetNote.videos[0]?.url);
+    const hasAudio = Boolean(targetNote.audioUrl);
+
+    if (!hasVideo && !hasAudio) {
+      showToast("当前笔记未包含视频或独立语音媒体，无需清理");
+      return;
+    }
+
+    if (btnVideoOnly) btnVideoOnly.disabled = !hasVideo;
+    if (btnAudioOnly) btnAudioOnly.disabled = !hasAudio;
+    if (btnBoth) btnBoth.disabled = !hasVideo && !hasAudio;
+
+    cleanupModal?.classList.add("active");
+  };
+
+  document.getElementById("btn-modal-cleanup-media")?.addEventListener("click", () => {
+    openMediaCleanupModal(state.activeDetailNote);
+  });
+
+  document.getElementById("btn-modal-footer-cleanup")?.addEventListener("click", () => {
+    openMediaCleanupModal(state.activeDetailNote);
+  });
+
+  const executeMediaCleanup = async (target) => {
+    const note = state.activeDetailNote;
+    if (!note) return;
+
+    const hasVideo = Array.isArray(note.videos) && note.videos.length > 0 && Boolean(note.videos[0]?.url);
+    const hasAudio = Boolean(note.audioUrl);
+
+    try {
+      if (target === "video") {
+        if (!hasVideo) return;
+        if (!confirm("确定要仅删除视频文件吗？\n系统将自动保留/提取纯音频，以便您之后仍可听声音并查阅文案，大幅节省云端空间。")) return;
+
+        // 1. 如果尚未转存独立音频文件，先从视频中提取轻量纯音频并上传到 R2
+        if (!hasAudio && hasVideo) {
+          showToast("⏳ 正在提取轻量纯音频转存云端，以便删除大视频后保留声音...");
+          try {
+            const videoUrl = note.videos[0].url;
+            const { blob } = await extractFullWavFromMedia(videoUrl);
+            const uploadRes = await fetch(`/api/notes/${note.id}/audio`, {
+              method: "POST",
+              headers: {
+                "x-auth-pin": state.pin,
+                "Content-Type": "audio/wav"
+              },
+              body: blob
+            });
+            const uploadData = await uploadRes.json();
+            if (uploadData.success && uploadData.audioUrl) {
+              note.audioUrl = uploadData.audioUrl;
+            }
+          } catch (extractErr) {
+            console.warn("提取纯音频失败:", extractErr);
+            if (!confirm("提取独立音频失败，是否仍继续删除视频？（文字笔记与文案仍将完整保留）")) {
+              return;
+            }
+          }
+        }
+
+        showToast("⏳ 正在从 Cloudflare R2 删除视频...");
+        const res = await fetch(`/api/notes/${note.id}/delete-media`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ target: "video" })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || "删除视频失败");
+
+        note.videos = [];
+        showToast("🎬 视频文件已成功删除！纯音频与语音文案完整保留，已大幅腾出云端空间！");
+      } else if (target === "audio") {
+        if (!hasAudio) return;
+        if (!confirm("确定要仅删除独立语音文件吗？视频画面、文案与笔记仍将完整保留。")) return;
+
+        showToast("⏳ 正在从 Cloudflare R2 删除语音文件...");
+        const res = await fetch(`/api/notes/${note.id}/delete-media`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ target: "audio" })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || "删除语音失败");
+
+        note.audioUrl = "";
+        showToast("🎧 语音文件已成功删除，已腾出云端空间！");
+      } else if (target === "both") {
+        if (!confirm("确定要同时删除视频和语音文件吗？\n当前笔记文字、感想、分类标签及【提取语音文案】将 100% 完整保留，云端大文件空间将完全释放。")) return;
+
+        showToast("⏳ 正在从 Cloudflare R2 彻底删除音视频文件...");
+        const res = await fetch(`/api/notes/${note.id}/delete-media`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ target: "both" })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || "删除音视频失败");
+
+        note.videos = [];
+        note.audioUrl = "";
+        showToast("💥 音视频媒体已全部删除！文字笔记与语音文案安全留存，已最大化腾出云端空间！");
+      }
+
+      closeCleanupModal();
+      openNoteDetail(note.id);
+      loadStorageUsage({ forceRefresh: true });
+    } catch (err) {
+      showToast(`操作失败: ${err.message}`);
+    }
+  };
+
+  document.getElementById("btn-cleanup-video-only")?.addEventListener("click", () => executeMediaCleanup("video"));
+  document.getElementById("btn-cleanup-audio-only")?.addEventListener("click", () => executeMediaCleanup("audio"));
+  document.getElementById("btn-cleanup-both")?.addEventListener("click", () => executeMediaCleanup("both"));
 
   // 设置弹窗
   const settingsModal = document.getElementById("modal-settings");

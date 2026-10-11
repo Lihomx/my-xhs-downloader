@@ -54,12 +54,18 @@ export async function initDb(db) {
       updated_at INTEGER NOT NULL
     )`).run();
 
-    // 数据库迁移：如果旧 notes 表没有 tags_json / transcript 字段则动态补充
+    // 数据库迁移：如果旧 notes 表没有 tags_json / transcript / audio_url / audio_r2_key 字段则动态补充
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN tags_json TEXT DEFAULT '[]'").run();
     } catch {}
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN transcript TEXT DEFAULT ''").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN audio_url TEXT DEFAULT ''").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN audio_r2_key TEXT DEFAULT ''").run();
     } catch {}
 
     const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
@@ -512,6 +518,8 @@ export async function getNote(db, id) {
     coverUrl: row.cover_url,
     images: row.images_json ? JSON.parse(row.images_json) : [],
     videos: row.videos_json ? JSON.parse(row.videos_json) : [],
+    audioUrl: row.audio_url || "",
+    audioR2Key: row.audio_r2_key || "",
     thoughts: row.thoughts || "",
     tags: Array.isArray(tags) ? tags : [],
     transcript: row.transcript || "",
@@ -583,6 +591,9 @@ export async function deleteNote(env, id) {
     for (const v of note.videos) {
       if (v.r2Key) keysToDelete.push(v.r2Key);
     }
+    if (note.audioR2Key) {
+      keysToDelete.push(note.audioR2Key);
+    }
     if (keysToDelete.length > 0) {
       await env.R2_BUCKET.delete(keysToDelete);
     }
@@ -592,6 +603,106 @@ export async function deleteNote(env, id) {
   await env.DB.prepare("DELETE FROM notes WHERE id = ?").bind(id).run();
   invalidateUsageCache();
   return true;
+}
+
+/**
+ * 选择性删除笔记的媒体资产 (仅视频 / 仅音频 / 视频和音频一起删除)，腾出 R2 硬盘空间
+ * 保留笔记标题、正文、标签、感想以及提取的语音文案 (transcript)
+ */
+export async function deleteNoteMedia(env, id, { target = 'both' } = {}) {
+  if (!env.DB) throw new Error("数据库未绑定");
+  await initDb(env.DB);
+
+  const note = await getNote(env.DB, id);
+  if (!note) throw new Error("笔记不存在");
+
+  const keysToDelete = [];
+  let updateVideos = false;
+  let updateAudio = false;
+
+  if (target === 'video' || target === 'both') {
+    if (Array.isArray(note.videos)) {
+      for (const v of note.videos) {
+        if (v.r2Key) keysToDelete.push(v.r2Key);
+      }
+    }
+    updateVideos = true;
+  }
+
+  if (target === 'audio' || target === 'both') {
+    if (note.audioR2Key) {
+      keysToDelete.push(note.audioR2Key);
+    }
+    updateAudio = true;
+  }
+
+  // 从 R2 删除指定媒体文件
+  if (env.R2_BUCKET && keysToDelete.length > 0) {
+    try {
+      await env.R2_BUCKET.delete(keysToDelete);
+    } catch (e) {
+      console.warn("R2 delete media error:", e);
+    }
+  }
+
+  const now = Date.now();
+  if (updateVideos && updateAudio) {
+    await env.DB.prepare("UPDATE notes SET videos_json = '[]', audio_url = '', audio_r2_key = '', updated_at = ? WHERE id = ?")
+      .bind(now, id).run();
+  } else if (updateVideos) {
+    await env.DB.prepare("UPDATE notes SET videos_json = '[]', updated_at = ? WHERE id = ?")
+      .bind(now, id).run();
+  } else if (updateAudio) {
+    await env.DB.prepare("UPDATE notes SET audio_url = '', audio_r2_key = '', updated_at = ? WHERE id = ?")
+      .bind(now, id).run();
+  }
+
+  invalidateUsageCache();
+
+  return {
+    success: true,
+    target,
+    deletedKeys: keysToDelete,
+    hasVideos: updateVideos ? false : (note.videos?.length > 0),
+    hasAudio: updateAudio ? false : Boolean(note.audioUrl)
+  };
+}
+
+/**
+ * 保存提取的独立轻量纯音频到 R2，并关联到笔记
+ */
+export async function saveNoteAudio(env, id, audioBuffer, mimeType = 'audio/wav') {
+  if (!env.DB) throw new Error("数据库未绑定");
+  await initDb(env.DB);
+
+  const note = await getNote(env.DB, id);
+  if (!note) throw new Error("笔记不存在");
+
+  if (!env.R2_BUCKET) throw new Error("R2 存储未绑定");
+
+  const ext = mimeType.includes('mp3') ? 'mp3' : (mimeType.includes('m4a') ? 'm4a' : 'wav');
+  const key = `audios/${id}/audio.${ext}`;
+
+  await env.R2_BUCKET.put(key, audioBuffer, {
+    httpMetadata: {
+      contentType: mimeType,
+      cacheControl: 'public, max-age=31536000, immutable'
+    }
+  });
+
+  const audioUrl = `/api/media/${key}`;
+  const now = Date.now();
+
+  await env.DB.prepare("UPDATE notes SET audio_url = ?, audio_r2_key = ?, updated_at = ? WHERE id = ?")
+    .bind(audioUrl, key, now, id).run();
+
+  invalidateUsageCache();
+
+  return {
+    success: true,
+    audioUrl,
+    r2Key: key
+  };
 }
 
 /**
