@@ -59,43 +59,37 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
         // 诊断追踪接口
         if (path === '/api/debug-trace') {
           const noteTarget = 'https://www.xiaohongshu.com/discovery/item/6ac82df70000000015003230?app_platform=ios&app_version=9.49.1&share_from_user_hidden=true&xsec_source=app_share&type=video&xsec_token=CBPglKQq33eGh7sjGi4t_5RE7sSQQS5wy0QfAl_Lcrnlw=&author_share=1&xhsshare=CopyLink';
-          const exploreTarget = 'https://www.xiaohongshu.com/explore/6ac82df70000000015003230?xsec_token=CBPglKQq33eGh7sjGi4t_5RE7sSQQS5wy0QfAl_Lcrnlw=';
+          const customCookie = url.searchParams.get('cookie') || '';
+
+          // 1. 先访问首页获取基础 cookies
+          let initialCookies = '';
+          try {
+            const homeRes = await fetch('https://www.xiaohongshu.com/', {
+              headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
+              }
+            });
+            const setCookies = homeRes.headers.getSetCookie ? homeRes.headers.getSetCookie() : [homeRes.headers.get('set-cookie')];
+            initialCookies = setCookies.filter(Boolean).map(c => c.split(';')[0]).join('; ');
+          } catch {}
 
           const tests = [
             {
-              name: 'iPhone UA (current default)',
+              name: 'With initial cookies from homepage',
               url: noteTarget,
               headers: {
                 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
                 'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.7'
+                'cookie': initialCookies
               }
             },
             {
-              name: 'Desktop Chrome UA',
+              name: 'With custom cookie provided',
               url: noteTarget,
               headers: {
                 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.7'
-              }
-            },
-            {
-              name: 'Desktop Chrome UA with /explore/',
-              url: exploreTarget,
-              headers: {
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.7'
-              }
-            },
-            {
-              name: 'WeChat Mobile UA',
-              url: noteTarget,
-              headers: {
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.49 NetType/WIFI Language/zh_CN',
                 'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'accept-language': 'zh-CN,zh;q=0.9'
+                'cookie': customCookie || initialCookies
               }
             }
           ];
@@ -118,7 +112,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             }
           }
 
-          return json({ results });
+          return json({ initialCookies, results });
         }
 
         // 3. 校验 PIN 码
