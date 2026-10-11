@@ -61,7 +61,8 @@ const state = {
   batchQueue: [],
   isBatchRunning: false,
   shouldStopBatch: false,
-  batchResults: []
+  batchResults: [],
+  usageData: null
 };
 
 // 工具函数：轻提示 (错误提示一直显示在底部，附带关闭按钮)
@@ -1189,6 +1190,135 @@ async function refreshNotesBadge() {
   } catch {}
 }
 
+// Cloudflare 免费版用量与存储统计加载
+async function loadStorageUsage({ forceRefresh = false, showToastOnSuccess = false } = {}) {
+  try {
+    const refreshBtn = document.getElementById("btn-refresh-usage");
+    if (refreshBtn && forceRefresh) {
+      refreshBtn.textContent = "🔄 统计中...";
+      refreshBtn.disabled = true;
+    }
+
+    const res = await fetch(`/api/usage?pin=${encodeURIComponent(state.pin)}${forceRefresh ? '&refresh=1' : ''}`, {
+      headers: { "x-auth-pin": state.pin }
+    });
+
+    if (res.status === 401) {
+      return;
+    }
+
+    const data = await res.json();
+    if (!data.success) return;
+
+    state.usageData = data;
+    renderStorageUsageUI(data);
+
+    if (showToastOnSuccess) {
+      showToast("🔄 Cloudflare 资源用量数据已刷新！");
+    }
+  } catch (err) {
+    console.warn("loadStorageUsage error:", err);
+  } finally {
+    const refreshBtn = document.getElementById("btn-refresh-usage");
+    if (refreshBtn) {
+      refreshBtn.textContent = "🔄 刷新";
+      refreshBtn.disabled = false;
+    }
+  }
+}
+
+function renderStorageUsageUI(data) {
+  if (!data) return;
+
+  const r2 = data.r2 || {};
+  const d1 = data.d1 || {};
+  const status = data.status || 'safe';
+
+  // 1. 顶部导航栏用量指示
+  const navLabel = document.getElementById("nav-usage-label");
+  const navDot = document.getElementById("nav-usage-dot");
+  if (navLabel) {
+    navLabel.textContent = r2.totalBytesFormatted ? `存储: ${r2.totalBytesFormatted}` : "存储用量";
+  }
+  if (navDot) {
+    navDot.className = `nav-usage-dot ${status}`;
+    navDot.title = status === 'safe' ? '配额安全充足' : (status === 'warning' ? '存储空间已使用过半' : '已达配额预警临界点');
+  }
+
+  // 2. 知识库胶囊按钮
+  const kbUsageText = document.getElementById("kb-usage-text");
+  if (kbUsageText) {
+    kbUsageText.textContent = `硬盘: ${r2.totalBytesFormatted || '0 B'} / 10 GB`;
+  }
+
+  // 3. 设置弹窗简报卡片
+  const settingsVal = document.getElementById("settings-r2-val");
+  const settingsBar = document.getElementById("settings-r2-bar");
+  const settingsPercent = document.getElementById("settings-r2-percent");
+  if (settingsVal) settingsVal.textContent = `${r2.totalBytesFormatted || '0 B'} (${r2.totalFiles || 0} 个文件)`;
+  if (settingsBar) {
+    settingsBar.style.width = `${Math.min(100, Math.max(r2.totalBytes > 0 ? 1 : 0, r2.usedPercent || 0))}%`;
+    settingsBar.className = `usage-progress-bar ${status}`;
+  }
+  if (settingsPercent) settingsPercent.textContent = `${r2.usedPercent || 0}%`;
+
+  // 4. 专属监控弹窗
+  const statusBadge = document.getElementById("usage-status-badge");
+  if (statusBadge) {
+    statusBadge.className = `usage-badge ${status}`;
+    if (status === 'safe') {
+      statusBadge.textContent = '🟢 状态充裕 (安全)';
+    } else if (status === 'warning') {
+      statusBadge.textContent = '🟡 空间过半 (关注)';
+    } else {
+      statusBadge.textContent = '🔴 临界预警 (建议清理)';
+    }
+  }
+
+  // R2 数据
+  const r2UsedVal = document.getElementById("usage-r2-used-val");
+  const r2PercentVal = document.getElementById("usage-r2-percent-val");
+  const r2Bar = document.getElementById("usage-r2-bar");
+  const r2RemainVal = document.getElementById("usage-r2-remain-val");
+  const r2ImgCount = document.getElementById("usage-r2-img-count");
+  const r2VidCount = document.getElementById("usage-r2-video-count");
+  const r2TotalCount = document.getElementById("usage-r2-total-count");
+
+  if (r2UsedVal) r2UsedVal.textContent = r2.totalBytesFormatted || '0 B';
+  if (r2PercentVal) r2PercentVal.textContent = `${r2.usedPercent || 0}%`;
+  if (r2Bar) {
+    r2Bar.style.width = `${Math.min(100, Math.max(r2.totalBytes > 0 ? 1 : 0, r2.usedPercent || 0))}%`;
+    r2Bar.className = `usage-progress-bar ${status}`;
+  }
+  if (r2RemainVal) r2RemainVal.textContent = r2.remainingFormatted || '10 GB';
+  if (r2ImgCount) r2ImgCount.textContent = `${r2.imageCount || 0} 张`;
+  if (r2VidCount) r2VidCount.textContent = `${r2.videoCount || 0} 部`;
+  if (r2TotalCount) r2TotalCount.textContent = `${r2.totalFiles || 0} 个`;
+
+  // D1 数据
+  const d1UsedVal = document.getElementById("usage-d1-used-val");
+  const d1PercentVal = document.getElementById("usage-d1-percent-val");
+  const d1Bar = document.getElementById("usage-d1-bar");
+  const d1NotesCount = document.getElementById("usage-d1-notes-count");
+  const d1RemainVal = document.getElementById("usage-d1-remain-val");
+
+  if (d1UsedVal) d1UsedVal.textContent = d1.approxBytesFormatted || '0 B';
+  if (d1PercentVal) d1PercentVal.textContent = `${d1.usedPercent || 0}%`;
+  if (d1Bar) {
+    d1Bar.style.width = `${Math.min(100, Math.max(d1.approxBytes > 0 ? 1 : 0, d1.usedPercent || 0))}%`;
+  }
+  if (d1NotesCount) d1NotesCount.textContent = d1.noteCount || 0;
+  if (d1RemainVal) d1RemainVal.textContent = d1.remainingFormatted || '5 GB';
+
+  // Workers AI
+  const aiSub = document.getElementById("usage-ai-sub");
+  if (aiSub && data.ai) {
+    aiSub.textContent = data.ai.hasCustomWhisperKey 
+      ? "✅ 已配置第三方 Whisper API Key (备选不限量)" 
+      : "可在系统设置配置 Groq Key 作为不限量备选";
+  }
+}
+
 // 知识库分类与笔记加载
 async function loadTags() {
   const tagListContainer = document.getElementById("kb-tag-list");
@@ -1781,6 +1911,7 @@ document.addEventListener("DOMContentLoaded", () => {
       showPinLockView(false);
       loadTags();
       loadNotes();
+      loadStorageUsage();
       showToast("🔓 PIN 码验证成功");
     } else {
       const hint = document.getElementById("kb-pin-error");
@@ -2032,6 +2163,7 @@ document.addEventListener("DOMContentLoaded", () => {
         loadTags();
         loadNotes(document.getElementById("kb-search-input")?.value || "");
         refreshNotesBadge();
+        loadStorageUsage({ forceRefresh: true });
       }
     } catch (err) {
       showToast(`删除失败: ${err.message}`);
@@ -2042,6 +2174,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const settingsModal = document.getElementById("modal-settings");
   document.getElementById("btn-open-settings")?.addEventListener("click", async () => {
     settingsModal?.classList.add("active");
+    loadStorageUsage();
     const cookieEl = document.getElementById("settings-xhs-cookie");
     if (cookieEl) cookieEl.value = state.xhsCookie || "";
     const oldPinEl = document.getElementById("settings-old-pin");
@@ -2138,6 +2271,35 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 初始获取一次徽标计数
+  // Cloudflare 用量监控专属弹窗交互管理
+  const usageModal = document.getElementById("modal-usage");
+  const openUsageModal = () => {
+    usageModal?.classList.add("active");
+    loadStorageUsage();
+  };
+
+  document.getElementById("btn-open-usage")?.addEventListener("click", openUsageModal);
+  document.getElementById("btn-kb-usage-pill")?.addEventListener("click", openUsageModal);
+  document.getElementById("btn-settings-open-usage-modal")?.addEventListener("click", () => {
+    settingsModal?.classList.remove("active");
+    openUsageModal();
+  });
+
+  const closeUsageModal = () => {
+    usageModal?.classList.remove("active");
+  };
+  document.getElementById("btn-close-usage-modal")?.addEventListener("click", closeUsageModal);
+  document.getElementById("btn-close-usage-footer")?.addEventListener("click", closeUsageModal);
+  usageModal?.addEventListener("click", (e) => {
+    if (e.target === usageModal) closeUsageModal();
+  });
+
+  // 刷新用量
+  document.getElementById("btn-refresh-usage")?.addEventListener("click", () => {
+    loadStorageUsage({ forceRefresh: true, showToastOnSuccess: true });
+  });
+
+  // 初始获取一次徽标计数与存储用量
   refreshNotesBadge();
+  loadStorageUsage();
 });

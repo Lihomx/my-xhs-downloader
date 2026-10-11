@@ -39,6 +39,12 @@
             </div>
           </label>
 
+          <!-- Cloudflare 存储用量按钮 -->
+          <button id="btn-open-usage" class="btn btn-ghost nav-usage-btn" title="查看 Cloudflare 免费配额与存储用量">
+            📊 <span id="nav-usage-label" class="nav-usage-label">存储用量</span>
+            <span id="nav-usage-dot" class="nav-usage-dot safe" title="配额安全"></span>
+          </button>
+
           <!-- 设置 -->
           <button id="btn-open-settings" class="btn btn-ghost" title="系统设置">
             ⚙️ 设置
@@ -218,6 +224,9 @@
                 <input type="text" id="kb-search-input" class="search-input" placeholder="🔍 检索标题、正文、随笔批注或标签..." />
               </div>
               <div class="kb-actions-group">
+                <button id="btn-kb-usage-pill" class="btn btn-secondary kb-usage-pill-btn" type="button" title="点击查看 Cloudflare 免费配额与存储用量">
+                  ☁️ <span id="kb-usage-text">硬盘: 计算中...</span>
+                </button>
                 <button id="btn-add-tag-quick" class="btn btn-secondary" type="button">
                   ➕ 新建分类
                 </button>
@@ -392,6 +401,27 @@
         </div>
 
         <div class="modal-body">
+          <!-- Cloudflare 免费版用量简报卡片 -->
+          <div class="settings-usage-box">
+            <div class="settings-usage-header">
+              <span class="settings-usage-title">📊 Cloudflare 免费资源用量</span>
+              <button id="btn-settings-open-usage-modal" class="btn btn-ghost btn-xs" type="button">
+                查看详细监控 ↗
+              </button>
+            </div>
+            <div class="settings-usage-row">
+              <span class="settings-usage-label">☁️ R2 媒体硬盘:</span>
+              <span id="settings-r2-val" class="settings-usage-val">计算中...</span>
+            </div>
+            <div class="usage-progress-track" style="margin: 6px 0 8px 0; height: 7px;">
+              <div id="settings-r2-bar" class="usage-progress-bar safe" style="width: 0%;"></div>
+            </div>
+            <div class="settings-usage-meta">
+              <span>免费额度: 10 GB (流量永不收费)</span>
+              <span id="settings-r2-percent">0%</span>
+            </div>
+          </div>
+
           <h4 style="font-size: 14px; margin-bottom: 6px;">🍪 小红书 Cookie 凭据 (防风控必备)</h4>
           <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.5;">
             由于 Cloudflare Workers 运行于海外机房 IP，小红书偶尔会触发滑块拦截 (461)。在浏览器打开小红书网页版，按 F12 复制请求头中的 <code>Cookie</code>（或包含 <code>a1=...</code> 字段）粘贴于此，即可长久稳定直通抓取：
@@ -420,6 +450,172 @@
             💾 保存设置到 Cloudflare
           </button>
           <p id="settings-msg" style="font-size: 13px; margin-top: 10px; text-align: center; display: none;"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cloudflare 免费配额与资源用量监控弹窗 -->
+    <div id="modal-usage" class="modal-overlay">
+      <div class="modal" style="max-width: 600px;">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <h3 style="font-size: 17px; margin: 0;">📊 Cloudflare 免费版配额与用量监控</h3>
+            <span id="usage-status-badge" class="usage-badge safe">🟢 状态充裕</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button id="btn-refresh-usage" class="btn btn-ghost btn-sm" type="button" title="重新扫描并计算最新用量">
+              🔄 刷新
+            </button>
+            <button id="btn-close-usage-modal" class="drawer-close" type="button">✕</button>
+          </div>
+        </div>
+
+        <div class="modal-body" style="max-height: 80vh; overflow-y: auto;">
+          <!-- 核心安全状态与扣费保障提示 -->
+          <div class="usage-security-card">
+            <div class="security-card-title">
+              <span style="font-size: 16px;">🛡️ 免费版配额与安心扣费保障</span>
+            </div>
+            <p class="security-card-desc">
+              Cloudflare 免费版在<strong>未绑定信用卡</strong>时，若超出配额系统会自动安全拦截新写入，<strong>绝不会暗中扣费</strong>。且 R2 存储<strong>永远不收任何公网出网流量费 ($0 Egress)</strong>，请放心使用！
+            </p>
+          </div>
+
+          <!-- 卡片 1: R2 对象存储 (xhs-media) -->
+          <div class="usage-section-card">
+            <div class="usage-card-header">
+              <div class="usage-card-title-group">
+                <span class="usage-icon">☁️</span>
+                <div>
+                  <h4 class="usage-card-title">R2 对象存储 (媒体硬盘 - xhs-media)</h4>
+                  <span class="usage-card-subtitle">存放笔记高清图片、实况图和视频源文件</span>
+                </div>
+              </div>
+              <div class="usage-quota-pill">
+                免费配额 10 GB
+              </div>
+            </div>
+
+            <!-- 主进度条 -->
+            <div class="usage-progress-container">
+              <div class="usage-progress-header">
+                <div class="usage-progress-value">
+                  已用 <strong id="usage-r2-used-val">0 B</strong> / 10 GB
+                </div>
+                <div id="usage-r2-percent-val" class="usage-progress-percent">0%</div>
+              </div>
+              <div class="usage-progress-track">
+                <div id="usage-r2-bar" class="usage-progress-bar safe" style="width: 0%;"></div>
+              </div>
+              <div class="usage-progress-footer">
+                <span>剩余可用空间：<strong id="usage-r2-remain-val">10 GB</strong></span>
+                <span class="usage-free-tag">🎉 出网流量 $0 永久免费</span>
+              </div>
+            </div>
+
+            <!-- 文件细节网格 -->
+            <div class="usage-grid-3">
+              <div class="usage-stat-box">
+                <span class="stat-box-label">🖼️ 高清图片</span>
+                <span id="usage-r2-img-count" class="stat-box-num">0</span>
+              </div>
+              <div class="usage-stat-box">
+                <span class="stat-box-label">🎬 视频/实况</span>
+                <span id="usage-r2-video-count" class="stat-box-num">0</span>
+              </div>
+              <div class="usage-stat-box">
+                <span class="stat-box-label">📦 文件总计</span>
+                <span id="usage-r2-total-count" class="stat-box-num">0</span>
+              </div>
+            </div>
+
+            <div class="usage-rules-foot">
+              <span>📌 免费版月度操作额度：A 类写入 100 万次/月 · B 类读取 1000 万次/月</span>
+            </div>
+          </div>
+
+          <!-- 卡片 2: D1 SQLite 数据库 (xhs-db) -->
+          <div class="usage-section-card">
+            <div class="usage-card-header">
+              <div class="usage-card-title-group">
+                <span class="usage-icon">🗄️</span>
+                <div>
+                  <h4 class="usage-card-title">D1 结构化数据库 (xhs-db)</h4>
+                  <span class="usage-card-subtitle">存放笔记标题、正文、标签、感想批注与系统设置</span>
+                </div>
+              </div>
+              <div class="usage-quota-pill">
+                免费配额 5 GB
+              </div>
+            </div>
+
+            <!-- 主进度条 -->
+            <div class="usage-progress-container">
+              <div class="usage-progress-header">
+                <div class="usage-progress-value">
+                  已用 <strong id="usage-d1-used-val">0 B</strong> / 5 GB
+                </div>
+                <div id="usage-d1-percent-val" class="usage-progress-percent">0%</div>
+              </div>
+              <div class="usage-progress-track">
+                <div id="usage-d1-bar" class="usage-progress-bar safe" style="width: 0%;"></div>
+              </div>
+              <div class="usage-progress-footer">
+                <span>已收藏笔记数：<strong id="usage-d1-notes-count">0</strong> 篇</span>
+                <span>剩余容量：<strong id="usage-d1-remain-val">5 GB</strong></span>
+              </div>
+            </div>
+
+            <div class="usage-rules-foot">
+              <span>📌 免费版每日读写额度：每天 500 万行读取 (5M reads) · 每天 10 万行写入 (100k writes)</span>
+            </div>
+          </div>
+
+          <!-- 卡片 3: Workers 无服务器请求与 Workers AI -->
+          <div class="usage-section-card">
+            <div class="usage-card-header">
+              <div class="usage-card-title-group">
+                <span class="usage-icon">⚡</span>
+                <div>
+                  <h4 class="usage-card-title">Workers 计算与 AI 语音转写</h4>
+                  <span class="usage-card-subtitle">全球边缘节点计算网络与 Whisper 智能语音模型</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="usage-grid-2">
+              <div class="usage-info-tile">
+                <div class="tile-icon">🌐</div>
+                <div class="tile-body">
+                  <div class="tile-title">Workers 每日请求配额</div>
+                  <div class="tile-val">100,000 次 / 天 (免费)</div>
+                  <div class="tile-sub">超大并发额度，日常采集使用率通常 &lt; 1%</div>
+                </div>
+              </div>
+              <div class="usage-info-tile">
+                <div class="tile-icon">🎙️</div>
+                <div class="tile-body">
+                  <div class="tile-title">Workers AI 语音转写</div>
+                  <div id="usage-ai-val" class="tile-val">10,000 Neurons / 天 (免费)</div>
+                  <div id="usage-ai-sub" class="tile-sub">可在系统设置配置 Groq Key 作为不限量备选</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 空间清理与防超限实用操作建议 -->
+          <div class="usage-tips-card">
+            <div class="tips-card-title">💡 如何安全管理与释放云端硬盘空间？</div>
+            <ul class="tips-list">
+              <li><strong>彻底删除释放空间：</strong>在「📚 收藏知识库」中打开不需要的笔记，点击详情底部的「🗑️ 彻底删除本篇」，系统将自动同步永久删除 R2 中的图片和视频文件，立即释放硬盘容量。</li>
+              <li><strong>本地打包归档：</strong>可通过「📦 一键打包全部采集结果 (ZIP)」将重要笔记批量下载并保存在自己电脑硬盘，随后在知识库中清理云端文件。</li>
+              <li><strong>自动缓存与刷新：</strong>系统默认 5 分钟智能缓存用量数据避免高频扫描，点击右上角「🔄 刷新」可随时获取最新实时统计。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="modal-footer" style="justify-content: flex-end;">
+          <button id="btn-close-usage-footer" class="btn btn-primary" type="button">我知道了</button>
         </div>
       </div>
     </div>

@@ -23,7 +23,8 @@ import {
   deleteCustomTag,
   updateNoteTags,
   updateTranscript,
-  updateNoteDetail
+  updateNoteDetail,
+  getStorageUsage
 } from './storage-service.js';
 
 const NODE_ROUTES = { '/api/parse': parse, '/api/image': image, '/api/video': video };
@@ -267,6 +268,17 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             return json({ success: true, tags });
           }
           return json({ success: false, message: "未知标签操作" }, 400);
+        }
+
+        // 4.6. Cloudflare 资源用量与免费额度监控 (GET /api/usage)
+        if (path === '/api/usage' && request.method === 'GET') {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const forceRefresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('force') === 'true';
+          const usage = await getStorageUsage(env, { forceRefresh });
+          return json({ success: true, ...usage });
         }
 
         // 5. 笔记检索与列表 (GET /api/notes)

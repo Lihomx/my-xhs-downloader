@@ -421,6 +421,8 @@ export async function archiveNote(env, noteData) {
     now
   ).run();
 
+  invalidateUsageCache();
+
   return {
     id: noteId,
     title: cleanTitle,
@@ -588,6 +590,7 @@ export async function deleteNote(env, id) {
 
   // 从 D1 删除记录
   await env.DB.prepare("DELETE FROM notes WHERE id = ?").bind(id).run();
+  invalidateUsageCache();
   return true;
 }
 
@@ -605,4 +608,204 @@ export async function serveMedia(r2, key) {
   headers.set("cache-control", "public, max-age=31536000, immutable");
 
   return new Response(object.body, { headers });
+}
+
+/**
+ * 体积大小格式化工具
+ */
+export function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  if (!bytes || isNaN(bytes)) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+/**
+ * 缓存机制：避免高频调用 R2 list 消耗操作配额
+ */
+let usageCache = {
+  timestamp: 0,
+  data: null
+};
+
+export function invalidateUsageCache() {
+  usageCache.timestamp = 0;
+  usageCache.data = null;
+}
+
+/**
+ * 统计 Cloudflare R2、D1 与免费版资源用量
+ */
+export async function getStorageUsage(env, { forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (!forceRefresh && usageCache.data && (now - usageCache.timestamp < 300000)) {
+    return { ...usageCache.data, cached: true, cachedAt: usageCache.timestamp };
+  }
+
+  const R2_FREE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
+  const D1_FREE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;  // 5 GB
+
+  let r2Stats = {
+    bound: Boolean(env.R2_BUCKET),
+    bucketName: 'xhs-media',
+    totalBytes: 0,
+    totalBytesFormatted: '0 B',
+    quotaBytes: R2_FREE_QUOTA_BYTES,
+    quotaFormatted: '10 GB',
+    usedPercent: 0,
+    remainingBytes: R2_FREE_QUOTA_BYTES,
+    remainingFormatted: '10 GB',
+    totalFiles: 0,
+    imageCount: 0,
+    videoCount: 0,
+    otherCount: 0,
+    classAQuota: '1,000,000 次 / 月',
+    classBQuota: '10,000,000 次 / 月',
+    egressFee: '$0 (永久免费无流量费)'
+  };
+
+  if (env.R2_BUCKET) {
+    try {
+      let totalSizeBytes = 0;
+      let totalFiles = 0;
+      let imageCount = 0;
+      let videoCount = 0;
+      let otherCount = 0;
+      let truncated = true;
+      let cursor = undefined;
+      let pages = 0;
+      const maxPages = 20;
+
+      while (truncated && pages < maxPages) {
+        pages++;
+        const list = await env.R2_BUCKET.list({ limit: 1000, cursor });
+        for (const obj of (list.objects || [])) {
+          totalFiles++;
+          totalSizeBytes += (obj.size || 0);
+          const k = (obj.key || '').toLowerCase();
+          if (k.endsWith('.mp4') || k.endsWith('.mov') || k.endsWith('.webm')) {
+            videoCount++;
+          } else if (k.endsWith('.jpg') || k.endsWith('.jpeg') || k.endsWith('.png') || k.endsWith('.webp') || k.endsWith('.gif')) {
+            imageCount++;
+          } else {
+            otherCount++;
+          }
+        }
+        truncated = Boolean(list.truncated);
+        cursor = list.cursor;
+      }
+
+      const percent = Number(((totalSizeBytes / R2_FREE_QUOTA_BYTES) * 100).toFixed(2));
+      const remaining = Math.max(0, R2_FREE_QUOTA_BYTES - totalSizeBytes);
+
+      r2Stats = {
+        ...r2Stats,
+        totalBytes: totalSizeBytes,
+        totalBytesFormatted: formatBytes(totalSizeBytes),
+        usedPercent: percent,
+        remainingBytes: remaining,
+        remainingFormatted: formatBytes(remaining),
+        totalFiles,
+        imageCount,
+        videoCount,
+        otherCount
+      };
+    } catch (err) {
+      console.error('R2 getStorageUsage error:', err);
+    }
+  }
+
+  let d1Stats = {
+    bound: Boolean(env.DB),
+    dbName: 'xhs-db',
+    noteCount: 0,
+    approxBytes: 0,
+    approxBytesFormatted: '0 B',
+    quotaBytes: D1_FREE_QUOTA_BYTES,
+    quotaFormatted: '5 GB',
+    usedPercent: 0,
+    remainingBytes: D1_FREE_QUOTA_BYTES,
+    remainingFormatted: '5 GB',
+    dailyReadsQuota: '5,000,000 行 / 天',
+    dailyWritesQuota: '100,000 行 / 天'
+  };
+
+  if (env.DB) {
+    try {
+      await initDb(env.DB);
+      const row = await env.DB.prepare(`
+        SELECT 
+          COUNT(*) as total_notes,
+          COALESCE(SUM(LENGTH(COALESCE(title, '')) + LENGTH(COALESCE(content, '')) + LENGTH(COALESCE(images_json, '')) + LENGTH(COALESCE(videos_json, '')) + LENGTH(COALESCE(thoughts, '')) + LENGTH(COALESCE(tags_json, '')) + LENGTH(COALESCE(transcript, '')) + LENGTH(COALESCE(source_url, ''))), 0) as total_bytes
+        FROM notes
+      `).first();
+
+      const noteCount = Number(row?.total_notes || 0);
+      const approxBytes = Number(row?.total_bytes || 0);
+      const percent = Number(((approxBytes / D1_FREE_QUOTA_BYTES) * 100).toFixed(4));
+      const remaining = Math.max(0, D1_FREE_QUOTA_BYTES - approxBytes);
+
+      d1Stats = {
+        ...d1Stats,
+        noteCount,
+        approxBytes,
+        approxBytesFormatted: formatBytes(approxBytes),
+        usedPercent: percent,
+        remainingBytes: remaining,
+        remainingFormatted: formatBytes(remaining)
+      };
+    } catch (err) {
+      console.error('D1 getStorageUsage error:', err);
+    }
+  }
+
+  let status = 'safe';
+  let statusText = '额度非常充裕，放心使用';
+  if (r2Stats.usedPercent >= 90 || d1Stats.usedPercent >= 90) {
+    status = 'danger';
+    statusText = '已达配额预警临界点，建议清理空间';
+  } else if (r2Stats.usedPercent >= 70 || d1Stats.usedPercent >= 70) {
+    status = 'warning';
+    statusText = '存储空间已使用过半，注意监控';
+  }
+
+  let hasCustomWhisperKey = false;
+  if (env.DB) {
+    try {
+      const key = await getSetting(env.DB, 'whisper_api_key', '');
+      hasCustomWhisperKey = Boolean(key);
+    } catch {}
+  }
+
+  const result = {
+    cached: false,
+    cachedAt: now,
+    status,
+    statusText,
+    r2: r2Stats,
+    d1: d1Stats,
+    workers: {
+      dailyRequestsQuota: '100,000 次 / 天',
+      egressTraffic: '永久免费'
+    },
+    ai: {
+      bound: Boolean(env.AI),
+      dailyQuota: '10,000 Neurons / 天 (Workers AI Whisper)',
+      hasCustomWhisperKey
+    },
+    protectionInfo: {
+      noAutoBilling: '在 Cloudflare 未绑定信用卡时，超出免费配额会自动拒绝新写入，官方绝不会强制扣费。',
+      freeEgress: 'Cloudflare R2 不收取任何出网流量费 (Egress $0)，图片与视频访问无限量免费流量。',
+      cleanMethod: '若需释放 R2 硬盘，可直接在知识库中点击笔记详情底部的「彻底删除本篇」，系统会自动同步彻底删除云端文件。'
+    }
+  };
+
+  usageCache = {
+    timestamp: now,
+    data: result
+  };
+
+  return result;
 }
