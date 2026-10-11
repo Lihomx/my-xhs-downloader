@@ -56,6 +56,29 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           });
         }
 
+        // 诊断追踪接口
+        if (path === '/api/debug-trace') {
+          const testUrl = url.searchParams.get('url') || 'https://xhslink.cn/o/6aciUClEkgl';
+          const logs = [];
+          try {
+            const { fetchNotePage } = await import('../lib/xhs.js');
+            const res = await fetchNotePage(testUrl, {
+              fetchImpl: async (u, opt) => {
+                const r = await fetch(u, opt);
+                logs.push({
+                  url: String(u),
+                  status: r.status,
+                  location: r.headers.get('location')
+                });
+                return r;
+              }
+            });
+            return json({ ok: true, finalUrl: res.finalUrl, htmlLen: res.html.length, logs });
+          } catch (err) {
+            return json({ ok: false, error: err.message, stack: err.stack, logs }, 200);
+          }
+        }
+
         // 3. 校验 PIN 码
         if (path === '/api/verify-pin' && request.method === 'POST') {
           const body = await request.json().catch(() => ({}));
