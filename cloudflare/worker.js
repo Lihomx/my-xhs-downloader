@@ -167,35 +167,12 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           // 默认使用 Cloudflare Workers AI 原生 Whisper 模型
           if (env.AI) {
             const errors = [];
+            const uint8 = new Uint8Array(audioBuffer);
 
-            // 策略 1: @cf/openai/whisper (标准稳定模型，直接支持 Uint8Array 数组)
+            // 策略 1: Uint8Array 二进制对象 (直接传递，0 内存膨胀，符合 Cloudflare AI 'binary' 规范)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper', {
-                audio: [...new Uint8Array(audioBuffer)]
-              });
-              if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-whisper' });
-              }
-            } catch (err) {
-              errors.push(`whisper-array: ${err.message}`);
-            }
-
-            // 策略 2: @cf/openai/whisper-large-v3-turbo (备选模型)
-            try {
-              const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                audio: [...new Uint8Array(audioBuffer)]
-              });
-              if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo' });
-              }
-            } catch (err) {
-              errors.push(`turbo-array: ${err.message}`);
-            }
-
-            // 策略 3: Uint8Array 二进制对象
-            try {
-              const aiResp = await env.AI.run('@cf/openai/whisper', {
-                audio: new Uint8Array(audioBuffer)
+                audio: uint8
               });
               if (aiResp && typeof aiResp.text === 'string') {
                 return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-uint8' });
@@ -204,24 +181,51 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               errors.push(`whisper-uint8: ${err.message}`);
             }
 
-            // 策略 4: Base64 编码方式 (适用于 turbo 模型的 Base64 规范)
+            // 策略 2: @cf/openai/whisper-large-v3-turbo (Uint8Array)
             try {
-              let binary = '';
-              const bytes = new Uint8Array(audioBuffer);
-              const len = bytes.byteLength;
-              for (let i = 0; i < len; i += 8192) {
-                binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, len)));
-              }
-              const base64Audio = btoa(binary);
-
               const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                audio: base64Audio
+                audio: uint8
               });
               if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-base64' });
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo-uint8' });
               }
             } catch (err) {
-              errors.push(`turbo-base64: ${err.message}`);
+              errors.push(`turbo-uint8: ${err.message}`);
+            }
+
+            // 策略 3: 如果音频体积较小 (<= 1.5MB)，降级使用 number[] 数组 (符合 'array' 规范)
+            if (audioBuffer.byteLength <= 1.5 * 1024 * 1024) {
+              try {
+                const aiResp = await env.AI.run('@cf/openai/whisper', {
+                  audio: Array.from(uint8)
+                });
+                if (aiResp && typeof aiResp.text === 'string') {
+                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-array' });
+                }
+              } catch (err) {
+                errors.push(`whisper-array: ${err.message}`);
+              }
+            }
+
+            // 策略 4: Base64 编码方式 (适用于 turbo 模型的 Base64 规范)
+            if (audioBuffer.byteLength <= 4 * 1024 * 1024) {
+              try {
+                let binary = '';
+                const len = uint8.byteLength;
+                for (let i = 0; i < len; i += 8192) {
+                  binary += String.fromCharCode.apply(null, uint8.subarray(i, Math.min(i + 8192, len)));
+                }
+                const base64Audio = btoa(binary);
+
+                const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
+                  audio: base64Audio
+                });
+                if (aiResp && typeof aiResp.text === 'string') {
+                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-base64' });
+                }
+              } catch (err) {
+                errors.push(`turbo-base64: ${err.message}`);
+              }
             }
 
             return json({ success: false, message: `Cloudflare AI 转写出错: ${errors.join(' | ')}` }, 500);

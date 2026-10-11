@@ -2247,3 +2247,35 @@ input:checked + .slider:before {
     padding: 5px 8px;
   }
 }
+
+/* 语音转写多段切片进度条与实时流式呈现 */
+.transcribe-progress-track {
+  width: 100%;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.transcribe-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary) 0%, #ff5277 100%);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.transcribe-live-preview {
+  margin-top: 12px;
+  max-height: 160px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #334155;
+  white-space: pre-wrap;
+}
+

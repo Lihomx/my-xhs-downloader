@@ -1,6 +1,6 @@
 import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
 import { toPinyinFilename } from "./lib/pinyin.js";
-import { extractWavFromMedia } from "./lib/audio.js";
+import { extractWavFromMedia, extractAudioChunksFromMedia } from "./lib/audio.js";
 
 // 智能规范化 Cookie 格式 (支持自动解析插件导出的 JSON 数组与多行文本)
 export function normalizeCookieString(raw) {
@@ -1098,7 +1098,44 @@ function renderTranscriptBox(container, text, noteId) {
   });
 }
 
-// 音频提取与 AI Whisper 语音识别
+// 发送单个音频切片至后端 Whisper 接口，安全兼容 JSON 与异常响应
+async function sendAudioChunkForTranscription(blob) {
+  const res = await fetch("/api/transcribe", {
+    method: "POST",
+    headers: {
+      "x-auth-pin": state.pin,
+      "Content-Type": "audio/wav"
+    },
+    body: blob
+  });
+
+  const contentType = res.headers.get("content-type") || "";
+  let data;
+  if (contentType.includes("application/json")) {
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error("服务端返回了损坏的 JSON 数据");
+    }
+  } else {
+    const textResp = await res.text();
+    if (res.status === 524 || res.status === 504) {
+      throw new Error("Cloudflare AI 请求超时 (524)，请稍后重试");
+    } else if (res.status === 413) {
+      throw new Error("音频切片超出体积限制 (413)");
+    } else {
+      throw new Error(`服务响应异常 (HTTP ${res.status}): ${textResp.slice(0, 100)}`);
+    }
+  }
+
+  if (!res.ok || !data.success) {
+    throw new Error(data.message || `识别失败 (HTTP ${res.status})`);
+  }
+
+  return (data.text || "").trim();
+}
+
+// 音频提取与 AI Whisper 语音识别 (支持多段切片流水线与实时流式文案呈现)
 async function transcribeAudio(mediaUrl, containerSelector, noteId) {
   const container = document.querySelector(containerSelector);
   if (!container) return;
@@ -1106,44 +1143,99 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
   container.innerHTML = `
     <div class="transcript-loading">
       <div class="spinner"></div>
-      <span id="transcribe-status-text">正在从视频提取并压缩音频轨道 (Web Audio API)...</span>
+      <div style="flex: 1; min-width: 0;">
+        <div id="transcribe-status-text" style="font-weight: 500; font-size: 13px; color: #334155; margin-bottom: 6px;">
+          正在从视频提取并解析音频轨道 (Web Audio API)...
+        </div>
+        <div id="transcribe-progress-track" class="transcribe-progress-track" style="display: none;">
+          <div id="transcribe-progress-bar" class="transcribe-progress-bar" style="width: 0%;"></div>
+        </div>
+      </div>
     </div>
+    <div id="transcribe-live-preview" class="transcribe-live-preview" style="display: none;"></div>
   `;
 
   const statusText = container.querySelector("#transcribe-status-text");
+  const progressTrack = container.querySelector("#transcribe-progress-track");
+  const progressBar = container.querySelector("#transcribe-progress-bar");
+  const livePreview = container.querySelector("#transcribe-live-preview");
 
   try {
-    const wavBlob = await extractWavFromMedia(mediaUrl, (msg) => {
+    const { duration, chunks } = await extractAudioChunksFromMedia(mediaUrl, (msg) => {
       if (statusText) statusText.textContent = msg;
-    });
+    }, 24);
 
-    if (statusText) statusText.textContent = "正在通过 AI (Whisper) 深度识别转写文本，请稍候...";
-    showToast("🎙️ 正在上传音频并进行 AI 语音转写...");
+    const totalChunks = chunks.length;
+    if (progressTrack) progressTrack.style.display = "block";
 
-    const res = await fetch("/api/transcribe", {
-      method: "POST",
-      headers: {
-        "x-auth-pin": state.pin,
-        "Content-Type": "audio/wav"
-      },
-      body: wavBlob
-    });
+    const minutes = Math.floor(duration / 60);
+    const seconds = Math.floor(duration % 60);
+    const durationStr = `${minutes > 0 ? `${minutes}分` : ''}${seconds}秒`;
 
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.message || `识别失败 (HTTP ${res.status})`);
+    if (statusText) {
+      statusText.textContent = totalChunks > 1
+        ? `音频共 ${durationStr}，已智能切分为 ${totalChunks} 个分段并发起 AI 识别...`
+        : `音频共 ${durationStr}，正在通过 AI 进行精准转写...`;
     }
 
-    const transcribedText = (data.text || "").trim();
-    if (!transcribedText) {
+    const transcribedParts = [];
+
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = chunks[i];
+      const chunkIndex = i + 1;
+      const percent = Math.round(((i) / totalChunks) * 100);
+
+      if (progressBar) progressBar.style.width = `${percent}%`;
+      if (statusText) {
+        statusText.textContent = totalChunks > 1
+          ? `正在识别分段 [${chunkIndex}/${totalChunks}] (${percent}%)...`
+          : "正在通过 AI (Whisper) 深度识别文本，请稍候...";
+      }
+
+      // 携带重试机制 (单段失败最多重试 1 次)
+      let chunkText = "";
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          chunkText = await sendAudioChunkForTranscription(chunk.blob);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+        }
+      }
+
+      if (lastErr && !chunkText) {
+        console.warn(`Chunk ${chunkIndex} error:`, lastErr);
+      }
+
+      if (chunkText) {
+        transcribedParts.push(chunkText);
+
+        // 实时流式呈现在预览区
+        if (livePreview) {
+          livePreview.style.display = "block";
+          livePreview.textContent = transcribedParts.join("\n\n");
+          livePreview.scrollTop = livePreview.scrollHeight;
+        }
+      }
+    }
+
+    if (progressBar) progressBar.style.width = "100%";
+
+    const fullTranscript = transcribedParts.join("\n\n").trim();
+    if (!fullTranscript) {
       throw new Error("未能识别出有效语音或音频中无清晰人声");
     }
 
-    // 渲染文案结果
-    renderTranscriptBox(container, transcribedText, noteId);
-    showToast("🎉 视频语音文案已成功提取！");
+    // 渲染最终文案结果面板
+    renderTranscriptBox(container, fullTranscript, noteId);
+    showToast(`🎉 视频语音文案已提取完成 (共识别 ${transcribedParts.length} 个分段)！`);
 
-    // 如果有关联笔记 ID，自动持久化保存至 D1
+    // 持久化保存至 D1 数据库
     const targetNoteId = noteId || (state.activeDetailNote?.id);
     if (targetNoteId) {
       try {
@@ -1153,10 +1245,10 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
             "Content-Type": "application/json",
             "x-auth-pin": state.pin
           },
-          body: JSON.stringify({ transcript: transcribedText })
+          body: JSON.stringify({ transcript: fullTranscript })
         });
         if (state.activeDetailNote && state.activeDetailNote.id === targetNoteId) {
-          state.activeDetailNote.transcript = transcribedText;
+          state.activeDetailNote.transcript = fullTranscript;
         }
       } catch (err) {
         console.warn("保存 transcript 到数据库失败:", err);
