@@ -366,8 +366,48 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (!rawText) return json({ success: false, message: "文本不能为空" }, 400);
 
           let punctuatedText = '';
-          if (env.AI) {
-            const systemPrompt = "你是一个专业的中文口语整理与语音识别（ASR）错别字纠错大师。你将接收一段由语音识别生成的中文文本，其中可能包含因发音相似导致的同音错别字与听写错误（例如：区利避害->趋利避害，是号一个劳的->是好逸恶劳的，不知的任务不跟进->布置的任务不跟进，用线机盘->期限拖延，技在心里->记在心里，东平吸凑->东拼西凑，争议之眼必之一眼->睁一只眼闭一只眼，气权->弃权，堵薄->赌博等）。\n你的核心任务：\n1. 结合上下文语境，精准将同音错别字和被听错的词语还原为规范正确的成语与词汇；\n2. 规范添加全角中文标点符号（逗号、句号、问号、感叹号、冒号），严禁使用英文标点；\n3. 核心分段要求：【一个句号为一个自然段落换行】！每一个完整句子（以句号、问号、感叹号结尾）必须单独独立成一行（单独一段），段内必须有自然的逗号停顿，切忌多句话堆在同一段；\n4. 严禁添加任何开场白、解释说明、前言或总结，直接输出修正和分段后的纯文本：";
+          const systemPrompt = "你是一个专业的中文口语整理、对话听写断句与语音识别（ASR）错别字纠错大师。你将接收一段由语音识别生成的口语文本，其中可能缺少标点符号、断句混乱（或多句话连续堆砌在一起），并且可能包含发音相近的同音错别字与口误。\n\n你的核心任务：\n1. 【对话与短句精细断句】：遇到人物对话、陈述或一句话说完，必须准确添加全角中文句号「。」；遇到疑问或反问语气（如多少钱、能优惠不、行不、好不、为啥、怎么）必须使用全角问号「？」；遇到强烈感叹或应答（如好嘞、行、太厉害了、错）使用感叹号「！」；\n2. 【逗号自然停顿】：句子内部较长或有语意短暂停顿时，合理补充中文逗号「，」，使阅读节奏极其舒适；\n3. 【核心排版：一个完整句子独立成一段】：每一个以句号「。」、问号「？」或感叹号「！」结尾的完整句子，必须单独换行独立成一个自然段！严禁将两句或多句话堆在同一段中；\n4. 【纠正同音字与口语错别字】：结合上下文语境（如生活对话、商业买卖、职场管理等），智能将口语误识别词纠正为标准字词或规范成语；\n5. 【严禁多余废话】：严禁输出任何开场白、解释说明、前言、总结或 markdown 标记，直接输出分段整理后的纯文本：";
+
+          let punctuatedText = '';
+
+          // 优先策略 1: 如果配置了 Groq API Key，使用 Groq 极速大模型 (llama-3.1-8b-instant，0.2 秒神速响应)
+          let thirdPartyKey = '';
+          if (env.DB) {
+            thirdPartyKey = await getSetting(env.DB, 'whisper_api_key', '');
+          }
+
+          if (thirdPartyKey) {
+            try {
+              const groqChatRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${thirdPartyKey.trim()}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'llama-3.1-8b-instant',
+                  messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: rawText }
+                  ],
+                  temperature: 0.1,
+                  max_tokens: 3500
+                })
+              });
+              if (groqChatRes.ok) {
+                const groqData = await groqChatRes.json();
+                const reply = groqData.choices?.[0]?.message?.content?.trim();
+                if (reply && reply.length >= rawText.length * 0.6) {
+                  punctuatedText = reply;
+                }
+              }
+            } catch (err) {
+              console.warn("Groq LLM punctuate call error:", err);
+            }
+          }
+
+          // 策略 2: 降级使用 Cloudflare Workers AI 原生大语言模型
+          if (!punctuatedText && env.AI) {
             const candidateModels = [
               '@cf/meta/llama-3.2-3b-instruct',
               '@cf/meta/llama-3.2-1b-instruct',
@@ -380,11 +420,11 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: rawText }
                   ],
-                  max_tokens: 2000,
+                  max_tokens: 2500,
                   temperature: 0.1
                 });
                 const reply = (aiRes && (aiRes.response || aiRes.text || ''))?.trim();
-                if (reply && reply.length >= rawText.length * 0.7) {
+                if (reply && reply.length >= rawText.length * 0.6) {
                   punctuatedText = reply;
                   break;
                 }

@@ -1156,11 +1156,20 @@ function autoPunctuateChinese(raw) {
   s = s.replace(/(不知道自己要做什么)(?=[，,、\s]*(?:第二|其次|另外))/g, '$1。\n');
   s = s.replace(/(三天打鱼两天晒网)(?=[，,、\s]*(?:第三|其次|最后))/g, '$1。\n');
 
-  // 11. 韵律长度兜底：若一个句子连续超过 25 字没有任何逗号或停顿，寻找最近的词边界断开
-  s = s.replace(/([^\n，。！？]{12,25})(，)?([^\n，。！？]{18,})/g, function(match, p1, comma, p2) {
-    if (comma) return match;
-    return p1 + '，' + p2;
-  });
+  // 10.1 口语发问与反问词断句转为问号
+  s = s.replace(/([^，。！？\n]{2,}?(?:多少钱|多少|为啥|凭啥|怎么|咋|什么|啥|能优惠不|能[^\n，。！？]{1,4}不|行不|好不|对不|是不是|在哪|几点))([，\s]+|$)/g, '$1？\n');
+
+  // 10.2 呼语与应答对话切分 (例如：老板来份、好嘞、行、奶奶、小伙子、小娃子)
+  s = s.replace(/([，\s]*)(好好好|好嘞|行|都听你的|老板来份|老板|奶奶|大叔|师傅|小伙子|小娃子|小叔|小哥)(?=[，\s\u4e00-\u9fa5])/g, '。\n$2，');
+
+  // 10.3 强烈语气与感叹
+  s = s.replace(/([^，。！？\n]{2,}?(?:太厉害了|好嘞|都听你的|错|真棒|干得漂亮))([，\s]+|$)/g, '$1！\n');
+
+  // 10.4 动宾完结短句切分标志
+  s = s.replace(/(卖给你|买下来|分两堆|卖完了|你去吧|先留个[^\n，。！？]+?)(?=[，,、\s])/g, '$1。\n');
+
+  // 11. 韵律长度分段保底：如果一个长子句在逗号之间超过 18 个字且已有停顿，将过长的逗号升级为句号换行
+  s = s.replace(/([^\n。！？]{15,30})[，,](?=[^\n。！？]{6,})/g, '$1。\n');
 
   // 12. 清理多余标点
   s = s.replace(/，+/g, '，')
@@ -1250,6 +1259,7 @@ function formatBySentences(rawText) {
 
   return sentences;
 }
+
 
 // 解析语音文案为段落列表 [{ isStarred: boolean, html: string }]
 // 核心规则：全文合并组织，一个句号/问号/感叹号为一个段落卡片显示
@@ -2061,16 +2071,47 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
       throw new Error("未能识别出有效语音或音频中无清晰人声");
     }
 
-    // 渲染最终文案结果面板
-    renderTranscriptBox(container, fullTranscript, noteId, detectedProvider);
-    if (detectedProvider === "groq") {
-      showToast(`⚡ 视频文案已由 Groq Large-v3 极速提取完成 (共 ${transcribedParts.length} 个分段)！`);
-    } else {
-      showToast(`🎉 视频语音文案已提取完成 (共识别 ${transcribedParts.length} 个分段)！`);
+    if (statusText) {
+      statusText.textContent = "✨ 语音提取完成，正在进行智能标点与「一个句号一段」排版...";
     }
 
-    // 持久化保存至 D1 数据库
+    let finalTranscript = fullTranscript;
     const targetNoteId = noteId || (state.activeDetailNote?.id);
+
+    // 自动调用大模型智能标点与口语同音字纠错接口
+    try {
+      const punctuateRes = await fetch("/api/punctuate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({
+          text: fullTranscript,
+          noteId: targetNoteId
+        })
+      });
+      if (punctuateRes.ok) {
+        const pData = await punctuateRes.json();
+        if (pData.success && pData.text && pData.text.length >= fullTranscript.length * 0.6) {
+          finalTranscript = pData.text;
+        }
+      }
+    } catch (pErr) {
+      console.warn("Auto punctuate error, falling back to local:", pErr);
+    }
+
+    // 严格按「一个句号/问号/感叹号一段」排版
+    const sentences = formatBySentences(finalTranscript);
+    finalTranscript = sentences.join("\n");
+
+    // 渲染最终文案结果面板
+    renderTranscriptBox(container, finalTranscript, noteId, detectedProvider);
+    if (detectedProvider === "groq") {
+      showToast(`⚡ 视频文案已由 Groq 提取并完成智能断句排版 (共 ${sentences.length} 个段落)！`);
+    } else {
+      showToast(`🎉 视频语音文案已提取完成 (共 ${sentences.length} 个段落)！`);
+    }
 
     if (targetNoteId) {
       try {
