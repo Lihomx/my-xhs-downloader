@@ -1323,3 +1323,108 @@ input:checked + .slider:before {
     border-bottom: 1px solid var(--border);
   }
 }
+
+/* 原始采集链接显示条 */
+.source-link-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-top: 10px;
+}
+
+.source-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.source-link {
+  color: var(--primary);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.source-link:hover {
+  text-decoration: underline;
+}
+
+.btn-copy-link {
+  background: white;
+  border: 1px solid var(--border);
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.btn-copy-link:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* 语音转文字文案面板 */
+.transcript-box {
+  background: #f7fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-top: 14px;
+}
+
+.transcript-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  color: #2d3748;
+}
+
+.transcript-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-transcript-action {
+  background: white;
+  border: 1px solid #cbd5e0;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #4a5568;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.btn-transcript-action:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-light);
+}
+
+.transcript-content-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #2d3748;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  user-select: text;
+}

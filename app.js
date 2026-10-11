@@ -1,5 +1,6 @@
 import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
 import { toPinyinFilename } from "./lib/pinyin.js";
+import { extractWavFromMedia } from "./lib/audio.js";
 
 // 智能规范化 Cookie 格式 (支持自动解析插件导出的 JSON 数组与多行文本)
 export function normalizeCookieString(raw) {
@@ -195,6 +196,7 @@ async function startParsing() {
       throw new Error(data.message || "解析失败，请检查链接有效性");
     }
 
+    data.sourceUrl = data.sourceUrl || text;
     state.currentParsedNote = data;
     renderParseResult(data);
     showToast("🎉 解析成功！");
@@ -220,6 +222,23 @@ function renderParseResult(note) {
   // 标题与文案
   document.getElementById("result-title").textContent = note.title || "小红书笔记";
   document.getElementById("result-content").textContent = note.content || "（无文案描述）";
+
+  // 原始采集链接展示
+  const sourceBar = document.getElementById("result-source-bar");
+  const sourceLink = document.getElementById("result-source-link");
+  const copyBtn = document.getElementById("btn-copy-source-link");
+  const sourceUrl = note.sourceUrl || document.getElementById("input-text")?.value?.trim() || "";
+  if (sourceBar && sourceLink && sourceUrl) {
+    sourceBar.style.display = "flex";
+    sourceLink.href = sourceUrl;
+    sourceLink.textContent = sourceUrl;
+    copyBtn.onclick = async () => {
+      await navigator.clipboard.writeText(sourceUrl);
+      showToast("已复制原始采集链接");
+    };
+  } else if (sourceBar) {
+    sourceBar.style.display = "none";
+  }
 
   // 图片处理
   const imgSection = document.getElementById("image-section");
@@ -263,7 +282,14 @@ function renderParseResult(note) {
   // 视频处理
   const vidSection = document.getElementById("video-section");
   const videoPlayer = document.getElementById("video-player");
+  const videoWrap = document.getElementById("video-player-container");
+  const audioPlayer = document.getElementById("audio-player");
+  const audioWrap = document.getElementById("audio-player-wrap");
   const qualitySelect = document.getElementById("video-quality-select");
+  const transcriptPanel = document.getElementById("transcript-panel");
+  if (transcriptPanel) transcriptPanel.style.display = "none";
+  if (audioWrap) audioWrap.style.display = "none";
+  if (videoWrap) videoWrap.style.display = "block";
 
   if (note.videos && note.videos.length > 0) {
     vidSection.style.display = "block";
@@ -278,14 +304,46 @@ function renderParseResult(note) {
 
     const activeUrl = note.videos[0].url;
     videoPlayer.src = activeUrl;
+    if (audioPlayer) audioPlayer.src = activeUrl;
 
     qualitySelect.onchange = () => {
       videoPlayer.src = qualitySelect.value;
+      if (audioPlayer) audioPlayer.src = qualitySelect.value;
       videoPlayer.play().catch(() => {});
     };
+
+    // 纯音频模式切换
+    const toggleAudioBtn = document.getElementById("btn-toggle-audio-mode");
+    if (toggleAudioBtn) {
+      toggleAudioBtn.textContent = "🎧 纯听音频";
+      toggleAudioBtn.onclick = () => {
+        const isAudioActive = audioWrap?.style.display === "block";
+        if (isAudioActive) {
+          audioWrap.style.display = "none";
+          videoWrap.style.display = "block";
+          audioPlayer?.pause();
+          toggleAudioBtn.textContent = "🎧 纯听音频";
+        } else {
+          audioWrap.style.display = "block";
+          videoWrap.style.display = "none";
+          videoPlayer?.pause();
+          audioPlayer?.play().catch(() => {});
+          toggleAudioBtn.textContent = "🎬 切换回视频画面";
+        }
+      };
+    }
+
+    // 提取语音文案
+    const transcribeBtn = document.getElementById("btn-transcribe-video");
+    if (transcribeBtn) {
+      transcribeBtn.onclick = () => {
+        transcribeAudio(activeUrl, "#transcript-panel", note.noteId || note.id);
+      };
+    }
   } else {
     vidSection.style.display = "none";
     videoPlayer.removeAttribute("src");
+    audioPlayer?.removeAttribute("src");
   }
 
   // 平滑滚动至结果区
@@ -322,6 +380,10 @@ async function triggerCloudSync(note) {
 
     const data = await res.json();
     if (res.ok && data.success) {
+      if (data.result?.id) {
+        note.id = data.result.id;
+        note.noteId = data.result.id;
+      }
       if (statusBadge) {
         statusBadge.textContent = "✅ 已永久离线保存至 Cloudflare 知识库";
         statusBadge.style.color = "var(--success)";
@@ -403,6 +465,129 @@ async function downloadZipArchive(images, title = "小红书高清图集", conte
   } catch (err) {
     console.error(err);
     showToast(`打包失败: ${err.message}`);
+  }
+}
+
+// HTML 安全转义
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// 渲染语音文案面板
+function renderTranscriptBox(container, text, noteId) {
+  if (!container) return;
+  container.style.display = "block";
+  container.innerHTML = `
+    <div class="transcript-header">
+      <span class="transcript-title">🎙️ 视频语音提取文案 (AI Whisper)</span>
+      <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+        <button type="button" class="transcript-btn btn-copy-transcript">📋 复制全文</button>
+        <button type="button" class="transcript-btn btn-append-thoughts">📌 追加到随笔批注</button>
+      </div>
+    </div>
+    <div class="transcript-text">${escapeHtml(text)}</div>
+  `;
+
+  container.querySelector(".btn-copy-transcript")?.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(text);
+    showToast("📋 已复制语音文案全文");
+  });
+
+  container.querySelector(".btn-append-thoughts")?.addEventListener("click", () => {
+    const thoughtsInput = document.getElementById("modal-thoughts-input");
+    const detailModal = document.getElementById("modal-note-detail");
+    if (detailModal && detailModal.classList.contains("active") && thoughtsInput) {
+      const prev = thoughtsInput.value.trim();
+      const appendText = `【视频提取文案】\n${text}`;
+      thoughtsInput.value = prev ? `${prev}\n\n${appendText}` : appendText;
+      thoughtsInput.scrollIntoView({ behavior: "smooth", block: "center" });
+      thoughtsInput.focus();
+      showToast("📌 已将语音文案追加到随笔批注！别忘记点击「保存感想」");
+    } else {
+      navigator.clipboard.writeText(text);
+      showToast("📋 已复制语音文案，可点击右上角「我的收藏」在笔记详情中保存批注");
+    }
+  });
+}
+
+// 音频提取与 AI Whisper 语音识别
+async function transcribeAudio(mediaUrl, containerSelector, noteId) {
+  const container = document.querySelector(containerSelector);
+  if (!container) return;
+  container.style.display = "block";
+  container.innerHTML = `
+    <div class="transcript-loading">
+      <div class="spinner"></div>
+      <span id="transcribe-status-text">正在从视频提取并压缩音频轨道 (Web Audio API)...</span>
+    </div>
+  `;
+
+  const statusText = container.querySelector("#transcribe-status-text");
+
+  try {
+    const wavBlob = await extractWavFromMedia(mediaUrl, (msg) => {
+      if (statusText) statusText.textContent = msg;
+    });
+
+    if (statusText) statusText.textContent = "正在通过 AI (Whisper) 深度识别转写文本，请稍候...";
+    showToast("🎙️ 正在上传音频并进行 AI 语音转写...");
+
+    const res = await fetch("/api/transcribe", {
+      method: "POST",
+      headers: {
+        "x-auth-pin": state.pin,
+        "Content-Type": "audio/wav"
+      },
+      body: wavBlob
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.message || `识别失败 (HTTP ${res.status})`);
+    }
+
+    const transcribedText = (data.text || "").trim();
+    if (!transcribedText) {
+      throw new Error("未能识别出有效语音或音频中无清晰人声");
+    }
+
+    // 渲染文案结果
+    renderTranscriptBox(container, transcribedText, noteId);
+    showToast("🎉 视频语音文案已成功提取！");
+
+    // 如果有关联笔记 ID，自动持久化保存至 D1
+    const targetNoteId = noteId || (state.activeDetailNote?.id);
+    if (targetNoteId) {
+      try {
+        await fetch(`/api/notes/${targetNoteId}/transcript`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ transcript: transcribedText })
+        });
+        if (state.activeDetailNote && state.activeDetailNote.id === targetNoteId) {
+          state.activeDetailNote.transcript = transcribedText;
+        }
+      } catch (err) {
+        console.warn("保存 transcript 到数据库失败:", err);
+      }
+    }
+  } catch (err) {
+    console.error("Transcribe error:", err);
+    container.innerHTML = `
+      <div style="color: var(--primary); font-size: 13px; padding: 12px; background: rgba(234, 44, 67, 0.05); border-radius: 8px;">
+        ❌ 语音转写失败: ${escapeHtml(err.message)}
+      </div>
+    `;
+    showToast(`❌ 语音转写失败: ${err.message}`, { isError: true });
   }
 }
 
@@ -586,6 +771,24 @@ async function openNoteDetail(noteId) {
     document.getElementById("modal-note-content").textContent = note.content || "（无文案）";
     document.getElementById("modal-thoughts-input").value = note.thoughts || "";
 
+    // 渲染原始采集链接
+    const sourceBar = document.getElementById("modal-source-bar");
+    const sourceLink = document.getElementById("modal-source-link");
+    const copyBtn = document.getElementById("btn-modal-copy-source-link");
+    if (sourceBar && sourceLink && note.sourceUrl) {
+      sourceBar.style.display = "flex";
+      sourceLink.href = note.sourceUrl;
+      sourceLink.textContent = note.sourceUrl;
+      if (copyBtn) {
+        copyBtn.onclick = async () => {
+          await navigator.clipboard.writeText(note.sourceUrl);
+          showToast("已复制原始采集链接");
+        };
+      }
+    } else if (sourceBar) {
+      sourceBar.style.display = "none";
+    }
+
     // 渲染分类标签交互 Chips
     renderDetailTags(note);
 
@@ -611,15 +814,64 @@ async function openNoteDetail(noteId) {
       grid.style.display = "none";
     }
 
-    // 渲染视频
+    // 渲染视频与纯音频模式
     const vidWrap = document.getElementById("modal-video-wrap");
     const vidPlayer = document.getElementById("modal-video-player");
+    const audioWrap = document.getElementById("modal-audio-player-wrap");
+    const audioPlayer = document.getElementById("modal-audio-player");
+    const vidContainer = document.getElementById("modal-video-player-container");
+    const toggleAudioBtn = document.getElementById("btn-modal-toggle-audio");
+    const transcribeBtn = document.getElementById("btn-modal-transcribe");
+    const transcriptPanel = document.getElementById("modal-transcript-panel");
+
     if (note.videos && note.videos.length > 0) {
+      const activeVideoUrl = note.videos[0].url;
       vidWrap.style.display = "block";
-      vidPlayer.src = note.videos[0].url;
+      if (vidContainer) vidContainer.style.display = "block";
+      if (audioWrap) audioWrap.style.display = "none";
+      vidPlayer.src = activeVideoUrl;
+      if (audioPlayer) audioPlayer.src = activeVideoUrl;
+
+      if (toggleAudioBtn) {
+        toggleAudioBtn.textContent = "🎧 纯听音频";
+        toggleAudioBtn.onclick = () => {
+          const isAudioActive = audioWrap?.style.display === "block";
+          if (isAudioActive) {
+            audioWrap.style.display = "none";
+            if (vidContainer) vidContainer.style.display = "block";
+            audioPlayer?.pause();
+            toggleAudioBtn.textContent = "🎧 纯听音频";
+          } else {
+            audioWrap.style.display = "block";
+            if (vidContainer) vidContainer.style.display = "none";
+            vidPlayer?.pause();
+            audioPlayer?.play().catch(() => {});
+            toggleAudioBtn.textContent = "🎬 切换回视频画面";
+          }
+        };
+      }
+
+      if (transcribeBtn) {
+        transcribeBtn.onclick = () => {
+          transcribeAudio(activeVideoUrl, "#modal-transcript-panel", note.id);
+        };
+      }
+
+      // 如果笔记已保存过语音文案，自动渲染
+      if (note.transcript) {
+        renderTranscriptBox(transcriptPanel, note.transcript, note.id);
+      } else if (transcriptPanel) {
+        transcriptPanel.style.display = "none";
+        transcriptPanel.innerHTML = "";
+      }
     } else {
       vidWrap.style.display = "none";
       vidPlayer.removeAttribute("src");
+      audioPlayer?.removeAttribute("src");
+      if (transcriptPanel) {
+        transcriptPanel.style.display = "none";
+        transcriptPanel.innerHTML = "";
+      }
     }
 
     // 显示弹窗
@@ -977,8 +1229,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 详情弹窗关闭
   const noteModal = document.getElementById("modal-note-detail");
-  document.getElementById("btn-close-note-modal")?.addEventListener("click", () => {
+  const closeNoteModal = () => {
+    document.getElementById("modal-video-player")?.pause();
+    document.getElementById("modal-audio-player")?.pause();
     noteModal?.classList.remove("active");
+  };
+  document.getElementById("btn-close-note-modal")?.addEventListener("click", closeNoteModal);
+  noteModal?.addEventListener("click", (e) => {
+    if (e.target === noteModal) closeNoteModal();
   });
 
   // 保存感想随笔
@@ -1021,7 +1279,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       if (res.ok) {
         showToast("🗑️ 笔记已成功删除");
-        noteModal?.classList.remove("active");
+        closeNoteModal();
         loadTags();
         loadNotes(document.getElementById("kb-search-input")?.value || "");
         refreshNotesBadge();
@@ -1046,10 +1304,20 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await fetch(`/api/settings?pin=${encodeURIComponent(state.pin)}`);
       const data = await res.json();
-      if (data?.success && data.xhsCookie && cookieEl && !cookieEl.value) {
-        cookieEl.value = data.xhsCookie;
-        state.xhsCookie = data.xhsCookie;
-        localStorage.setItem("xhs_cookie", data.xhsCookie);
+      if (data?.success) {
+        if (data.xhsCookie && cookieEl && !cookieEl.value) {
+          cookieEl.value = data.xhsCookie;
+          state.xhsCookie = data.xhsCookie;
+          localStorage.setItem("xhs_cookie", data.xhsCookie);
+        }
+        const whisperKeyEl = document.getElementById("settings-whisper-key");
+        if (whisperKeyEl && data.whisperApiKey) {
+          whisperKeyEl.value = data.whisperApiKey;
+        }
+        const whisperEndpointEl = document.getElementById("settings-whisper-endpoint");
+        if (whisperEndpointEl && data.whisperApiEndpoint) {
+          whisperEndpointEl.value = data.whisperApiEndpoint;
+        }
       }
     } catch {}
   });
@@ -1058,7 +1326,7 @@ document.addEventListener("DOMContentLoaded", () => {
     settingsModal?.classList.remove("active");
   });
 
-  // 保存设置（Cookie 与 PIN 码）提交
+  // 保存设置（Cookie、PIN 码与 Whisper 配置）提交
   document.getElementById("btn-submit-change-pin")?.addEventListener("click", async () => {
     const oldPin = document.getElementById("settings-old-pin")?.value.trim() || state.pin;
     const newPin = document.getElementById("settings-new-pin")?.value.trim();
@@ -1068,6 +1336,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (cookieInput && cookieVal) {
       cookieInput.value = cookieVal;
     }
+    const whisperApiKey = document.getElementById("settings-whisper-key")?.value.trim() || "";
+    const whisperApiEndpoint = document.getElementById("settings-whisper-endpoint")?.value.trim() || "";
     const msg = document.getElementById("settings-msg");
 
     if (!oldPin) {
@@ -1086,7 +1356,9 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({
           pin: oldPin,
           newPin: newPin || undefined,
-          xhsCookie: cookieVal
+          xhsCookie: cookieVal,
+          whisperApiKey,
+          whisperApiEndpoint
         })
       });
       const data = await res.json();

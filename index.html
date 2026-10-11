@@ -84,6 +84,11 @@
               ☁️ 正在自动同步保存至 Cloudflare...
             </div>
             <h2 id="result-title" style="margin-top: 8px;">笔记标题</h2>
+            <div id="result-source-bar" class="source-link-bar" style="display: none;">
+              <span class="source-label">🔗 原始采集链接：</span>
+              <a id="result-source-link" href="#" target="_blank" rel="noopener" class="source-link"></a>
+              <button id="btn-copy-source-link" class="btn-copy-link" type="button">复制链接</button>
+            </div>
           </div>
         </div>
 
@@ -98,13 +103,19 @@
           <div class="media-toolbar">
             <span class="media-count">🎬 视频播放与下载</span>
             <div class="media-btn-group">
+              <button id="btn-toggle-audio-mode" class="btn btn-secondary" type="button" title="收起视频画面，仅播放纯音频磨耳朵">🎧 纯听音频</button>
+              <button id="btn-transcribe-video" class="btn btn-secondary" type="button" title="提取视频中人声语音并生成文本">🎙️ 提取语音文案</button>
               <select id="video-quality-select" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px;"></select>
               <button id="btn-download-video" class="btn btn-primary" type="button">下载视频</button>
             </div>
           </div>
-          <div class="video-container">
+          <div class="video-container" id="video-player-container">
             <video id="video-player" controls playsinline></video>
           </div>
+          <div id="audio-player-wrap" style="display: none; margin-top: 10px;">
+            <audio id="audio-player" controls style="width: 100%;"></audio>
+          </div>
+          <div id="transcript-panel" class="transcript-box" style="display: none;"></div>
         </div>
 
         <!-- 图片展示区 -->
@@ -217,8 +228,15 @@
         </div>
 
         <div class="modal-body">
-          <div id="modal-note-time" style="font-size: 12px; color: var(--text-sub); margin-bottom: 12px;"></div>
+          <div id="modal-note-time" style="font-size: 12px; color: var(--text-sub); margin-bottom: 8px;"></div>
           
+          <!-- 原始采集链接 -->
+          <div id="modal-source-bar" class="source-link-bar" style="display: none; margin-bottom: 14px;">
+            <span class="source-label">🔗 原始采集链接：</span>
+            <a id="modal-source-link" href="#" target="_blank" rel="noopener" class="source-link"></a>
+            <button id="btn-modal-copy-source-link" class="btn-copy-link" type="button">复制链接</button>
+          </div>
+
           <!-- 所属分类标签选择区 -->
           <section class="detail-tags-section">
             <div class="detail-tags-header">
@@ -233,12 +251,26 @@
 
           <!-- 视频 (如果有) -->
           <div id="modal-video-wrap" style="display: none; margin-bottom: 16px;">
-            <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
-            <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
-              <button id="btn-modal-download-video" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;">
+            <div id="modal-video-player-container">
+              <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
+            </div>
+            <div id="modal-audio-player-wrap" style="display: none; margin-top: 8px;">
+              <audio id="modal-audio-player" controls style="width: 100%;"></audio>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; gap: 8px;">
+                <button id="btn-modal-toggle-audio" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
+                  🎧 纯听音频
+                </button>
+                <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
+                  🎙️ 提取语音文案
+                </button>
+              </div>
+              <button id="btn-modal-download-video" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
                 🎬 下载视频 (按标题拼音命名)
               </button>
             </div>
+            <div id="modal-transcript-panel" class="transcript-box" style="display: none;"></div>
           </div>
 
           <!-- 图片展示 -->
@@ -271,7 +303,7 @@
       </div>
     </div>
 
-    <!-- 系统设置弹窗 (修改 PIN 码与小红书 Cookie) -->
+    <!-- 系统设置弹窗 (修改 PIN 码与小红书 Cookie 与第三方 AI 配置) -->
     <div id="modal-settings" class="modal-overlay">
       <div class="modal" style="max-width: 480px;">
         <div class="modal-header">
@@ -284,10 +316,17 @@
           <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.5;">
             由于 Cloudflare Workers 运行于海外机房 IP，小红书偶尔会触发滑块拦截 (461)。在浏览器打开小红书网页版，按 F12 复制请求头中的 <code>Cookie</code>（或包含 <code>a1=...</code> 字段）粘贴于此，即可长久稳定直通抓取：
           </p>
-          <textarea id="settings-xhs-cookie" class="thoughts-textarea" style="min-height: 70px; font-family: monospace; font-size: 12px; margin-bottom: 16px;" placeholder="例如: a1=19280d...; webId=..."></textarea>
+          <textarea id="settings-xhs-cookie" class="thoughts-textarea" style="min-height: 60px; font-family: monospace; font-size: 12px; margin-bottom: 16px;" placeholder="例如: a1=19280d...; webId=..."></textarea>
+
+          <h4 style="font-size: 14px; margin-bottom: 6px;">🎙️ 第三方 Whisper 语音转写 Key (可选备用)</h4>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px; line-height: 1.5;">
+            默认使用 Cloudflare Workers AI 免费识别。如需极速或长音频，可填入 Groq 或 OpenAI API Key（兼容任意 OpenAI 格式）：
+          </p>
+          <input type="password" id="settings-whisper-key" class="search-input" placeholder="输入 API Key (如 gsk_... 或 sk-...)" style="margin-bottom: 8px;" />
+          <input type="text" id="settings-whisper-endpoint" class="search-input" placeholder="自定义 API 地址 (留空默认使用 Groq 极速接口)" style="margin-bottom: 16px; font-size: 12px;" />
 
           <h4 style="font-size: 14px; margin-bottom: 6px;">🔒 修改个人管理 PIN 码</h4>
-          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
             保护你的私有 Cloudflare 知识库与设置配置（初始 PIN 码：1987）。
           </p>
 

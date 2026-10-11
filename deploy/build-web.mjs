@@ -10,6 +10,7 @@ export const PUBLIC_FILES = [
   'aiyc.svg',
   'lib/archive.js',
   'lib/pinyin.js',
+  'lib/audio.js',
   'assets'
 ];
 

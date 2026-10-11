@@ -28,9 +28,12 @@ export async function initDb(db) {
       updated_at INTEGER NOT NULL
     )`).run();
 
-    // 数据库迁移：如果旧 notes 表没有 tags_json 字段则动态补充
+    // 数据库迁移：如果旧 notes 表没有 tags_json / transcript 字段则动态补充
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN tags_json TEXT DEFAULT '[]'").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN transcript TEXT DEFAULT ''").run();
     } catch {}
 
     const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
@@ -476,6 +479,7 @@ export async function getNote(db, id) {
     videos: row.videos_json ? JSON.parse(row.videos_json) : [],
     thoughts: row.thoughts || "",
     tags: Array.isArray(tags) ? tags : [],
+    transcript: row.transcript || "",
     sourceUrl: row.source_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -493,6 +497,19 @@ export async function updateThoughts(db, id, thoughts) {
     .bind(String(thoughts ?? "").trim(), now, id)
     .run();
   return { id, thoughts, updatedAt: now };
+}
+
+/**
+ * 保存/更新视频语音转写文本
+ */
+export async function updateTranscript(db, id, transcript) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+  const now = Date.now();
+  await db.prepare("UPDATE notes SET transcript = ?, updated_at = ? WHERE id = ?")
+    .bind(String(transcript ?? "").trim(), now, id)
+    .run();
+  return { id, transcript, updatedAt: now };
 }
 
 /**

@@ -21,7 +21,8 @@ import {
   addCustomTag,
   renameCustomTag,
   deleteCustomTag,
-  updateNoteTags
+  updateNoteTags,
+  updateTranscript
 } from './storage-service.js';
 
 const NODE_ROUTES = { '/api/parse': parse, '/api/image': image, '/api/video': video };
@@ -71,14 +72,23 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           return json({ valid });
         }
 
-        // 4. 读取 / 保存通用设置 (包括 PIN 码与小红书 Cookie)
+        // 4. 读取 / 保存通用设置 (包括 PIN 码、小红书 Cookie 与第三方 AI Key)
         if (path === '/api/settings') {
           if (request.method === 'GET') {
             const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
             const isAuthed = await verifyPin(env.DB, pin);
             if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
             const xhsCookie = await getSetting(env.DB, 'xhs_cookie', '');
-            return json({ success: true, hasCookie: Boolean(xhsCookie), xhsCookie });
+            const whisperApiKey = await getSetting(env.DB, 'whisper_api_key', '');
+            const whisperApiEndpoint = await getSetting(env.DB, 'whisper_api_endpoint', '');
+            return json({
+              success: true,
+              hasCookie: Boolean(xhsCookie),
+              xhsCookie,
+              whisperApiKey,
+              whisperApiEndpoint,
+              hasCloudflareAi: Boolean(env.AI)
+            });
           }
 
           if (request.method === 'POST') {
@@ -94,8 +104,83 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               const cleanCookie = normalizeCookieString(body.xhsCookie);
               await setSetting(env.DB, 'xhs_cookie', cleanCookie);
             }
+            if (typeof body.whisperApiKey === 'string') {
+              await setSetting(env.DB, 'whisper_api_key', body.whisperApiKey.trim());
+            }
+            if (typeof body.whisperApiEndpoint === 'string') {
+              await setSetting(env.DB, 'whisper_api_endpoint', body.whisperApiEndpoint.trim());
+            }
             return json({ success: true, message: "设置已保存成功" });
           }
+        }
+
+        // 4.1 视频语音转写文本 (POST /api/transcribe)
+        if (path === '/api/transcribe' && request.method === 'POST') {
+          const pin = request.headers.get('x-auth-pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const audioBuffer = await request.arrayBuffer();
+          if (!audioBuffer || audioBuffer.byteLength === 0) {
+            return json({ success: false, message: "未接收到音频数据" }, 400);
+          }
+
+          // 优先检查第三方 Whisper API Key (如 Groq / OpenAI)
+          let thirdPartyKey = '';
+          let thirdPartyEndpoint = '';
+          if (env.DB) {
+            thirdPartyKey = await getSetting(env.DB, 'whisper_api_key', '');
+            thirdPartyEndpoint = await getSetting(env.DB, 'whisper_api_endpoint', '');
+          }
+
+          if (thirdPartyKey) {
+            try {
+              const endpoint = thirdPartyEndpoint || 'https://api.groq.com/openai/v1/audio/transcriptions';
+              const formData = new FormData();
+              formData.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav');
+              formData.append('model', endpoint.includes('groq') ? 'whisper-large-v3' : 'whisper-1');
+              formData.append('language', 'zh');
+              formData.append('response_format', 'json');
+
+              const aiRes = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${thirdPartyKey.trim()}`
+                },
+                body: formData
+              });
+
+              if (aiRes.ok) {
+                const aiData = await aiRes.json();
+                return json({ success: true, text: aiData.text || '', provider: 'third-party' });
+              } else {
+                const errText = await aiRes.text();
+                console.warn("Third-party Whisper API response not ok:", errText);
+              }
+            } catch (err) {
+              console.warn("Third-party Whisper API call error:", err);
+            }
+          }
+
+          // 默认使用 Cloudflare Workers AI 原生 Whisper-large-v3-turbo 模型
+          if (env.AI) {
+            try {
+              const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
+                audio: [...new Uint8Array(audioBuffer)],
+                task: 'transcribe',
+                language: 'zh'
+              });
+              return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai' });
+            } catch (err) {
+              console.error("Cloudflare Workers AI run error:", err);
+              return json({ success: false, message: `Cloudflare AI 转写出错: ${err.message}` }, 500);
+            }
+          }
+
+          return json({
+            success: false,
+            message: "未检测到可用的 AI 语音转写服务。请在设置中配置第三方 Whisper API Key (如 Groq / OpenAI)，或开启 Cloudflare Workers AI 绑定。"
+          }, 503);
         }
 
         // 兼容旧接口：修改 PIN 码
@@ -171,6 +256,13 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (parts[1] === 'thoughts' && request.method === 'PUT') {
             const body = await request.json().catch(() => ({}));
             const res = await updateThoughts(env.DB, noteId, body.thoughts);
+            return json({ success: true, ...res });
+          }
+
+          // 更新语音文案: PUT /api/notes/:id/transcript
+          if (parts[1] === 'transcript' && request.method === 'PUT') {
+            const body = await request.json().catch(() => ({}));
+            const res = await updateTranscript(env.DB, noteId, body.transcript);
             return json({ success: true, ...res });
           }
 
