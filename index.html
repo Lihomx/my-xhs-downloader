@@ -429,12 +429,74 @@
           </p>
           <textarea id="settings-xhs-cookie" class="thoughts-textarea" style="min-height: 60px; font-family: monospace; font-size: 12px; margin-bottom: 16px;" placeholder="例如: a1=19280d...; webId=..."></textarea>
 
-          <h4 style="font-size: 14px; margin-bottom: 6px;">🎙️ 第三方 Whisper 语音转写 Key (可选备用)</h4>
-          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px; line-height: 1.5;">
-            默认使用 Cloudflare Workers AI 免费识别。如需极速或长音频，可填入 Groq 或 OpenAI API Key（兼容任意 OpenAI 格式）：
+          <h4 style="font-size: 14px; margin-bottom: 6px;">🎙️ AI 语音提取转写引擎设置</h4>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.5;">
+            选择视频语音转写的 AI 模型服务。推荐使用 <strong>Groq</strong>，拥有专有 LPU 芯片，识别中文成语几乎零误差且 1 秒极速出结果：
           </p>
-          <input type="password" id="settings-whisper-key" class="search-input" placeholder="输入 API Key (如 gsk_... 或 sk-...)" style="margin-bottom: 8px;" />
-          <input type="text" id="settings-whisper-endpoint" class="search-input" placeholder="自定义 API 地址 (留空默认使用 Groq 极速接口)" style="margin-bottom: 16px; font-size: 12px;" />
+
+          <!-- 引擎选择卡片组 -->
+          <div class="ai-engine-selector-grid">
+            <label class="ai-engine-card" id="engine-card-groq">
+              <input type="radio" name="ai-whisper-provider" value="groq" id="radio-provider-groq">
+              <div class="engine-card-content">
+                <div class="engine-card-top">
+                  <span class="engine-card-name">⚡ Groq 极速大模型 (强烈推荐)</span>
+                  <span class="engine-badge-tag tag-rec">首选</span>
+                </div>
+                <div class="engine-card-desc">Whisper Large-v3 · 1~2秒秒出 · 每日免费8小时</div>
+              </div>
+            </label>
+
+            <label class="ai-engine-card" id="engine-card-cf">
+              <input type="radio" name="ai-whisper-provider" value="cloudflare" id="radio-provider-cf">
+              <div class="engine-card-content">
+                <div class="engine-card-top">
+                  <span class="engine-card-name">☁️ Cloudflare Workers AI</span>
+                  <span class="engine-badge-tag tag-built">内置默认</span>
+                </div>
+                <div class="engine-card-desc">Whisper Large-v3-turbo · 免配置 · 每日免费3.5小时</div>
+              </div>
+            </label>
+
+            <label class="ai-engine-card" id="engine-card-custom">
+              <input type="radio" name="ai-whisper-provider" value="custom" id="radio-provider-custom">
+              <div class="engine-card-content">
+                <div class="engine-card-top">
+                  <span class="engine-card-name">🤖 自定义 / OpenAI 官方</span>
+                  <span class="engine-badge-tag">兼容</span>
+                </div>
+                <div class="engine-card-desc">OpenAI Whisper-1 或任意兼容 API 接口</div>
+              </div>
+            </label>
+          </div>
+
+          <!-- 动态引擎参数配置面板 -->
+          <div id="ai-engine-config-area" class="ai-engine-config-area">
+            <div id="groq-config-fields">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; font-weight: 600; color: #334155;">Groq API Key (gsk_...)</label>
+                <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" style="font-size: 11px; color: var(--primary); text-decoration: none;">🔗 免费获取 Key (免绑卡)</a>
+              </div>
+              <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <input type="password" id="settings-whisper-key" class="search-input" placeholder="输入 Groq API Key (以 gsk_ 开头)" style="flex: 1; margin-bottom: 0;" />
+                <button type="button" id="btn-test-whisper-key" class="btn btn-secondary" style="white-space: nowrap; font-size: 12px; padding: 6px 12px;">
+                  🔍 测试连通
+                </button>
+              </div>
+              <div id="test-whisper-result" style="font-size: 12px; display: none; margin-bottom: 6px; padding: 6px 10px; border-radius: 6px;"></div>
+            </div>
+
+            <div id="custom-endpoint-field" style="display: none; margin-top: 8px;">
+              <label style="display: block; font-size: 12px; font-weight: 600; color: #334155; margin-bottom: 4px;">自定义 API 地址 (留空默认使用 Groq 官方)</label>
+              <input type="text" id="settings-whisper-endpoint" class="search-input" placeholder="例如: https://api.groq.com/openai/v1/audio/transcriptions" style="margin-bottom: 0; font-size: 12px;" />
+            </div>
+
+            <!-- 当前生效状态指示灯 -->
+            <div id="ai-active-status-badge" class="ai-active-status-badge">
+              <span class="status-dot"></span>
+              <span id="ai-status-text">当前选用：⚡ Groq 极速大模型 (whisper-large-v3)</span>
+            </div>
+          </div>
 
           <h4 style="font-size: 14px; margin-bottom: 6px;">🔒 修改个人管理 PIN 码</h4>
           <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">

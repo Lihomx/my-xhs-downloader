@@ -75,18 +75,22 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
         }
 
         // 4. 读取 / 保存通用设置 (包括 PIN 码、小红书 Cookie 与第三方 AI Key)
+        // 4. 读取 / 保存通用设置 (包括 PIN 码、小红书 Cookie 与 AI 语音引擎配置)
         if (path === '/api/settings') {
           if (request.method === 'GET') {
             const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
             const isAuthed = await verifyPin(env.DB, pin);
             if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
             const xhsCookie = await getSetting(env.DB, 'xhs_cookie', '');
+            const whisperProvider = await getSetting(env.DB, 'whisper_provider', '');
             const whisperApiKey = await getSetting(env.DB, 'whisper_api_key', '');
             const whisperApiEndpoint = await getSetting(env.DB, 'whisper_api_endpoint', '');
+            const effectiveProvider = whisperProvider || (whisperApiKey ? 'groq' : 'cloudflare');
             return json({
               success: true,
               hasCookie: Boolean(xhsCookie),
               xhsCookie,
+              whisperProvider: effectiveProvider,
               whisperApiKey,
               whisperApiEndpoint,
               hasCloudflareAi: Boolean(env.AI)
@@ -106,6 +110,9 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               const cleanCookie = normalizeCookieString(body.xhsCookie);
               await setSetting(env.DB, 'xhs_cookie', cleanCookie);
             }
+            if (typeof body.whisperProvider === 'string') {
+              await setSetting(env.DB, 'whisper_provider', body.whisperProvider.trim());
+            }
             if (typeof body.whisperApiKey === 'string') {
               await setSetting(env.DB, 'whisper_api_key', body.whisperApiKey.trim());
             }
@@ -113,6 +120,45 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               await setSetting(env.DB, 'whisper_api_endpoint', body.whisperApiEndpoint.trim());
             }
             return json({ success: true, message: "设置已保存成功" });
+          }
+        }
+
+        // 4.0.1 测试第三方 Whisper API Key 连通性 (POST /api/test-whisper-key)
+        if (path === '/api/test-whisper-key' && request.method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          const key = (body.key || '').trim();
+          const provider = body.provider || 'groq';
+          const endpoint = (body.endpoint || '').trim();
+
+          if (!key) {
+            return json({ success: false, message: "请输入 API Key 后再进行测试" }, 400);
+          }
+
+          try {
+            const testUrl = (provider === 'custom' && endpoint)
+              ? (endpoint.includes('/audio/transcriptions') ? endpoint.replace('/audio/transcriptions', '/models') : endpoint)
+              : 'https://api.groq.com/openai/v1/models';
+
+            const testRes = await fetch(testUrl, {
+              headers: {
+                Authorization: `Bearer ${key}`
+              }
+            });
+
+            if (testRes.ok) {
+              return json({
+                success: true,
+                message: provider === 'groq'
+                  ? "Groq API Key 验证通过！LPU 极速芯片已就绪连接。"
+                  : "API Key 验证通过！模型接口连接正常。"
+              });
+            } else {
+              const errData = await testRes.json().catch(() => ({}));
+              const errMsg = errData.error?.message || `HTTP ${testRes.status} 验证未通过`;
+              return json({ success: false, message: `验证未通过: ${errMsg}` }, 400);
+            }
+          } catch (err) {
+            return json({ success: false, message: `网络连接异常: ${err.message}` }, 500);
           }
         }
 
@@ -129,20 +175,33 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
           const zhPrompt = "这是一段中文普通话演讲，请务必使用简体中文，并在语调停顿处正确添加逗号、句号、感叹号、问号等标点符号。";
 
-          // 优先检查第三方 Whisper API Key (如 Groq / OpenAI)
+          let whisperProvider = '';
           let thirdPartyKey = '';
           let thirdPartyEndpoint = '';
           if (env.DB) {
+            whisperProvider = await getSetting(env.DB, 'whisper_provider', '');
             thirdPartyKey = await getSetting(env.DB, 'whisper_api_key', '');
             thirdPartyEndpoint = await getSetting(env.DB, 'whisper_api_endpoint', '');
           }
 
-          if (thirdPartyKey) {
+          // 自动判断生效引擎
+          const effectiveProvider = whisperProvider || (thirdPartyKey ? 'groq' : 'cloudflare');
+
+          // 分支 A: 选用 Groq 或 自定义第三方
+          if (effectiveProvider === 'groq' || effectiveProvider === 'custom') {
+            if (!thirdPartyKey) {
+              return json({
+                success: false,
+                message: `已选用 ${effectiveProvider === 'groq' ? 'Groq' : '第三方'} 语音引擎，但未检测到有效 API Key。请在系统设置中填入 Key，或选择 Cloudflare 内置模型。`
+              }, 400);
+            }
+
             try {
               const endpoint = thirdPartyEndpoint || 'https://api.groq.com/openai/v1/audio/transcriptions';
+              const isGroq = endpoint.includes('groq') || effectiveProvider === 'groq';
               const formData = new FormData();
               formData.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav');
-              formData.append('model', endpoint.includes('groq') ? 'whisper-large-v3' : 'whisper-1');
+              formData.append('model', isGroq ? 'whisper-large-v3' : 'whisper-1');
               formData.append('language', 'zh');
               formData.append('prompt', zhPrompt);
               formData.append('response_format', 'json');
@@ -157,17 +216,32 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
               if (aiRes.ok) {
                 const aiData = await aiRes.json();
-                return json({ success: true, text: aiData.text || '', provider: 'third-party' });
+                return json({
+                  success: true,
+                  text: aiData.text || '',
+                  provider: isGroq ? 'groq' : 'custom',
+                  model: isGroq ? 'whisper-large-v3' : 'whisper-1'
+                });
               } else {
                 const errText = await aiRes.text();
                 console.warn("Third-party Whisper API response not ok:", errText);
+                let parsedErr = errText;
+                try { parsedErr = JSON.parse(errText).error?.message || errText; } catch {}
+                return json({
+                  success: false,
+                  message: `${isGroq ? 'Groq' : '第三方'} 语音识别失败 (HTTP ${aiRes.status}): ${parsedErr}`
+                }, 502);
               }
             } catch (err) {
               console.warn("Third-party Whisper API call error:", err);
+              return json({
+                success: false,
+                message: `${effectiveProvider === 'groq' ? 'Groq' : '第三方'} 服务连接出错: ${err.message}`
+              }, 502);
             }
           }
 
-          // 默认使用 Cloudflare Workers AI 原生 Whisper 模型
+          // 分支 B: 选用 Cloudflare Workers AI 原生 Whisper 模型
           if (env.AI) {
             const errors = [];
             const uint8 = new Uint8Array(audioBuffer);
@@ -179,7 +253,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 initial_prompt: zhPrompt
               });
               if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo-uint8' });
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
               }
             } catch (err) {
               errors.push(`turbo-uint8: ${err.message}`);
@@ -192,7 +266,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 initial_prompt: zhPrompt
               });
               if (aiResp && typeof aiResp.text === 'string') {
-                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-uint8' });
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-base' });
               }
             } catch (err) {
               errors.push(`whisper-uint8: ${err.message}`);
@@ -206,7 +280,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                   initial_prompt: zhPrompt
                 });
                 if (aiResp && typeof aiResp.text === 'string') {
-                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo-array' });
+                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
                 }
               } catch (err) {
                 errors.push(`turbo-array: ${err.message}`);
@@ -228,7 +302,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                   initial_prompt: zhPrompt
                 });
                 if (aiResp && typeof aiResp.text === 'string') {
-                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-base64' });
+                  return json({ success: true, text: aiResp.text || '', provider: 'cloudflare', model: 'whisper-large-v3-turbo' });
                 }
               } catch (err) {
                 errors.push(`turbo-base64: ${err.message}`);
@@ -240,9 +314,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
           return json({
             success: false,
-            message: "未检测到可用的 AI 语音转写服务。请在设置中配置第三方 Whisper API Key (如 Groq / OpenAI)，或开启 Cloudflare Workers AI 绑定。"
+            message: "未检测到可用的 AI 语音转写服务。请在设置中配置 Groq API Key，或开启 Cloudflare Workers AI 绑定。"
           }, 503);
         }
+
 
         // 智能标点符号恢复与排版接口: POST /api/punctuate
         if (path === '/api/punctuate' && request.method === 'POST') {

@@ -1659,12 +1659,20 @@ function initTranscriptSelectionPill() {
 }
 
 // 渲染语音文案面板 (置顶、自然分段、划词高亮、星标重点与仅看重点速览)
-function renderTranscriptBox(container, rawText, noteId) {
+function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
   if (!container) return;
   container.style.display = "block";
   if (noteId) {
     container.dataset.noteId = String(noteId);
   }
+  if (detectedProvider) {
+    container.dataset.aiProvider = detectedProvider;
+  }
+
+  const effectiveProvider = container.dataset.aiProvider || state.whisperProvider || (document.getElementById("settings-whisper-key")?.value ? "groq" : "cloudflare");
+  const engineBadgeHtml = effectiveProvider === "groq"
+    ? `<span class="badge-engine badge-groq" title="由 Groq LPU 极速芯片 Whisper Large-v3 驱动">⚡ Groq Large-v3</span>`
+    : `<span class="badge-engine badge-cf" title="由 Cloudflare Workers AI 驱动">☁️ Cloudflare AI</span>`;
 
   const paragraphs = parseTranscriptParagraphs(rawText);
   if (paragraphs.length === 0) {
@@ -1680,7 +1688,11 @@ function renderTranscriptBox(container, rawText, noteId) {
       <div class="${paraClass}" data-idx="${idx}">
         <div class="para-sidebar">
           <span class="para-num">¶ ${num}</span>
-          <button type="button" class="btn-para-star ${starClass}" title="${p.isStarred ? '取消重点段落' : '标记为重点段落'}">⭐</button>
+          <button type="button" class="btn-para-star ${starClass}" title="${p.isStarred ? '取消重点段落' : '标记为重点段落'}">
+            <svg class="star-icon" viewBox="0 0 24 24">
+              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+            </svg>
+          </button>
         </div>
         <div class="para-content">${p.html}</div>
       </div>
@@ -1690,7 +1702,8 @@ function renderTranscriptBox(container, rawText, noteId) {
   container.innerHTML = `
     <div class="transcript-header">
       <div class="transcript-header-left">
-        <span class="transcript-title">🎙️ 视频语音提取文案 (AI Whisper)</span>
+        <span class="transcript-title">🎙️ 视频语音提取文案</span>
+        ${engineBadgeHtml}
         <span class="transcript-hl-badge" style="display: none;">⭐ 0 处重点</span>
       </div>
       <div class="transcript-header-actions">
@@ -1888,7 +1901,7 @@ async function sendAudioChunkForTranscription(blob) {
   } else {
     const textResp = await res.text();
     if (res.status === 524 || res.status === 504) {
-      throw new Error("Cloudflare AI 请求超时 (524)，请稍后重试");
+      throw new Error("AI 请求超时 (524)，请稍后重试");
     } else if (res.status === 413) {
       throw new Error("音频切片超出体积限制 (413)");
     } else {
@@ -1900,7 +1913,11 @@ async function sendAudioChunkForTranscription(blob) {
     throw new Error(data.message || `识别失败 (HTTP ${res.status})`);
   }
 
-  return (data.text || "").trim();
+  return {
+    text: (data.text || "").trim(),
+    provider: data.provider || "cloudflare",
+    model: data.model || ""
+  };
 }
 
 // 音频提取与 AI Whisper 语音识别 (支持多段切片流水线与实时流式文案呈现)
@@ -1947,6 +1964,7 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
     }
 
     const transcribedParts = [];
+    let detectedProvider = state.whisperProvider || "cloudflare";
 
     for (let i = 0; i < totalChunks; i++) {
       const chunk = chunks[i];
@@ -1961,11 +1979,14 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
       }
 
       // 携带重试机制 (单段失败最多重试 1 次)
-      let chunkText = "";
+      let chunkResult = null;
       let lastErr = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          chunkText = await sendAudioChunkForTranscription(chunk.blob);
+          chunkResult = await sendAudioChunkForTranscription(chunk.blob);
+          if (chunkResult?.provider) {
+            detectedProvider = chunkResult.provider;
+          }
           lastErr = null;
           break;
         } catch (e) {
@@ -1976,12 +1997,12 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
         }
       }
 
-      if (lastErr && !chunkText) {
+      if (lastErr && !chunkResult?.text) {
         console.warn(`Chunk ${chunkIndex} error:`, lastErr);
       }
 
-      if (chunkText) {
-        transcribedParts.push(chunkText);
+      if (chunkResult?.text) {
+        transcribedParts.push(chunkResult.text);
 
         // 实时流式呈现在预览区
         if (livePreview) {
@@ -2000,8 +2021,12 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
     }
 
     // 渲染最终文案结果面板
-    renderTranscriptBox(container, fullTranscript, noteId);
-    showToast(`🎉 视频语音文案已提取完成 (共识别 ${transcribedParts.length} 个分段)！`);
+    renderTranscriptBox(container, fullTranscript, noteId, detectedProvider);
+    if (detectedProvider === "groq") {
+      showToast(`⚡ 视频文案已由 Groq Large-v3 极速提取完成 (共 ${transcribedParts.length} 个分段)！`);
+    } else {
+      showToast(`🎉 视频语音文案已提取完成 (共识别 ${transcribedParts.length} 个分段)！`);
+    }
 
     // 持久化保存至 D1 数据库
     const targetNoteId = noteId || (state.activeDetailNote?.id);
@@ -3036,6 +3061,112 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 设置弹窗
   const settingsModal = document.getElementById("modal-settings");
+
+  function syncAiEngineSettingsUi(provider, key) {
+    const radio = document.querySelector(`input[name="ai-whisper-provider"][value="${provider}"]`);
+    if (radio) {
+      radio.checked = true;
+      document.querySelectorAll(".ai-engine-card").forEach((c) => c.classList.remove("active"));
+      radio.closest(".ai-engine-card")?.classList.add("active");
+    }
+
+    const groqFields = document.getElementById("groq-config-fields");
+    const customField = document.getElementById("custom-endpoint-field");
+    const statusText = document.getElementById("ai-status-text");
+    const statusBadge = document.getElementById("ai-active-status-badge");
+    const statusDot = statusBadge?.querySelector(".status-dot");
+
+    if (provider === "groq") {
+      if (groqFields) groqFields.style.display = "block";
+      if (customField) customField.style.display = "none";
+      if (statusText) {
+        if (key) {
+          statusText.textContent = "当前选用：⚡ Groq 极速大模型 (whisper-large-v3 已配置就绪)";
+          if (statusBadge) statusBadge.style.color = "#059669";
+          if (statusDot) statusDot.style.background = "#10b981";
+        } else {
+          statusText.textContent = "当前选用：⚡ Groq 极速大模型 (请填入 API Key 即可激活)";
+          if (statusBadge) statusBadge.style.color = "#d97706";
+          if (statusDot) statusDot.style.background = "#f59e0b";
+        }
+      }
+    } else if (provider === "cloudflare") {
+      if (groqFields) groqFields.style.display = "block";
+      if (customField) customField.style.display = "none";
+      if (statusText) {
+        statusText.textContent = "当前选用：☁️ Cloudflare Workers AI (内置大模型 · 免配置)";
+        if (statusBadge) statusBadge.style.color = "#0284c7";
+        if (statusDot) statusDot.style.background = "#0ea5e9";
+      }
+    } else if (provider === "custom") {
+      if (groqFields) groqFields.style.display = "block";
+      if (customField) customField.style.display = "block";
+      if (statusText) {
+        statusText.textContent = "当前选用：🤖 自定义 / OpenAI Whisper API";
+        if (statusBadge) statusBadge.style.color = "#7c3aed";
+        if (statusDot) statusDot.style.background = "#8b5cf6";
+      }
+    }
+  }
+
+  // 单选框切换与输入同步
+  document.querySelectorAll('input[name="ai-whisper-provider"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      const val = radio.value;
+      const key = document.getElementById("settings-whisper-key")?.value.trim() || "";
+      syncAiEngineSettingsUi(val, key);
+    });
+  });
+
+  document.getElementById("settings-whisper-key")?.addEventListener("input", (e) => {
+    const provider = document.querySelector('input[name="ai-whisper-provider"]:checked')?.value || "groq";
+    syncAiEngineSettingsUi(provider, e.target.value.trim());
+  });
+
+  // 测试 Key 连通性按钮
+  document.getElementById("btn-test-whisper-key")?.addEventListener("click", async () => {
+    const key = document.getElementById("settings-whisper-key")?.value.trim() || "";
+    const endpoint = document.getElementById("settings-whisper-endpoint")?.value.trim() || "";
+    const provider = document.querySelector('input[name="ai-whisper-provider"]:checked')?.value || "groq";
+    const resultEl = document.getElementById("test-whisper-result");
+    if (!resultEl) return;
+
+    if (!key) {
+      resultEl.style.display = "block";
+      resultEl.style.background = "#fee2e2";
+      resultEl.style.color = "#b91c1c";
+      resultEl.innerHTML = "⚠️ 请先在输入框中填入 Groq API Key (以 gsk_ 开头)";
+      return;
+    }
+
+    resultEl.style.display = "block";
+    resultEl.style.background = "#f1f5f9";
+    resultEl.style.color = "#475569";
+    resultEl.innerHTML = "⏳ 正在连接 Groq API 测试连通性...";
+
+    try {
+      const res = await fetch("/api/test-whisper-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, provider, endpoint })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        resultEl.style.background = "#dcfce7";
+        resultEl.style.color = "#15803d";
+        resultEl.innerHTML = `✅ ${data.message || "Groq API Key 验证成功！连接正常。"}`;
+      } else {
+        resultEl.style.background = "#fee2e2";
+        resultEl.style.color = "#b91c1c";
+        resultEl.innerHTML = `❌ ${data.message || "Key 验证未通过，请检查是否完整复制"}`;
+      }
+    } catch (err) {
+      resultEl.style.background = "#fee2e2";
+      resultEl.style.color = "#b91c1c";
+      resultEl.innerHTML = `❌ 连接异常: ${err.message}`;
+    }
+  });
+
   document.getElementById("btn-open-settings")?.addEventListener("click", async () => {
     settingsModal?.classList.add("active");
     loadStorageUsage();
@@ -3045,6 +3176,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (oldPinEl) oldPinEl.value = state.pin || "1987";
     const msg = document.getElementById("settings-msg");
     if (msg) msg.style.display = "none";
+    const testResultEl = document.getElementById("test-whisper-result");
+    if (testResultEl) testResultEl.style.display = "none";
 
     // 尝试从云端加载已保存的配置
     try {
@@ -3064,6 +3197,10 @@ document.addEventListener("DOMContentLoaded", () => {
         if (whisperEndpointEl && data.whisperApiEndpoint) {
           whisperEndpointEl.value = data.whisperApiEndpoint;
         }
+
+        const whisperProvider = data.whisperProvider || (data.whisperApiKey ? "groq" : "cloudflare");
+        state.whisperProvider = whisperProvider;
+        syncAiEngineSettingsUi(whisperProvider, data.whisperApiKey || "");
       }
     } catch {}
   });
@@ -3072,7 +3209,7 @@ document.addEventListener("DOMContentLoaded", () => {
     settingsModal?.classList.remove("active");
   });
 
-  // 保存设置（Cookie、PIN 码与 Whisper 配置）提交
+  // 保存设置（Cookie、PIN 码与 AI 引擎配置）提交
   document.getElementById("btn-submit-change-pin")?.addEventListener("click", async () => {
     const oldPin = document.getElementById("settings-old-pin")?.value.trim() || state.pin;
     const newPin = document.getElementById("settings-new-pin")?.value.trim();
@@ -3084,6 +3221,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const whisperApiKey = document.getElementById("settings-whisper-key")?.value.trim() || "";
     const whisperApiEndpoint = document.getElementById("settings-whisper-endpoint")?.value.trim() || "";
+    const whisperProvider = document.querySelector('input[name="ai-whisper-provider"]:checked')?.value || (whisperApiKey ? "groq" : "cloudflare");
+    state.whisperProvider = whisperProvider;
     const msg = document.getElementById("settings-msg");
 
     if (!oldPin) {
@@ -3103,6 +3242,7 @@ document.addEventListener("DOMContentLoaded", () => {
           pin: oldPin,
           newPin: newPin || undefined,
           xhsCookie: cookieVal,
+          whisperProvider,
           whisperApiKey,
           whisperApiEndpoint
         })
@@ -3134,6 +3274,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
   });
+
 
   // Cloudflare 用量监控专属弹窗交互管理
   const usageModal = document.getElementById("modal-usage");

@@ -1961,22 +1961,37 @@ input:checked + .slider:before {
 .btn-para-star {
   background: transparent;
   border: none;
-  font-size: 15px;
+  font-size: 0;
   color: #94a3b8;
   cursor: pointer;
-  padding: 2px;
+  padding: 3px;
   line-height: 1;
   border-radius: 4px;
-  transition: transform 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s, color 0.15s, opacity 0.15s, filter 0.15s;
+  opacity: 0.5;
+}
+
+.btn-para-star svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  display: block;
 }
 
 .btn-para-star:hover {
-  transform: scale(1.15);
-  color: #eab308;
+  transform: scale(1.2);
+  color: #facc15;
+  opacity: 0.9;
 }
 
 .btn-para-star.active {
-  color: #eab308;
+  color: #eab308 !important;
+  opacity: 1 !important;
+  transform: scale(1.1);
+  filter: drop-shadow(0 1px 2px rgba(234, 179, 8, 0.45));
 }
 
 /* 段落正文 */
@@ -2495,4 +2510,143 @@ mark.transcript-hl:hover {
   color: #334155;
   white-space: pre-wrap;
 }
+
+/* AI 语音引擎选择卡片 */
+.ai-engine-selector-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ai-engine-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.ai-engine-card:hover {
+  border-color: #93c5fd;
+  background: #f8fafc;
+}
+
+.ai-engine-card input[type="radio"] {
+  margin-top: 3px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.ai-engine-card.active,
+.ai-engine-card:has(input[type="radio"]:checked) {
+  border-color: #3b82f6;
+  background: #eff6ff;
+  box-shadow: 0 0 0 1px #3b82f6;
+}
+
+.engine-card-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.engine-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.engine-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.engine-badge-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-weight: 600;
+}
+
+.engine-badge-tag.tag-rec {
+  background: #fef08a;
+  color: #854d0e;
+  font-weight: 700;
+}
+
+.engine-badge-tag.tag-built {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.engine-card-desc {
+  font-size: 11.5px;
+  color: #64748b;
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+.ai-engine-config-area {
+  margin-top: 10px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.ai-active-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #059669;
+  font-weight: 500;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+}
+
+/* 引擎标签徽章在文案面板头部 */
+.badge-engine {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  line-height: 1.4;
+}
+
+.badge-engine.badge-groq {
+  background: #fef08a;
+  color: #854d0e;
+  border: 1px solid #facc15;
+}
+
+.badge-engine.badge-cf {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
 
