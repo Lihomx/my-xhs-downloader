@@ -164,6 +164,33 @@ async function checkAndAutoPasteClipboard() {
   }
 }
 
+// 判断是否为小红书默认无意义通用标题
+export function isGenericTitle(title) {
+  if (!title || typeof title !== "string") return true;
+  const t = title.trim();
+  if (!t) return true;
+  if (t === "小红书" || t === "小红书图片" || t === "小红书笔记" || t === "无标题" || t === "视频" || t === "笔记") return true;
+  if (/^小红书[\s_·\-|—]/i.test(t)) return true;
+  return false;
+}
+
+// 从笔记正文第一行智能提取标题 (过滤掉纯 hashtag)
+export function extractTitleFromContent(content) {
+  if (!content || typeof content !== "string") return "";
+  const lines = content.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const cleaned = line.replace(/#\S+/g, "").replace(/^[【\[(（].*?[】\])）]/g, "").trim();
+    if (cleaned && cleaned.length >= 2) {
+      return cleaned.slice(0, 80);
+    }
+    const fallbackCleaned = line.replace(/#\S+/g, "").trim();
+    if (fallbackCleaned && fallbackCleaned.length >= 2) {
+      return fallbackCleaned.slice(0, 80);
+    }
+  }
+  return "";
+}
+
 // 智能识别并提取多条小红书链接 (支持多行、逗号/空格分隔或包含多个链接的整段聊天/备忘录文案)
 export function extractAllXhsUrls(text) {
   if (!text || typeof text !== "string") return [];
@@ -292,6 +319,11 @@ async function startSingleParsing(text) {
     }
 
     data.sourceUrl = data.sourceUrl || text;
+    if (isGenericTitle(data.title) && data.content) {
+      const fromContent = extractTitleFromContent(data.content);
+      if (fromContent) data.title = fromContent;
+    }
+    data.title = data.title || "小红书笔记";
     state.currentParsedNote = data;
     renderParseResult(data);
     showToast("🎉 解析成功！");
@@ -388,6 +420,12 @@ async function startBatchProcessing(urls) {
       }
 
       data.sourceUrl = item.url;
+      if (isGenericTitle(data.title) && data.content) {
+        const fromContent = extractTitleFromContent(data.content);
+        if (fromContent) data.title = fromContent;
+      }
+      data.title = data.title || "小红书笔记";
+
       item.status = "success";
       item.note = data;
       state.batchResults.push(data);
@@ -1312,7 +1350,11 @@ async function openNoteDetail(noteId) {
 
     document.getElementById("modal-note-title").textContent = note.title;
     document.getElementById("modal-note-time").textContent = `归档时间：${formatTime(note.createdAt)}`;
-    document.getElementById("modal-note-content").textContent = note.content || "（无文案）";
+
+    const inputTitle = document.getElementById("modal-input-title");
+    const inputContent = document.getElementById("modal-input-content");
+    if (inputTitle) inputTitle.value = note.title || "";
+    if (inputContent) inputContent.value = note.content || "";
     document.getElementById("modal-thoughts-input").value = note.thoughts || "";
 
     // 渲染原始采集链接
@@ -1865,6 +1907,73 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (err) {
       showToast(`保存失败: ${err.message}`);
+    }
+  });
+
+  // 从正文智能提取标题
+  document.getElementById("btn-modal-smart-title")?.addEventListener("click", () => {
+    const content = document.getElementById("modal-input-content")?.value || "";
+    const extracted = extractTitleFromContent(content);
+    if (extracted) {
+      const titleInput = document.getElementById("modal-input-title");
+      if (titleInput) titleInput.value = extracted;
+      showToast("✨ 已从正文智能提取标题，请点击下方保存！");
+    } else {
+      showToast("未能从正文识别出合适标题，请手动输入");
+    }
+  });
+
+  // 复制正文内容
+  document.getElementById("btn-modal-copy-content")?.addEventListener("click", async () => {
+    const content = document.getElementById("modal-input-content")?.value || "";
+    if (content) {
+      await navigator.clipboard.writeText(content);
+      showToast("📋 已复制正文内容到剪贴板");
+    }
+  });
+
+  // 保存标题与正文修改
+  document.getElementById("btn-save-note-detail")?.addEventListener("click", async () => {
+    if (!state.activeDetailNote) return;
+    const newTitle = document.getElementById("modal-input-title")?.value.trim() || "";
+    const newContent = document.getElementById("modal-input-content")?.value.trim() || "";
+
+    if (!newTitle) {
+      showToast("笔记标题不能为空", { isError: true });
+      return;
+    }
+
+    const btn = document.getElementById("btn-save-note-detail");
+    if (btn) btn.disabled = true;
+
+    try {
+      const res = await fetch(`/api/notes/${state.activeDetailNote.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({ title: newTitle, content: newContent })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || "保存失败");
+      }
+
+      state.activeDetailNote.title = newTitle;
+      state.activeDetailNote.content = newContent;
+      document.getElementById("modal-note-title").textContent = newTitle;
+
+      // 实时更新知识库卡片列表
+      const searchVal = document.getElementById("kb-search-input")?.value || "";
+      loadNotes(searchVal);
+
+      showToast("🎉 笔记标题与正文已保存成功！");
+    } catch (err) {
+      showToast(`❌ 保存失败: ${err.message}`, { isError: true });
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 

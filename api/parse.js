@@ -6,6 +6,8 @@ import {
   extractOriginalAssetToken,
   fetchNotePage,
   isDirectImageUrl,
+  isGenericTitle,
+  extractTitleFromContent,
   normalizeCookieString,
   parseNoteHtml,
   validateAssetToken
@@ -142,10 +144,17 @@ export default async function handler(req, res) {
       isDefault: index === 0
     }));
 
+    let finalTitle = parsed.title;
+    if (isGenericTitle(finalTitle) && parsed.content) {
+      const fromContent = extractTitleFromContent(parsed.content);
+      if (fromContent) finalTitle = fromContent;
+    }
+    finalTitle = finalTitle || "小红书笔记";
+
     return res.status(200).json({
       success: true,
       engine: "node",
-      title: parsed.title,
+      title: finalTitle,
       content: parsed.content,
       noteId,
       sourceUrl: inputUrl,

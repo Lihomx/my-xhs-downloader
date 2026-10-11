@@ -22,7 +22,8 @@ import {
   renameCustomTag,
   deleteCustomTag,
   updateNoteTags,
-  updateTranscript
+  updateTranscript,
+  updateNoteDetail
 } from './storage-service.js';
 
 const NODE_ROUTES = { '/api/parse': parse, '/api/image': image, '/api/video': video };
@@ -292,6 +293,16 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
           const isAuthed = await verifyPin(env.DB, pin);
           if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          // 编辑标题和正文: PUT /api/notes/:id
+          if (!parts[1] && request.method === 'PUT') {
+            const body = await request.json().catch(() => ({}));
+            const res = await updateNoteDetail(env.DB, noteId, {
+              title: body.title,
+              content: body.content
+            });
+            return json({ success: true, ...res });
+          }
 
           // 更新标签: PUT /api/notes/:id/tags
           if (parts[1] === 'tags' && request.method === 'PUT') {

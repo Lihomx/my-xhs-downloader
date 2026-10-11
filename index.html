@@ -300,8 +300,34 @@
             <div id="detail-tags-chips" class="detail-tags-chips"></div>
           </section>
 
-          <!-- 正文 -->
-          <div id="modal-note-content" class="note-content-box" style="margin-bottom: 16px;"></div>
+          <!-- 笔记标题编辑区 -->
+          <section class="detail-edit-section">
+            <div class="detail-edit-header">
+              <span>📝 笔记标题</span>
+              <button id="btn-modal-smart-title" class="btn btn-ghost btn-sm" type="button" title="如果标题识别为小红书，点击自动从正文第一行智能提取标题">
+                ✨ 从正文提取标题
+              </button>
+            </div>
+            <input type="text" id="modal-input-title" class="detail-title-input" placeholder="输入或修改笔记标题..." />
+          </section>
+
+          <!-- 笔记正文编辑区 -->
+          <section class="detail-edit-section">
+            <div class="detail-edit-header">
+              <span>📄 笔记正文描述</span>
+              <button id="btn-modal-copy-content" class="btn btn-ghost btn-sm" type="button">
+                📋 复制正文
+              </button>
+            </div>
+            <textarea id="modal-input-content" class="detail-content-textarea" rows="6" placeholder="输入或修改笔记正文描述..."></textarea>
+          </section>
+
+          <!-- 保存标题与正文操作栏 -->
+          <div class="detail-save-bar">
+            <button id="btn-save-note-detail" class="btn btn-primary" type="button">
+              💾 保存标题与正文修改
+            </button>
+          </div>
 
           <!-- 视频 (如果有) -->
           <div id="modal-video-wrap" style="display: none; margin-bottom: 16px;">

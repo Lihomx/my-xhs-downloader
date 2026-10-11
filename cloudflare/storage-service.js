@@ -5,6 +5,31 @@
 export const DEFAULT_PIN = "1987";
 export const DEFAULT_TAGS = ["运动健身", "干货灵感", "好物收藏", "生活日常"];
 
+export function isGenericTitle(title) {
+  if (!title || typeof title !== "string") return true;
+  const t = title.trim();
+  if (!t) return true;
+  if (t === "小红书" || t === "小红书图片" || t === "小红书笔记" || t === "无标题" || t === "视频" || t === "笔记") return true;
+  if (/^小红书[\s_·\-|—]/i.test(t)) return true;
+  return false;
+}
+
+export function extractTitleFromContent(content) {
+  if (!content || typeof content !== "string") return "";
+  const lines = content.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const cleaned = line.replace(/#\S+/g, "").replace(/^[【\[(（].*?[】\])）]/g, "").trim();
+    if (cleaned && cleaned.length >= 2) {
+      return cleaned.slice(0, 80);
+    }
+    const fallbackCleaned = line.replace(/#\S+/g, "").trim();
+    if (fallbackCleaned && fallbackCleaned.length >= 2) {
+      return fallbackCleaned.slice(0, 80);
+    }
+  }
+  return "";
+}
+
 /**
  * 初始化数据库表结构
  */
@@ -363,6 +388,13 @@ export async function archiveNote(env, noteData) {
   }
   const createdAt = existing?.created_at || now;
 
+  let cleanTitle = (noteData.title || "").trim();
+  if (isGenericTitle(cleanTitle) && noteData.content) {
+    const fromContent = extractTitleFromContent(noteData.content);
+    if (fromContent) cleanTitle = fromContent;
+  }
+  cleanTitle = cleanTitle || "小红书笔记";
+
   await env.DB.prepare(`
     INSERT INTO notes (id, title, content, cover_url, images_json, videos_json, thoughts, tags_json, source_url, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -377,7 +409,7 @@ export async function archiveNote(env, noteData) {
       updated_at = excluded.updated_at
   `).bind(
     noteId,
-    noteData.title || "小红书笔记",
+    cleanTitle,
     noteData.content || "",
     coverUrl,
     JSON.stringify(storedImages),
@@ -391,7 +423,7 @@ export async function archiveNote(env, noteData) {
 
   return {
     id: noteId,
-    title: noteData.title,
+    title: cleanTitle,
     coverUrl,
     tags,
     imagesCount: storedImages.length,
@@ -511,6 +543,22 @@ export async function updateTranscript(db, id, transcript) {
     .bind(String(transcript ?? "").trim(), now, id)
     .run();
   return { id, transcript, updatedAt: now };
+}
+
+/**
+ * 编辑/更新笔记标题与正文描述
+ */
+export async function updateNoteDetail(db, id, { title, content }) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+  const now = Date.now();
+  const cleanTitle = typeof title === "string" ? title.trim() : "";
+  const cleanContent = typeof content === "string" ? content.trim() : "";
+
+  await db.prepare("UPDATE notes SET title = ?, content = ?, updated_at = ? WHERE id = ?")
+    .bind(cleanTitle, cleanContent, now, id)
+    .run();
+  return { id, title: cleanTitle, content: cleanContent, updatedAt: now };
 }
 
 /**
