@@ -162,19 +162,67 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             }
           }
 
-          // 默认使用 Cloudflare Workers AI 原生 Whisper-large-v3-turbo 模型
+          // 默认使用 Cloudflare Workers AI 原生 Whisper 模型
           if (env.AI) {
+            const errors = [];
+
+            // 策略 1: @cf/openai/whisper-large-v3-turbo (纯 audio 数组)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                audio: [...new Uint8Array(audioBuffer)],
-                task: 'transcribe',
-                language: 'zh'
+                audio: [...new Uint8Array(audioBuffer)]
               });
-              return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai' });
+              if (aiResp && typeof aiResp.text === 'string') {
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo' });
+              }
             } catch (err) {
-              console.error("Cloudflare Workers AI run error:", err);
-              return json({ success: false, message: `Cloudflare AI 转写出错: ${err.message}` }, 500);
+              errors.push(`turbo-array: ${err.message}`);
             }
+
+            // 策略 2: @cf/openai/whisper (经典标准 Whisper 模型)
+            try {
+              const aiResp = await env.AI.run('@cf/openai/whisper', {
+                audio: [...new Uint8Array(audioBuffer)]
+              });
+              if (aiResp && typeof aiResp.text === 'string') {
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-whisper' });
+              }
+            } catch (err) {
+              errors.push(`whisper-array: ${err.message}`);
+            }
+
+            // 策略 3: Uint8Array 二进制对象
+            try {
+              const aiResp = await env.AI.run('@cf/openai/whisper', {
+                audio: new Uint8Array(audioBuffer)
+              });
+              if (aiResp && typeof aiResp.text === 'string') {
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-uint8' });
+              }
+            } catch (err) {
+              errors.push(`whisper-uint8: ${err.message}`);
+            }
+
+            // 策略 4: Base64 编码方式 (适用于 turbo 模型的 Base64 规范)
+            try {
+              let binary = '';
+              const bytes = new Uint8Array(audioBuffer);
+              const len = bytes.byteLength;
+              for (let i = 0; i < len; i += 8192) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, len)));
+              }
+              const base64Audio = btoa(binary);
+
+              const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
+                audio: base64Audio
+              });
+              if (aiResp && typeof aiResp.text === 'string') {
+                return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-base64' });
+              }
+            } catch (err) {
+              errors.push(`turbo-base64: ${err.message}`);
+            }
+
+            return json({ success: false, message: `Cloudflare AI 转写出错: ${errors.join(' | ')}` }, 500);
           }
 
           return json({
