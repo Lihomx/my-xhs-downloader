@@ -56,7 +56,12 @@ const state = {
   selectedImages: new Set(),
   currentCategory: "__all__",
   tags: [],
-  tagCounts: {}
+  tagCounts: {},
+  // 批量采集队列状态
+  batchQueue: [],
+  isBatchRunning: false,
+  shouldStopBatch: false,
+  batchResults: []
 };
 
 // 工具函数：轻提示 (错误提示一直显示在底部，附带关闭按钮)
@@ -159,7 +164,84 @@ async function checkAndAutoPasteClipboard() {
   }
 }
 
-// 2. 解析核心函数
+// 智能识别并提取多条小红书链接 (支持多行、逗号/空格分隔或包含多个链接的整段聊天/备忘录文案)
+export function extractAllXhsUrls(text) {
+  if (!text || typeof text !== "string") return [];
+  const raw = text.trim();
+  if (!raw) return [];
+
+  const results = [];
+  const seen = new Set();
+
+  // 1. 匹配所有 http/https 链接
+  const urlRegex = /https?:\/\/[^\s<>'\"()\[\]{}]+[^\s<>'\"()\[\]{}.,;:!?，。！？；：）】》]/gi;
+  const matches = raw.match(urlRegex) || [];
+
+  for (const match of matches) {
+    let cleanUrl = match.trim().replace(/[.,;:!?\])}，。！？；：）】》]+$/g, "");
+    try {
+      const u = new URL(cleanUrl);
+      const host = u.hostname.toLowerCase();
+      if (
+        host.includes("xiaohongshu.com") ||
+        host.includes("xhslink.com") ||
+        host.includes("xhslink.cn") ||
+        host.includes("xhscdn.com")
+      ) {
+        if (!seen.has(cleanUrl)) {
+          seen.add(cleanUrl);
+          results.push(cleanUrl);
+        }
+      }
+    } catch {}
+  }
+
+  // 2. 补充提取未带 http(s):// 前缀的行或片段 (如 xhslink.com/a/ABC 或 xiaohongshu.com/explore/XYZ)
+  const segments = raw.split(/[\r\n,，;；\s]+/);
+  for (const seg of segments) {
+    const trimmed = seg.trim().replace(/[.,;:!?\])}，。！？；：）】》]+$/g, "");
+    if (/^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*(?:xiaohongshu\.com|xhslink\.(?:com|cn))\//i.test(trimmed)) {
+      const fullUrl = trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
+      if (!seen.has(fullUrl)) {
+        try {
+          new URL(fullUrl);
+          seen.add(fullUrl);
+          results.push(fullUrl);
+        } catch {}
+      }
+    }
+  }
+
+  return results;
+}
+
+// 实时更新输入框链接识别状态
+function updateInputUrlHint() {
+  const input = document.getElementById("input-text");
+  const badge = document.getElementById("multi-url-badge");
+  const btnText = document.getElementById("btn-parse-text");
+  if (!input) return;
+
+  const urls = extractAllXhsUrls(input.value);
+  if (urls.length > 1) {
+    if (badge) {
+      badge.textContent = `🔍 识别到 ${urls.length} 条小红书链接`;
+      badge.style.display = "inline-flex";
+    }
+    if (btnText && !state.isBatchRunning) {
+      btnText.textContent = `⚡ 批量采集 (${urls.length} 篇) ↗`;
+    }
+  } else {
+    if (badge) {
+      badge.style.display = "none";
+    }
+    if (btnText && !state.isBatchRunning) {
+      btnText.textContent = "开始解析 ↗";
+    }
+  }
+}
+
+// 2. 解析核心函数：根据链接数量自动进入单篇或批量模式
 async function startParsing() {
   const input = document.getElementById("input-text");
   const text = (input?.value || "").trim();
@@ -168,6 +250,17 @@ async function startParsing() {
     return;
   }
 
+  const urls = extractAllXhsUrls(text);
+  if (urls.length > 1) {
+    return startBatchProcessing(urls);
+  }
+
+  const singleUrl = urls.length === 1 ? urls[0] : text;
+  return startSingleParsing(singleUrl);
+}
+
+// 单篇解析处理
+async function startSingleParsing(text) {
   const btnText = document.getElementById("btn-parse-text");
   const spinner = document.getElementById("btn-parse-spinner");
   const btn = document.getElementById("btn-parse");
@@ -177,6 +270,8 @@ async function startParsing() {
   if (spinner) spinner.style.display = "inline-block";
 
   document.getElementById("toast-bar")?.classList.remove("show");
+  const batchSec = document.getElementById("batch-section");
+  if (batchSec) batchSec.style.display = "none";
 
   try {
     const cleanCookie = normalizeCookieString(state.xhsCookie);
@@ -211,6 +306,451 @@ async function startParsing() {
     if (btnText) btnText.style.display = "inline";
     if (spinner) spinner.style.display = "none";
   }
+}
+
+// 2.1 批量队列采集处理 (防风控队列 + 实时进度条 + 自动转存 Cloudflare)
+async function startBatchProcessing(urls) {
+  if (state.isBatchRunning) {
+    showToast("当前已有批量采集任务正在进行中，请等待完成或点击停止");
+    return;
+  }
+
+  const batchSection = document.getElementById("batch-section");
+  const resultSection = document.getElementById("result-section");
+  if (resultSection) resultSection.style.display = "none";
+  if (batchSection) batchSection.style.display = "block";
+
+  batchSection.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  state.isBatchRunning = true;
+  state.shouldStopBatch = false;
+  state.batchResults = [];
+  state.batchQueue = urls.map((url, idx) => ({
+    id: idx + 1,
+    url,
+    status: "waiting", // 'waiting' | 'processing' | 'success' | 'failed'
+    note: null,
+    error: null
+  }));
+
+  const btnParse = document.getElementById("btn-parse");
+  const btnParseText = document.getElementById("btn-parse-text");
+  const btnParseSpinner = document.getElementById("btn-parse-spinner");
+  const btnStop = document.getElementById("btn-batch-stop");
+  const actionsBar = document.getElementById("batch-actions-bar");
+
+  if (btnParse) btnParse.disabled = true;
+  if (btnParseText) btnParseText.style.display = "none";
+  if (btnParseSpinner) btnParseSpinner.style.display = "inline-block";
+  if (btnStop) btnStop.style.display = "inline-flex";
+  if (actionsBar) actionsBar.style.display = "none";
+
+  document.getElementById("batch-main-title").textContent = `正在队列采集 ${urls.length} 篇小红书笔记...`;
+  renderBatchQueue();
+  updateBatchProgress(0, "正在启动队列批量采集 (防风控间隔执行)...");
+
+  const cleanCookie = normalizeCookieString(state.xhsCookie);
+  const reqHeaders = { "Content-Type": "application/json" };
+  if (cleanCookie) {
+    reqHeaders["x-xhs-cookie"] = cleanCookie;
+  }
+
+  const total = state.batchQueue.length;
+  let successCount = 0;
+  let failCount = 0;
+
+  for (let i = 0; i < total; i++) {
+    if (state.shouldStopBatch) {
+      showToast("⏹ 批量采集已按您的要求提前停止");
+      break;
+    }
+
+    const item = state.batchQueue[i];
+    item.status = "processing";
+    renderBatchItem(i);
+
+    const progressPercent = Math.round((i / total) * 100);
+    updateBatchProgress(
+      progressPercent,
+      `正在采集 [${i + 1}/${total}]：请求小红书页面解析中... (${progressPercent}%)`
+    );
+
+    try {
+      const res = await fetch("/api/parse", {
+        method: "POST",
+        headers: reqHeaders,
+        body: JSON.stringify({ text: item.url, cookie: cleanCookie })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || "解析失败或未获取到媒体内容");
+      }
+
+      data.sourceUrl = item.url;
+      item.status = "success";
+      item.note = data;
+      state.batchResults.push(data);
+      successCount++;
+
+      // 实时后台自动归档转存至 Cloudflare (R2 + D1)
+      triggerCloudSync(data).then((ok) => {
+        const syncPill = document.getElementById(`batch-sync-pill-${i}`);
+        if (syncPill) {
+          syncPill.textContent = ok ? "☁️ 已存入 R2/D1" : "☁️ 云端归档处理中";
+          syncPill.style.color = "var(--success)";
+        }
+      }).catch(err => console.warn("Batch cloud sync error:", err));
+
+      const titleSnippet = (data.title || "小红书笔记").replace(/[\r\n\t]+/g, " ").trim();
+      updateBatchProgress(
+        Math.round(((i + 1) / total) * 100),
+        `正在采集 [${i + 1}/${total}]：${escapeHtml(titleSnippet.slice(0, 26))}...`
+      );
+    } catch (err) {
+      console.error(`Batch item ${i + 1} error:`, err);
+      item.status = "failed";
+      item.error = err.message || "解析出错";
+      failCount++;
+    }
+
+    renderBatchItem(i);
+    updateBatchStats(successCount, failCount, total);
+
+    // 防风控排队间隔 (0.8 秒)
+    if (i < total - 1 && !state.shouldStopBatch) {
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+  }
+
+  state.isBatchRunning = false;
+  if (btnParse) btnParse.disabled = false;
+  if (btnParseText) btnParseText.style.display = "inline";
+  if (btnParseSpinner) btnParseSpinner.style.display = "none";
+  if (btnStop) btnStop.style.display = "none";
+  updateInputUrlHint();
+
+  const finalPercent = 100;
+  const statusMsg = state.shouldStopBatch
+    ? `⏹ 批量采集已提前中止：已完成 ${successCount} 篇，失败 ${failCount} 篇`
+    : `🎉 批量采集全部完成！成功 ${successCount} 篇，失败 ${failCount} 篇`;
+
+  updateBatchProgress(finalPercent, statusMsg);
+  document.getElementById("batch-main-title").textContent = state.shouldStopBatch
+    ? "批量采集已中止"
+    : "🎉 批量采集已完成";
+
+  if (state.batchResults.length > 0) {
+    if (actionsBar) actionsBar.style.display = "flex";
+    showToast(`🎉 批量采集完成：已自动归档 ${state.batchResults.length} 篇笔记至知识库！`);
+  } else {
+    showToast("❌ 批量采集结束，未成功解析有效笔记", { isError: true });
+  }
+
+  refreshNotesBadge();
+}
+
+// 渲染批量任务初始列表
+function renderBatchQueue() {
+  const container = document.getElementById("batch-items-list");
+  if (!container) return;
+  container.innerHTML = "";
+
+  state.batchQueue.forEach((item, index) => {
+    const el = document.createElement("div");
+    el.id = `batch-item-${index}`;
+    el.className = "batch-item-card";
+    container.appendChild(el);
+    renderBatchItem(index);
+  });
+}
+
+// 渲染单个队列项卡片
+function renderBatchItem(index) {
+  const el = document.getElementById(`batch-item-${index}`);
+  const item = state.batchQueue[index];
+  if (!el || !item) return;
+
+  el.className = `batch-item-card status-${item.status}`;
+
+  if (item.status === "waiting") {
+    el.innerHTML = `
+      <div class="batch-item-header">
+        <div class="batch-item-left">
+          <span class="batch-item-index">[${index + 1}]</span>
+          <span class="batch-badge badge-waiting">⏳ 等待排队</span>
+          <span class="batch-item-url text-truncate" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</span>
+        </div>
+      </div>
+    `;
+  } else if (item.status === "processing") {
+    el.innerHTML = `
+      <div class="batch-item-header">
+        <div class="batch-item-left">
+          <span class="batch-item-index">[${index + 1}]</span>
+          <span class="batch-badge badge-processing"><span class="spinner spinner-sm"></span> 正在解析并保存...</span>
+          <span class="batch-item-url text-truncate" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</span>
+        </div>
+      </div>
+    `;
+  } else if (item.status === "success") {
+    const note = item.note || {};
+    const imgCount = note.images?.length || 0;
+    const vidCount = note.videos?.length || 0;
+
+    el.innerHTML = `
+      <div class="batch-item-header">
+        <div class="batch-item-left">
+          <span class="batch-item-index">[${index + 1}]</span>
+          <span class="batch-badge badge-success">✅ 已采集</span>
+          <span class="batch-item-title" title="${escapeHtml(note.title)}">${escapeHtml(note.title || "小红书笔记")}</span>
+        </div>
+        <div class="batch-item-actions">
+          <button class="btn btn-sm btn-secondary btn-batch-preview" data-idx="${index}" type="button">👀 查看详情</button>
+          <button class="btn btn-sm btn-primary btn-batch-download" data-idx="${index}" type="button">⬇️ 下载本篇</button>
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary" title="在新标签打开原始链接">🔗 原链</a>
+        </div>
+      </div>
+      <div class="batch-item-summary">
+        ${imgCount ? `<span class="batch-summary-pill">🖼️ ${imgCount} 张图片</span>` : ""}
+        ${vidCount ? `<span class="batch-summary-pill">🎬 视频</span>` : ""}
+        <span id="batch-sync-pill-${index}" class="batch-summary-pill" style="color:var(--success); font-weight:600;">☁️ 已存入 R2/D1</span>
+        <span class="batch-item-url text-truncate" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</span>
+      </div>
+    `;
+
+    // 绑定单篇详情预览与快速下载
+    el.querySelector(".btn-batch-preview")?.addEventListener("click", () => {
+      if (note.id) {
+        openNoteDetail(note.id);
+      } else {
+        renderParseResult(note);
+      }
+    });
+
+    el.querySelector(".btn-batch-download")?.addEventListener("click", () => {
+      downloadSingleNote(note);
+    });
+  } else if (item.status === "failed") {
+    el.innerHTML = `
+      <div class="batch-item-header">
+        <div class="batch-item-left">
+          <span class="batch-item-index">[${index + 1}]</span>
+          <span class="batch-badge badge-danger">❌ 采集失败</span>
+          <span class="batch-item-url text-truncate" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</span>
+        </div>
+        <div class="batch-item-actions">
+          <button class="btn btn-sm btn-secondary btn-batch-retry" data-idx="${index}" type="button">🔄 重试此条</button>
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary" title="打开原始链接">🔗 原链</a>
+        </div>
+      </div>
+      <div class="batch-item-error-msg">❌ 失败原因：${escapeHtml(item.error || "请求解析失败")}</div>
+    `;
+
+    el.querySelector(".btn-batch-retry")?.addEventListener("click", () => {
+      retryBatchItem(index);
+    });
+  }
+}
+
+// 单独重试某一条采集失败的链接
+async function retryBatchItem(index) {
+  const item = state.batchQueue[index];
+  if (!item) return;
+
+  item.status = "processing";
+  item.error = null;
+  renderBatchItem(index);
+  showToast(`正在重试第 [${index + 1}] 条链接...`);
+
+  try {
+    const cleanCookie = normalizeCookieString(state.xhsCookie);
+    const reqHeaders = { "Content-Type": "application/json" };
+    if (cleanCookie) {
+      reqHeaders["x-xhs-cookie"] = cleanCookie;
+    }
+
+    const res = await fetch("/api/parse", {
+      method: "POST",
+      headers: reqHeaders,
+      body: JSON.stringify({ text: item.url, cookie: cleanCookie })
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.message || "解析失败");
+    }
+
+    data.sourceUrl = item.url;
+    item.status = "success";
+    item.note = data;
+    state.batchResults.push(data);
+
+    triggerCloudSync(data).then(() => {
+      const syncPill = document.getElementById(`batch-sync-pill-${index}`);
+      if (syncPill) {
+        syncPill.textContent = "☁️ 已存入 R2/D1";
+        syncPill.style.color = "var(--success)";
+      }
+    });
+
+    showToast(`🎉 第 [${index + 1}] 条重试解析成功！`);
+  } catch (err) {
+    item.status = "failed";
+    item.error = err.message || "重试仍未成功";
+    showToast(`❌ 重试失败: ${item.error}`, { isError: true });
+  }
+
+  renderBatchItem(index);
+
+  const successCount = state.batchQueue.filter(it => it.status === "success").length;
+  const failCount = state.batchQueue.filter(it => it.status === "failed").length;
+  updateBatchStats(successCount, failCount, state.batchQueue.length);
+
+  const actionsBar = document.getElementById("batch-actions-bar");
+  if (state.batchResults.length > 0 && actionsBar) {
+    actionsBar.style.display = "flex";
+  }
+  refreshNotesBadge();
+}
+
+// 更新批量进度状态条
+function updateBatchProgress(percent, statusMsg) {
+  const bar = document.getElementById("batch-progress-bar");
+  const percentText = document.getElementById("batch-percent-text");
+  const statusEl = document.getElementById("batch-current-status");
+
+  if (bar) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  if (percentText) percentText.textContent = `${Math.min(100, Math.max(0, percent))}%`;
+  if (statusEl && statusMsg) statusEl.textContent = statusMsg;
+}
+
+// 更新统计数据
+function updateBatchStats(success, fail, total) {
+  const elTotal = document.getElementById("batch-stat-total");
+  const elSuccess = document.getElementById("batch-stat-success");
+  const elFail = document.getElementById("batch-stat-fail");
+
+  if (elTotal) elTotal.textContent = total;
+  if (elSuccess) elSuccess.textContent = success;
+  if (elFail) elFail.textContent = fail;
+}
+
+// 一键打包下载全部批量采集结果 (ZIP)
+async function downloadAllBatchZip() {
+  if (!state.batchResults || state.batchResults.length === 0) {
+    showToast("当前暂无已成功采集的笔记可打包");
+    return;
+  }
+
+  const notes = state.batchResults;
+  showToast(`正在批量下载并打包全部 ${notes.length} 篇笔记的资源...`);
+
+  try {
+    const files = [];
+
+    for (let nIdx = 0; nIdx < notes.length; nIdx++) {
+      const note = notes[nIdx];
+      const safeTitle = (note.title || `笔记_${nIdx + 1}`).replace(/[\\/:*?"<>|]+/g, "_").slice(0, 30);
+      const folderName = `${String(nIdx + 1).padStart(2, "0")}_${safeTitle}`;
+
+      // 1. 文案说明文件
+      const txtContent = makeNoteTextFileData({
+        title: note.title,
+        content: note.content,
+        sourceUrl: note.sourceUrl || window.location.href,
+        engine: "Cloudflare R2"
+      });
+      files.push({
+        name: `${folderName}/文案与链接.txt`,
+        data: new TextEncoder().encode(txtContent)
+      });
+
+      // 2. 图片
+      if (note.images && note.images.length > 0) {
+        for (let i = 0; i < note.images.length; i++) {
+          const img = note.images[i];
+          const url = typeof img === "string" ? img : img.url;
+          try {
+            const res = await fetch(url);
+            if (res.ok) {
+              const buf = new Uint8Array(await res.arrayBuffer());
+              files.push({
+                name: `${folderName}/图片_${String(i + 1).padStart(2, "0")}.jpg`,
+                data: buf
+              });
+            }
+          } catch (e) {
+            console.warn(`Fetch image failed: ${url}`, e);
+          }
+        }
+      }
+
+      // 3. 视频
+      if (note.videos && note.videos.length > 0) {
+        for (let vIdx = 0; vIdx < note.videos.length; vIdx++) {
+          const vid = note.videos[vIdx];
+          const vUrl = typeof vid === "string" ? vid : (vid.url || vid.main_url);
+          if (vUrl) {
+            try {
+              const res = await fetch(vUrl);
+              if (res.ok) {
+                const buf = new Uint8Array(await res.arrayBuffer());
+                const pinyinName = toPinyinFilename(note.title || "video", ".mp4");
+                files.push({
+                  name: `${folderName}/${pinyinName}`,
+                  data: buf
+                });
+              }
+            } catch (e) {
+              console.warn(`Fetch video failed: ${vUrl}`, e);
+            }
+          }
+        }
+      }
+    }
+
+    if (files.length === 0) {
+      showToast("未获取到可打包的有效文件");
+      return;
+    }
+
+    const zipBlob = makeZipBlob(files);
+    const downloadUrl = URL.createObjectURL(zipBlob);
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    const nowStr = new Date().toISOString().slice(0, 10);
+    a.download = `小红书批量采集_共${notes.length}篇_${nowStr}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(downloadUrl);
+
+    showToast("🎉 全部采集结果 ZIP 已打包完成并开始下载！");
+  } catch (err) {
+    console.error("Batch zip error:", err);
+    showToast(`批量打包失败: ${err.message}`, { isError: true });
+  }
+}
+
+// 快速下载单篇笔记资源
+async function downloadSingleNote(note) {
+  if (!note) return;
+
+  if (note.images && note.images.length > 0) {
+    return downloadZipArchive(note.images, note.title, note.content);
+  }
+
+  if (note.videos && note.videos.length > 0) {
+    const vid = note.videos[0];
+    const vUrl = typeof vid === "string" ? vid : (vid.url || vid.main_url);
+    if (vUrl) {
+      const filename = toPinyinFilename(note.title || "video", ".mp4");
+      return downloadDirectFile(vUrl, filename);
+    }
+  }
+
+  showToast("该笔记无图片或视频文件可供下载");
 }
 
 // 渲染解析结果
@@ -1002,6 +1542,13 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   setTimeout(checkAndAutoPasteClipboard, 400);
 
+  // 输入框实时检测多链接与动态按钮更新
+  const inputEl = document.getElementById("input-text");
+  if (inputEl) {
+    inputEl.addEventListener("input", updateInputUrlHint);
+    inputEl.addEventListener("paste", () => setTimeout(updateInputUrlHint, 50));
+  }
+
   // 输入操作按钮
   document.getElementById("btn-paste")?.addEventListener("click", async () => {
     try {
@@ -1009,6 +1556,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const input = document.getElementById("input-text");
       if (input && text) {
         input.value = text;
+        updateInputUrlHint();
         showToast("已粘贴剪贴板内容");
       }
     } catch {
@@ -1019,9 +1567,30 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-clear")?.addEventListener("click", () => {
     const input = document.getElementById("input-text");
     if (input) input.value = "";
+    updateInputUrlHint();
   });
 
   document.getElementById("btn-parse")?.addEventListener("click", startParsing);
+
+  // 批量采集控制与操作按钮
+  document.getElementById("btn-batch-stop")?.addEventListener("click", () => {
+    state.shouldStopBatch = true;
+    showToast("⏹ 正在停止当前批量采集任务...");
+  });
+
+  document.getElementById("btn-batch-clear")?.addEventListener("click", () => {
+    state.batchQueue = [];
+    state.batchResults = [];
+    const batchSec = document.getElementById("batch-section");
+    if (batchSec) batchSec.style.display = "none";
+    showToast("已清空批量采集记录");
+  });
+
+  document.getElementById("btn-batch-download-zip")?.addEventListener("click", downloadAllBatchZip);
+
+  document.getElementById("btn-batch-go-kb")?.addEventListener("click", () => {
+    switchPageTab("kb");
+  });
 
   // 复制完整正文
   document.getElementById("btn-copy-content")?.addEventListener("click", async () => {

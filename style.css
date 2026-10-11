@@ -357,6 +357,289 @@ input:checked + .slider:before {
   gap: 4px;
 }
 
+.multi-url-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  background: rgba(234, 44, 67, 0.08);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(234, 44, 67, 0.2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  animation: fadeIn 0.2s ease;
+}
+
+.btn-sm {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+/* ========================================================
+   批量采集工作台与队列进度条
+   ======================================================== */
+.batch-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  padding: 24px;
+  margin-top: 24px;
+  animation: fadeIn 0.25s ease;
+}
+
+.batch-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.batch-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.batch-pill-badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 700;
+  color: #4f46e5;
+  background: #eef2ff;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  letter-spacing: 0.3px;
+}
+
+.batch-title-group h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.batch-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.batch-progress-wrapper {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.batch-stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.batch-stats-text {
+  color: var(--text-muted);
+}
+
+.batch-percent-text {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.batch-progress-track {
+  width: 100%;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.batch-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--primary) 0%, #ff6b81 100%);
+  border-radius: 4px;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.batch-current-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.batch-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.batch-item-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  transition: all 0.2s ease;
+}
+
+.batch-item-card:hover {
+  border-color: #cbd0dc;
+  box-shadow: var(--shadow-sm);
+}
+
+.batch-item-card.status-processing {
+  border-left: 4px solid #3b82f6;
+  background: #f8faff;
+}
+
+.batch-item-card.status-success {
+  border-left: 4px solid #10b981;
+}
+
+.batch-item-card.status-failed {
+  border-left: 4px solid #ef4444;
+  background: #fffafa;
+}
+
+.batch-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.batch-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.batch-item-index {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-sub);
+  flex-shrink: 0;
+}
+
+.batch-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-waiting {
+  background: var(--surface-alt);
+  color: var(--text-muted);
+}
+
+.badge-processing {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.badge-success {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.badge-danger {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.batch-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.batch-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.batch-item-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.batch-summary-pill {
+  background: var(--surface-alt);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.batch-item-url {
+  color: var(--text-sub);
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+}
+
+.batch-item-error-msg {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.05);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+  border-top-color: #2563eb;
+  border-right-color: transparent;
+}
+
+.text-success { color: var(--success); }
+.text-danger { color: #dc2626; }
+
 /* 解析中加载动画 */
 .spinner {
   display: inline-block;
@@ -1355,6 +1638,28 @@ input:checked + .slider:before {
   }
   .kb-notes-grid {
     grid-template-columns: 1fr;
+  }
+  .batch-title-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .batch-item-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .batch-item-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .batch-actions-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .batch-actions-bar .btn {
+    width: 100%;
+    justify-content: center;
   }
 }
 
