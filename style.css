@@ -1724,6 +1724,25 @@ input:checked + .slider:before {
     width: 100%;
     justify-content: center;
   }
+  .textarea-field, .search-input, .detail-title-input, .detail-content-textarea {
+    font-size: 16px !important; /* 避免 iOS Safari 在输入时强制整体放大页面 */
+  }
+  .input-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .action-left {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  #btn-parse {
+    width: 100%;
+    justify-content: center;
+    padding: 10px 16px;
+    font-size: 15px;
+  }
 }
 
 /* 原始采集链接显示条 */

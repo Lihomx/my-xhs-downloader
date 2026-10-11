@@ -142,25 +142,24 @@ async function checkAndAutoPasteClipboard() {
     const text = (await navigator.clipboard.readText()).trim();
     if (!text || text === state.lastProcessedClipboard) return;
 
-    // 智能正则检测小红书特征链接
-    const hasXhsLink = /https?:\/\/(?:[a-zA-Z0-9_-]+\.)?(?:xhslink\.com|xhslink\.cn|xiaohongshu\.com)\/[^\s<>'"()[\]{}，。！？、]+/i.test(text);
-
-    if (hasXhsLink) {
+    const urls = extractAllXhsUrls(text);
+    if (urls.length > 0) {
       state.lastProcessedClipboard = text;
       const input = document.getElementById("input-text");
       if (input && input.value.trim() !== text) {
         input.value = text;
+        updateInputUrlHint();
         const indicator = document.getElementById("auto-clip-indicator");
         if (indicator) {
           indicator.style.display = "inline-flex";
           setTimeout(() => { indicator.style.display = "none"; }, 4000);
         }
-        showToast("⚡ 已自动识别剪贴板小红书链接，开始解析...");
+        showToast(`⚡ 已自动识别剪贴板 ${urls.length} 条小红书链接，开始解析...`);
         startParsing();
       }
     }
   } catch {
-    // 浏览器权限未授权或静默拦截，不打扰用户
+    // iOS Safari 或未授权拦截时静默捕获，避免打扰用户
   }
 }
 
@@ -1584,25 +1583,59 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   setTimeout(checkAndAutoPasteClipboard, 400);
 
-  // 输入框实时检测多链接与动态按钮更新
+  // 输入框实时检测多链接，监听原生 paste 事件并在移动端检测到链接时秒级自动解析
   const inputEl = document.getElementById("input-text");
   if (inputEl) {
     inputEl.addEventListener("input", updateInputUrlHint);
-    inputEl.addEventListener("paste", () => setTimeout(updateInputUrlHint, 50));
+    inputEl.addEventListener("paste", () => {
+      setTimeout(() => {
+        updateInputUrlHint();
+        const text = (inputEl.value || "").trim();
+        const urls = extractAllXhsUrls(text);
+        if (urls.length > 0) {
+          showToast(`⚡ 已粘贴识别到 ${urls.length} 条小红书链接，开始解析...`);
+          startParsing();
+        }
+      }, 60);
+    });
   }
 
-  // 输入操作按钮
+  // 输入操作按钮 (针对 iPhone / iOS WebKit 与移动端优化)
   document.getElementById("btn-paste")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-text");
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
     try {
-      const text = await navigator.clipboard.readText();
-      const input = document.getElementById("input-text");
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        throw new Error("浏览器不支持 Clipboard API");
+      }
+
+      // 注意：直接第一行调用 readText，避免异步微任务导致 iOS Safari 判定丢失手势
+      const text = (await navigator.clipboard.readText()).trim();
       if (input && text) {
         input.value = text;
         updateInputUrlHint();
-        showToast("已粘贴剪贴板内容");
+        const urls = extractAllXhsUrls(text);
+        if (urls.length > 0) {
+          showToast(`⚡ 已粘贴识别到 ${urls.length} 条小红书链接，开始解析...`);
+          startParsing();
+        } else {
+          showToast("已粘贴剪贴板内容");
+        }
+        return;
       }
-    } catch {
-      showToast("无法访问剪贴板，请手动按 Ctrl+V 粘贴");
+      throw new Error("剪贴板内容为空");
+    } catch (err) {
+      console.warn("Clipboard readText failed:", err);
+      // 优雅降级：手机端自动聚焦输入框，拉起 iOS 原生粘贴菜单并引导
+      if (input) {
+        input.focus();
+      }
+      if (isMobile) {
+        showToast("📱 请轻点输入框弹出的系统「粘贴」菜单（粘贴后将自动开始解析）");
+      } else {
+        showToast("无法直接访问剪贴板，请按 Ctrl+V 粘贴");
+      }
     }
   });
 
