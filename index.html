@@ -123,47 +123,89 @@
       </section>
     </main>
 
-    <!-- 右侧滑出抽屉：我的收藏与随笔知识库 -->
-    <div id="drawer-backdrop" class="drawer-backdrop">
-      <aside class="drawer">
-        <div class="drawer-header">
-          <div class="drawer-title">
-            <span>📚 我的收藏知识库</span>
-            <span id="drawer-total-count" style="font-size: 13px; color: var(--text-muted); font-weight: normal;">(0篇)</span>
-          </div>
-          <button id="btn-close-drawer" class="drawer-close" aria-label="关闭抽屉">✕</button>
-        </div>
-
-        <!-- PIN 锁屏解锁区域 -->
-        <div id="pin-lock-view" class="pin-lock-box" style="display: none;">
-          <div class="pin-lock-icon">🔒</div>
-          <h3>输入个人 PIN 码解锁知识库</h3>
-          <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">
-            保护你的私有存储空间与感想笔记（默认 PIN 码：1987）
-          </p>
-          <input type="password" id="drawer-pin-input" class="pin-input" maxlength="12" placeholder="••••" />
-          <button id="btn-unlock-pin" class="btn btn-primary" style="margin-top: 8px;">
-            验证并解锁
-          </button>
-          <p id="pin-error-hint" style="color: var(--primary); font-size: 12px; margin-top: 8px; display: none;">PIN 码错误，请重试</p>
-        </div>
-
-        <!-- 收藏列表展示区 -->
-        <div id="notes-content-view" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
-          <div class="drawer-toolbar">
-            <input type="text" id="search-notes-input" class="search-input" placeholder="🔍 搜索标题、正文或我的感想随笔..." />
-          </div>
-
-          <div class="drawer-content">
-            <div id="notes-list" class="notes-list">
-              <!-- 动态插入卡片 -->
+    <!-- 宽屏全屏：我的收藏知识库管理视窗 -->
+    <div id="modal-knowledge-base" class="modal-overlay">
+      <div class="kb-modal">
+        <!-- 左侧：分类管理侧边栏 -->
+        <aside class="kb-sidebar">
+          <div class="kb-sidebar-header">
+            <div class="kb-sidebar-title">
+              <span>📚</span>
+              <span>收藏知识库</span>
             </div>
-            <div id="notes-empty-hint" style="text-align: center; color: var(--text-sub); padding: 60px 0; font-size: 14px; display: none;">
-              暂无已归档笔记<br />解析笔记后将自动永久保存到这里
+            <span id="kb-total-badge" class="kb-count-pill">0 篇</span>
+          </div>
+
+          <!-- PIN 锁屏区域 (未解锁时显示) -->
+          <div id="kb-pin-lock-view" class="pin-lock-box" style="display: none; padding: 30px 16px;">
+            <div class="pin-lock-icon" style="font-size: 32px; margin-bottom: 8px;">🔒</div>
+            <h4 style="font-size: 14px;">输入 PIN 码解锁</h4>
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">保护私有知识库 (默认: 1987)</p>
+            <input type="password" id="kb-pin-input" class="pin-input" maxlength="12" placeholder="••••" style="width: 140px; padding: 8px; margin: 12px auto;" />
+            <button id="btn-kb-unlock-pin" class="btn btn-primary" style="width: 100%; padding: 7px 12px; font-size: 13px;">验证并解锁</button>
+            <p id="kb-pin-error" style="color: var(--primary); font-size: 11px; margin-top: 6px; display: none;">PIN 码错误</p>
+          </div>
+
+          <!-- 分类导航与统计 (解锁后显示) -->
+          <div id="kb-sidebar-content" class="kb-sidebar-nav-wrap">
+            <div class="kb-nav-section-title">分类标签</div>
+            <div id="kb-tag-list" class="kb-tag-list">
+              <!-- 动态插入标签选项 -->
+            </div>
+
+            <div class="kb-sidebar-actions">
+              <button id="btn-add-tag-quick" class="btn-sidebar-action" type="button">
+                <span>➕</span> 新建分类标签
+              </button>
+              <button id="btn-open-manage-tags" class="btn-sidebar-action" type="button">
+                <span>🏷️</span> 管理标签字典
+              </button>
             </div>
           </div>
+        </aside>
+
+        <!-- 右侧：知识库工作区与卡片网格 -->
+        <main class="kb-workspace">
+          <header class="kb-topbar">
+            <div class="kb-search-box">
+              <input type="text" id="kb-search-input" class="search-input" placeholder="🔍 检索标题、正文、随笔批注或标签..." />
+            </div>
+            <div class="kb-topbar-right">
+              <span id="kb-filter-hint" class="kb-filter-pill">全部笔记</span>
+              <button id="btn-close-kb-modal" class="drawer-close" aria-label="关闭">✕</button>
+            </div>
+          </header>
+
+          <div class="kb-content-body">
+            <div id="kb-notes-grid" class="kb-notes-grid">
+              <!-- 动态卡片 -->
+            </div>
+            <div id="kb-empty-hint" class="kb-empty-state" style="display: none;">
+              <div style="font-size: 40px; margin-bottom: 12px;">📂</div>
+              <h3 style="font-size: 16px; margin-bottom: 6px;">当前分类暂无笔记</h3>
+              <p style="font-size: 13px;">解析小红书笔记后将自动永久归档至此</p>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <!-- 标签字典管理弹窗 -->
+    <div id="modal-manage-tags" class="modal-overlay">
+      <div class="modal" style="max-width: 440px;">
+        <div class="modal-header">
+          <h3 style="font-size: 16px;">🏷️ 分类标签管理</h3>
+          <button id="btn-close-manage-tags" class="drawer-close">✕</button>
         </div>
-      </aside>
+        <div class="modal-body">
+          <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+            <input type="text" id="input-new-tag-name" class="search-input" placeholder="输入新标签名（如：阅读摘录）" />
+            <button id="btn-confirm-add-tag" class="btn btn-primary" style="white-space: nowrap;">添加</button>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">现有标签（可修改名称或删除）：</div>
+          <div id="manage-tags-list" class="manage-tags-list"></div>
+        </div>
+      </div>
     </div>
 
     <!-- 笔记详情与感想编辑弹窗 -->
@@ -177,12 +219,26 @@
         <div class="modal-body">
           <div id="modal-note-time" style="font-size: 12px; color: var(--text-sub); margin-bottom: 12px;"></div>
           
+          <!-- 所属分类标签选择区 -->
+          <section class="detail-tags-section">
+            <div class="detail-tags-header">
+              <span>🏷️ 所属分类标签</span>
+              <span style="font-size: 11px; color: var(--text-muted); font-weight: normal;">点击切换，支持多标签</span>
+            </div>
+            <div id="detail-tags-chips" class="detail-tags-chips"></div>
+          </section>
+
           <!-- 正文 -->
           <div id="modal-note-content" class="note-content-box" style="margin-bottom: 16px;"></div>
 
           <!-- 视频 (如果有) -->
           <div id="modal-video-wrap" style="display: none; margin-bottom: 16px;">
             <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
+            <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+              <button id="btn-modal-download-video" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;">
+                🎬 下载视频 (按标题拼音命名)
+              </button>
+            </div>
           </div>
 
           <!-- 图片展示 -->

@@ -9,6 +9,7 @@ export const PUBLIC_FILES = [
   'favicon.svg',
   'aiyc.svg',
   'lib/archive.js',
+  'lib/pinyin.js',
   'assets'
 ];
 

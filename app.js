@@ -1,4 +1,5 @@
 import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
+import { toPinyinFilename } from "./lib/pinyin.js";
 
 // 智能规范化 Cookie 格式 (支持自动解析插件导出的 JSON 数组与多行文本)
 export function normalizeCookieString(raw) {
@@ -51,7 +52,10 @@ const state = {
   lastProcessedClipboard: "",
   currentParsedNote: null,
   activeDetailNote: null,
-  selectedImages: new Set()
+  selectedImages: new Set(),
+  currentCategory: "__all__",
+  tags: [],
+  tagCounts: {}
 };
 
 // 工具函数：轻提示 (错误提示一直显示在底部，附带关闭按钮)
@@ -419,15 +423,89 @@ async function refreshNotesBadge() {
   } catch {}
 }
 
-async function loadNotes(search = "") {
-  const listContainer = document.getElementById("notes-list");
-  const emptyHint = document.getElementById("notes-empty-hint");
-  const countLabel = document.getElementById("drawer-total-count");
-
-  listContainer.innerHTML = `<div style="text-align:center; padding: 40px; color: var(--text-sub);">正在加载知识库...</div>`;
+// 知识库分类与笔记加载
+async function loadTags() {
+  const tagListContainer = document.getElementById("kb-tag-list");
+  const totalBadge = document.getElementById("kb-total-badge");
+  if (!tagListContainer) return;
 
   try {
-    const url = `/api/notes?limit=50&q=${encodeURIComponent(search)}`;
+    const res = await fetch("/api/tags", {
+      headers: { "x-auth-pin": state.pin }
+    });
+    if (res.status === 401) {
+      showPinLockView(true);
+      return;
+    }
+    const data = await res.json();
+    if (!data.success) return;
+
+    state.tags = data.tags || [];
+    state.tagCounts = data.counts || {};
+
+    if (totalBadge) {
+      totalBadge.textContent = `${state.tagCounts.__all__ || 0} 篇`;
+    }
+
+    renderTagsList();
+  } catch (err) {
+    console.warn("loadTags error:", err);
+  }
+}
+
+function renderTagsList() {
+  const tagListContainer = document.getElementById("kb-tag-list");
+  if (!tagListContainer) return;
+  tagListContainer.innerHTML = "";
+
+  const allItem = document.createElement("div");
+  allItem.className = `kb-tag-item ${state.currentCategory === "__all__" ? "active" : ""}`;
+  allItem.innerHTML = `
+    <span>📌 全部笔记</span>
+    <span class="tag-badge">${state.tagCounts.__all__ || 0}</span>
+  `;
+  allItem.addEventListener("click", () => switchCategory("__all__", "全部笔记"));
+  tagListContainer.appendChild(allItem);
+
+  const uncatItem = document.createElement("div");
+  uncatItem.className = `kb-tag-item ${state.currentCategory === "__uncategorized__" ? "active" : ""}`;
+  uncatItem.innerHTML = `
+    <span>📁 未分类</span>
+    <span class="tag-badge">${state.tagCounts.__uncategorized__ || 0}</span>
+  `;
+  uncatItem.addEventListener("click", () => switchCategory("__uncategorized__", "未分类"));
+  tagListContainer.appendChild(uncatItem);
+
+  state.tags.forEach((tag) => {
+    const item = document.createElement("div");
+    item.className = `kb-tag-item ${state.currentCategory === tag ? "active" : ""}`;
+    item.innerHTML = `
+      <span>🏷️ ${tag}</span>
+      <span class="tag-badge">${state.tagCounts[tag] || 0}</span>
+    `;
+    item.addEventListener("click", () => switchCategory(tag, tag));
+    tagListContainer.appendChild(item);
+  });
+}
+
+function switchCategory(category, label) {
+  state.currentCategory = category;
+  const hint = document.getElementById("kb-filter-hint");
+  if (hint) hint.textContent = label;
+  renderTagsList();
+  const searchVal = document.getElementById("kb-search-input")?.value || "";
+  loadNotes(searchVal);
+}
+
+async function loadNotes(search = "") {
+  const gridContainer = document.getElementById("kb-notes-grid");
+  const emptyHint = document.getElementById("kb-empty-hint");
+  if (!gridContainer) return;
+
+  gridContainer.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding: 40px; color: var(--text-sub);">正在加载知识库笔记...</div>`;
+
+  try {
+    const url = `/api/notes?limit=100&tag=${encodeURIComponent(state.currentCategory)}&q=${encodeURIComponent(search)}`;
     const res = await fetch(url, {
       headers: { "x-auth-pin": state.pin }
     });
@@ -440,47 +518,54 @@ async function loadNotes(search = "") {
     const data = await res.json();
     showPinLockView(false);
 
-    if (countLabel) countLabel.textContent = `(${data.total || 0}篇)`;
-
     if (!data.items || data.items.length === 0) {
-      listContainer.innerHTML = "";
+      gridContainer.innerHTML = "";
       if (emptyHint) emptyHint.style.display = "block";
       return;
     }
 
     if (emptyHint) emptyHint.style.display = "none";
-    listContainer.innerHTML = "";
+    gridContainer.innerHTML = "";
 
     data.items.forEach((item) => {
       const card = document.createElement("div");
-      card.className = "note-card";
+      card.className = "kb-note-card";
+
+      const tagsHtml = (item.tags || [])
+        .map((t) => `<span class="kb-chip-small">${t}</span>`)
+        .join("");
+
       card.innerHTML = `
-        <img class="note-cover" src="${item.cover_url || '/favicon.svg'}" alt="封面" loading="lazy" />
-        <div class="note-info">
-          <div>
-            <div class="note-card-title">${item.title || "无标题笔记"}</div>
-            <div class="note-card-preview">${item.content_preview || "暂无正文描述..."}</div>
-          </div>
-          <div class="note-card-meta">
+        <div class="kb-card-cover-wrap">
+          <img src="${item.cover_url || '/favicon.svg'}" alt="封面" loading="lazy" />
+          <div class="kb-card-tag-chips">${tagsHtml}</div>
+        </div>
+        <div class="kb-card-info">
+          <div class="kb-card-title">${item.title || "无标题笔记"}</div>
+          <div class="kb-card-preview">${item.content_preview || "暂无正文描述..."}</div>
+          ${item.thoughts_preview ? `<div class="kb-card-thought-preview">💡 ${item.thoughts_preview}</div>` : ""}
+          <div class="kb-card-footer">
             <span>📅 ${formatTime(item.created_at)}</span>
-            ${item.thoughts_preview ? '<span class="thoughts-tag">💡 有随笔感想</span>' : ""}
+            <span style="color: var(--primary); font-weight: 600;">查看详情 →</span>
           </div>
         </div>
       `;
 
       card.addEventListener("click", () => openNoteDetail(item.id));
-      listContainer.appendChild(card);
+      gridContainer.appendChild(card);
     });
   } catch (err) {
-    listContainer.innerHTML = `<div style="color:var(--primary); padding:20px; text-align:center;">加载失败: ${err.message}</div>`;
+    gridContainer.innerHTML = `<div style="grid-column: 1/-1; color:var(--primary); padding:20px; text-align:center;">加载失败: ${err.message}</div>`;
   }
 }
 
 function showPinLockView(showLock) {
-  const lockView = document.getElementById("pin-lock-view");
-  const contentView = document.getElementById("notes-content-view");
+  const lockView = document.getElementById("kb-pin-lock-view");
+  const sidebarNav = document.getElementById("kb-sidebar-content");
+  const gridContainer = document.getElementById("kb-notes-grid");
   if (lockView) lockView.style.display = showLock ? "block" : "none";
-  if (contentView) contentView.style.display = showLock ? "none" : "flex";
+  if (sidebarNav) sidebarNav.style.display = showLock ? "none" : "flex";
+  if (gridContainer) gridContainer.style.display = showLock ? "none" : "grid";
 }
 
 // 展开单篇笔记详情弹窗
@@ -500,6 +585,9 @@ async function openNoteDetail(noteId) {
     document.getElementById("modal-note-time").textContent = `归档时间：${formatTime(note.createdAt)}`;
     document.getElementById("modal-note-content").textContent = note.content || "（无文案）";
     document.getElementById("modal-thoughts-input").value = note.thoughts || "";
+
+    // 渲染分类标签交互 Chips
+    renderDetailTags(note);
 
     // 渲染图片
     const grid = document.getElementById("modal-images-grid");
@@ -539,6 +627,103 @@ async function openNoteDetail(noteId) {
   } catch (err) {
     showToast(`无法打开详情: ${err.message}`);
   }
+}
+
+// 详情弹窗中的多标签选择与打标
+function renderDetailTags(note) {
+  const container = document.getElementById("detail-tags-chips");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const noteTags = new Set(note.tags || []);
+
+  state.tags.forEach((tag) => {
+    const isSelected = noteTags.has(tag);
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `tag-chip-toggle ${isSelected ? "active" : ""}`;
+    chip.innerHTML = `${isSelected ? "✓ " : ""}${tag}`;
+
+    chip.addEventListener("click", async () => {
+      if (isSelected) {
+        noteTags.delete(tag);
+      } else {
+        noteTags.add(tag);
+      }
+      const updatedTags = Array.from(noteTags);
+      note.tags = updatedTags;
+
+      // 实时保存到后端
+      try {
+        await fetch(`/api/notes/${note.id}/tags`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ tags: updatedTags })
+        });
+        renderDetailTags(note);
+        loadTags();
+        const searchVal = document.getElementById("kb-search-input")?.value || "";
+        loadNotes(searchVal);
+      } catch (e) {
+        showToast("标签保存失败");
+      }
+    });
+
+    container.appendChild(chip);
+  });
+
+  // 添加自定义标签胶囊
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "tag-chip-add";
+  addBtn.innerHTML = "➕ 新建标签并打标";
+  addBtn.addEventListener("click", async () => {
+    const newTagName = prompt("请输入要新建的分类标签名称：");
+    if (!newTagName || !newTagName.trim()) return;
+    const cleanTag = newTagName.trim();
+
+    try {
+      // 1. 添加到全局标签库
+      await fetch("/api/tags", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({ action: "add", tag: cleanTag })
+      });
+      if (!state.tags.includes(cleanTag)) {
+        state.tags.push(cleanTag);
+      }
+
+      // 2. 自动给当前笔记打标
+      noteTags.add(cleanTag);
+      const updatedTags = Array.from(noteTags);
+      note.tags = updatedTags;
+
+      await fetch(`/api/notes/${note.id}/tags`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({ tags: updatedTags })
+      });
+
+      renderDetailTags(note);
+      loadTags();
+      const searchVal = document.getElementById("kb-search-input")?.value || "";
+      loadNotes(searchVal);
+      showToast(`已添加标签「${cleanTag}」并打标`);
+    } catch {
+      showToast("创建标签失败");
+    }
+  });
+
+  container.appendChild(addBtn);
 }
 
 // 4. 事件监听与初始化绑定
@@ -610,32 +795,45 @@ document.addEventListener("DOMContentLoaded", () => {
     downloadZipArchive(selected, state.currentParsedNote.title, state.currentParsedNote.content);
   });
 
-  // 视频下载按钮
+  // 视频下载按钮 (按标题拼音命名)
   document.getElementById("btn-download-video")?.addEventListener("click", () => {
     const player = document.getElementById("video-player");
     if (player?.src) {
-      downloadDirectFile(player.src, "video.mp4");
+      const title = state.currentParsedNote?.title || "video";
+      const filename = toPinyinFilename(title, ".mp4");
+      downloadDirectFile(player.src, filename);
     }
   });
 
-  // 抽屉展开/关闭
-  const drawerBackdrop = document.getElementById("drawer-backdrop");
+  // 详情弹窗中的视频下载按钮 (按标题拼音命名)
+  document.getElementById("btn-modal-download-video")?.addEventListener("click", () => {
+    const player = document.getElementById("modal-video-player");
+    if (player?.src && state.activeDetailNote) {
+      const title = state.activeDetailNote.title || "video";
+      const filename = toPinyinFilename(title, ".mp4");
+      downloadDirectFile(player.src, filename);
+    }
+  });
+
+  // 宽屏全屏知识库管理视窗展开/关闭
+  const kbModal = document.getElementById("modal-knowledge-base");
   document.getElementById("btn-open-drawer")?.addEventListener("click", () => {
-    drawerBackdrop?.classList.add("active");
+    kbModal?.classList.add("active");
+    loadTags();
     loadNotes();
   });
 
-  document.getElementById("btn-close-drawer")?.addEventListener("click", () => {
-    drawerBackdrop?.classList.remove("active");
+  document.getElementById("btn-close-kb-modal")?.addEventListener("click", () => {
+    kbModal?.classList.remove("active");
   });
 
-  drawerBackdrop?.addEventListener("click", (e) => {
-    if (e.target === drawerBackdrop) drawerBackdrop.classList.remove("active");
+  kbModal?.addEventListener("click", (e) => {
+    if (e.target === kbModal) kbModal.classList.remove("active");
   });
 
-  // 抽屉解锁 PIN
-  document.getElementById("btn-unlock-pin")?.addEventListener("click", async () => {
-    const input = document.getElementById("drawer-pin-input");
+  // 知识库解锁 PIN
+  document.getElementById("btn-kb-unlock-pin")?.addEventListener("click", async () => {
+    const input = document.getElementById("kb-pin-input");
     const pin = (input?.value || "").trim();
     const res = await fetch("/api/verify-pin", {
       method: "POST",
@@ -647,22 +845,135 @@ document.addEventListener("DOMContentLoaded", () => {
       state.pin = pin;
       localStorage.setItem("xhs_pin", pin);
       showPinLockView(false);
+      loadTags();
       loadNotes();
       showToast("🔓 PIN 码验证成功");
     } else {
-      const hint = document.getElementById("pin-error-hint");
+      const hint = document.getElementById("kb-pin-error");
       if (hint) hint.style.display = "block";
     }
   });
 
-  // 实时搜索
-  let searchTimer;
-  document.getElementById("search-notes-input")?.addEventListener("input", (e) => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
+  // 知识库实时搜索
+  let kbSearchTimer;
+  document.getElementById("kb-search-input")?.addEventListener("input", (e) => {
+    clearTimeout(kbSearchTimer);
+    kbSearchTimer = setTimeout(() => {
       loadNotes(e.target.value);
     }, 300);
   });
+
+  // 标签管理弹窗
+  const manageTagsModal = document.getElementById("modal-manage-tags");
+  document.getElementById("btn-open-manage-tags")?.addEventListener("click", () => {
+    manageTagsModal?.classList.add("active");
+    renderManageTagsList();
+  });
+
+  document.getElementById("btn-add-tag-quick")?.addEventListener("click", () => {
+    manageTagsModal?.classList.add("active");
+    document.getElementById("input-new-tag-name")?.focus();
+    renderManageTagsList();
+  });
+
+  document.getElementById("btn-close-manage-tags")?.addEventListener("click", () => {
+    manageTagsModal?.classList.remove("active");
+  });
+
+  manageTagsModal?.addEventListener("click", (e) => {
+    if (e.target === manageTagsModal) manageTagsModal.classList.remove("active");
+  });
+
+  document.getElementById("btn-confirm-add-tag")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-new-tag-name");
+    const val = (input?.value || "").trim();
+    if (!val) return;
+    try {
+      const res = await fetch("/api/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+        body: JSON.stringify({ action: "add", tag: val })
+      });
+      const data = await res.json();
+      if (data.success) {
+        state.tags = data.tags;
+        if (input) input.value = "";
+        renderManageTagsList();
+        loadTags();
+        showToast(`已创建分类标签「${val}」`);
+      }
+    } catch {
+      showToast("创建标签失败");
+    }
+  });
+
+  function renderManageTagsList() {
+    const container = document.getElementById("manage-tags-list");
+    if (!container) return;
+    container.innerHTML = "";
+
+    if (state.tags.length === 0) {
+      container.innerHTML = `<div style="text-align:center; color: var(--text-sub); padding: 16px;">暂无自定义标签</div>`;
+      return;
+    }
+
+    state.tags.forEach((tag) => {
+      const row = document.createElement("div");
+      row.className = "manage-tag-row";
+      row.innerHTML = `
+        <span style="font-weight: 500;">🏷️ ${tag}</span>
+        <div class="manage-tag-row-actions">
+          <button class="manage-tag-btn btn-rename-tag" type="button">重命名</button>
+          <button class="manage-tag-btn danger btn-del-tag" type="button">删除</button>
+        </div>
+      `;
+
+      row.querySelector(".btn-rename-tag").addEventListener("click", async () => {
+        const newName = prompt(`请输入「${tag}」的新名称：`, tag);
+        if (!newName || !newName.trim() || newName.trim() === tag) return;
+        try {
+          const res = await fetch("/api/tags", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+            body: JSON.stringify({ action: "rename", tag, newTag: newName.trim() })
+          });
+          const data = await res.json();
+          if (data.success) {
+            state.tags = data.tags;
+            renderManageTagsList();
+            loadTags();
+            loadNotes(document.getElementById("kb-search-input")?.value || "");
+            showToast(`标签已重命名为「${newName.trim()}」`);
+          }
+        } catch {
+          showToast("重命名失败");
+        }
+      });
+
+      row.querySelector(".btn-del-tag").addEventListener("click", async () => {
+        if (!confirm(`确定要删除标签「${tag}」吗？已归档笔记中该标签将被移除。`)) return;
+        try {
+          const res = await fetch("/api/tags", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+            body: JSON.stringify({ action: "delete", tag })
+          });
+          const data = await res.json();
+          if (data.success) {
+            state.tags = data.tags;
+            renderManageTagsList();
+            loadTags();
+            loadNotes(document.getElementById("kb-search-input")?.value || "");
+            showToast(`已删除标签「${tag}」`);
+          }
+        } catch {
+          showToast("删除失败");
+        }
+      });
+
+      container.appendChild(row);
+    });
+  }
 
   // 详情弹窗关闭
   const noteModal = document.getElementById("modal-note-detail");
@@ -685,7 +996,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       if (res.ok) {
         showToast("💡 随笔感想已成功保存！");
-        loadNotes(document.getElementById("search-notes-input")?.value || "");
+        loadNotes(document.getElementById("kb-search-input")?.value || "");
       }
     } catch (err) {
       showToast(`保存失败: ${err.message}`);
@@ -711,7 +1022,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (res.ok) {
         showToast("🗑️ 笔记已成功删除");
         noteModal?.classList.remove("active");
-        loadNotes(document.getElementById("search-notes-input")?.value || "");
+        loadTags();
+        loadNotes(document.getElementById("kb-search-input")?.value || "");
         refreshNotesBadge();
       }
     } catch (err) {

@@ -16,7 +16,12 @@ import {
   getNote,
   updateThoughts,
   deleteNote,
-  serveMedia
+  serveMedia,
+  getTagsWithCounts,
+  addCustomTag,
+  renameCustomTag,
+  deleteCustomTag,
+  updateNoteTags
 } from './storage-service.js';
 
 const NODE_ROUTES = { '/api/parse': parse, '/api/image': image, '/api/video': video };
@@ -100,6 +105,36 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           return json({ success: true, message: "PIN 码修改成功" });
         }
 
+        // 4.5. 分类标签体系 (GET /api/tags, POST /api/tags)
+        if (path === '/api/tags' && request.method === 'GET') {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const result = await getTagsWithCounts(env.DB);
+          return json({ success: true, ...result });
+        }
+
+        if (path === '/api/tags' && request.method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          const pin = request.headers.get('x-auth-pin') || body.pin;
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const action = body.action || 'add';
+          if (action === 'add') {
+            const tags = await addCustomTag(env.DB, body.tag);
+            return json({ success: true, tags });
+          } else if (action === 'rename') {
+            const tags = await renameCustomTag(env.DB, body.tag, body.newTag);
+            return json({ success: true, tags });
+          } else if (action === 'delete') {
+            const tags = await deleteCustomTag(env.DB, body.tag);
+            return json({ success: true, tags });
+          }
+          return json({ success: false, message: "未知标签操作" }, 400);
+        }
+
         // 5. 笔记检索与列表 (GET /api/notes)
         if (path === '/api/notes' && request.method === 'GET') {
           const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
@@ -107,14 +142,15 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
 
           const search = url.searchParams.get('q') || '';
+          const tag = url.searchParams.get('tag') || '';
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 20));
           const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
 
-          const result = await listNotes(env.DB, { search, limit, offset });
+          const result = await listNotes(env.DB, { search, tag, limit, offset });
           return json({ success: true, ...result });
         }
 
-        // 6. 单篇笔记操作 (GET, DELETE, 更新感想)
+        // 6. 单篇笔记操作 (GET, DELETE, 更新感想, 更新标签)
         if (path.startsWith('/api/notes/')) {
           const subPath = path.slice('/api/notes/'.length);
           const parts = subPath.split('/');
@@ -123,6 +159,13 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
           const isAuthed = await verifyPin(env.DB, pin);
           if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          // 更新标签: PUT /api/notes/:id/tags
+          if (parts[1] === 'tags' && request.method === 'PUT') {
+            const body = await request.json().catch(() => ({}));
+            const res = await updateNoteTags(env.DB, noteId, body.tags || []);
+            return json({ success: true, ...res });
+          }
 
           // 更新感想: PUT /api/notes/:id/thoughts
           if (parts[1] === 'thoughts' && request.method === 'PUT') {
