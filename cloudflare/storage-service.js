@@ -40,13 +40,15 @@ export async function initDb(db) {
  * 校验 PIN 码
  */
 export async function verifyPin(db, pin) {
-  if (!db) return pin === DEFAULT_PIN;
+  if (!db) return String(pin || "").trim() === DEFAULT_PIN;
   try {
+    await initDb(db);
     const row = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
     const currentPin = row?.value || DEFAULT_PIN;
-    return String(pin).trim() === currentPin;
-  } catch {
-    return pin === DEFAULT_PIN;
+    return String(pin || "").trim() === String(currentPin).trim();
+  } catch (err) {
+    console.error("verifyPin err:", err);
+    return String(pin || "").trim() === DEFAULT_PIN;
   }
 }
 
