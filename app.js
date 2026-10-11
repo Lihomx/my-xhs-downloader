@@ -1061,41 +1061,587 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
-// 渲染语音文案面板
-function renderTranscriptBox(container, text, noteId) {
-  if (!container) return;
-  container.style.display = "block";
-  container.innerHTML = `
-    <div class="transcript-header">
-      <span class="transcript-title">🎙️ 视频语音提取文案 (AI Whisper)</span>
-      <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-        <button type="button" class="transcript-btn btn-copy-transcript">📋 复制全文</button>
-        <button type="button" class="transcript-btn btn-append-thoughts">📌 追加到随笔批注</button>
-      </div>
-    </div>
-    <div class="transcript-text">${escapeHtml(text)}</div>
-  `;
+// ========================================================
+// 语音文案智能分段、高亮重点标注与持久化系统
+// ========================================================
 
-  container.querySelector(".btn-copy-transcript")?.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(text);
-    showToast("📋 已复制语音文案全文");
-  });
+// 解析语音文案为段落列表 [{ isStarred: boolean, html: string }]
+function parseTranscriptParagraphs(raw) {
+  if (!raw) return [];
+  raw = String(raw).trim();
 
-  container.querySelector(".btn-append-thoughts")?.addEventListener("click", () => {
-    const thoughtsInput = document.getElementById("modal-thoughts-input");
-    const detailModal = document.getElementById("modal-note-detail");
-    if (detailModal && detailModal.classList.contains("active") && thoughtsInput) {
-      const prev = thoughtsInput.value.trim();
-      const appendText = `【视频提取文案】\n${text}`;
-      thoughtsInput.value = prev ? `${prev}\n\n${appendText}` : appendText;
-      thoughtsInput.scrollIntoView({ behavior: "smooth", block: "center" });
-      thoughtsInput.focus();
-      showToast("📌 已将语音文案追加到随笔批注！别忘记点击「保存感想」");
-    } else {
-      navigator.clipboard.writeText(text);
-      showToast("📋 已复制语音文案，可点击右上角「我的收藏」在笔记详情中保存批注");
+  // 1. 如果包含 <p 或 transcript-para 或 <mark 标签，说明是已格式化/包含重点保存的 HTML
+  if (raw.includes("<p") || raw.includes("transcript-para") || raw.includes("<mark")) {
+    const temp = document.createElement("div");
+    temp.innerHTML = raw;
+    const pEls = temp.querySelectorAll("p, .transcript-para");
+    if (pEls.length > 0) {
+      const results = [];
+      pEls.forEach((p) => {
+        const isStarred = p.classList.contains("para-starred");
+        const contentEl = p.querySelector(".para-content");
+        const html = contentEl ? contentEl.innerHTML.trim() : p.innerHTML.trim();
+        if (html) {
+          results.push({ isStarred, html });
+        }
+      });
+      if (results.length > 0) return results;
+    }
+  }
+
+  // 2. 纯文本处理：先尝试按双换行 \n\n 分段
+  let segments = raw.split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
+
+  // 如果只有 1 段，但内容较长且包含单换行，按换行拆分
+  if (segments.length === 1 && segments[0].includes("\n")) {
+    segments = segments[0].split(/\n+/).map(s => s.trim()).filter(Boolean);
+  }
+
+  // 3. 如果依然只有 1 段且文字较长（超过 100 字），智能按中文句子标点符号进行自然停顿分段
+  if (segments.length === 1 && segments[0].length > 100) {
+    const text = segments[0];
+    const sentences = text.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) || [text];
+    const smartSegments = [];
+    let cur = [];
+    let curLen = 0;
+    for (const sent of sentences) {
+      cur.push(sent);
+      curLen += sent.length;
+      if (curLen >= 90 || cur.length >= 3) {
+        smartSegments.push(cur.join("").trim());
+        cur = [];
+        curLen = 0;
+      }
+    }
+    if (cur.length > 0) {
+      smartSegments.push(cur.join("").trim());
+    }
+    if (smartSegments.length > 1) {
+      segments = smartSegments;
+    }
+  }
+
+  return segments.map((seg) => ({
+    isStarred: false,
+    html: escapeHtml(seg)
+  }));
+}
+
+// 序列化段落列表为可持久化的 HTML 字符串
+function serializeTranscriptParagraphs(container) {
+  if (!container) return "";
+  const paras = container.querySelectorAll(".transcript-para");
+  const parts = [];
+  paras.forEach((p) => {
+    const isStarred = p.classList.contains("para-starred");
+    const contentEl = p.querySelector(".para-content");
+    const html = contentEl ? contentEl.innerHTML.trim() : "";
+    if (html) {
+      if (isStarred) {
+        parts.push(`<p class="para-starred">${html}</p>`);
+      } else {
+        parts.push(`<p>${html}</p>`);
+      }
     }
   });
+  return parts.join("\n");
+}
+
+// 获取文案纯文本（剥离所有 HTML 标签，换行连接）
+function getTranscriptPlainText(container) {
+  if (!container) return "";
+  const paras = container.querySelectorAll(".transcript-para");
+  const lines = [];
+  paras.forEach((p) => {
+    const contentEl = p.querySelector(".para-content");
+    if (contentEl) {
+      const text = contentEl.innerText || contentEl.textContent || "";
+      if (text.trim()) lines.push(text.trim());
+    }
+  });
+  return lines.join("\n\n");
+}
+
+// 获取全部重点摘要（星标重点段落 + 划词核心金句）
+function getTranscriptHighlightsSummary(container) {
+  if (!container) return { summary: "", totalCount: 0, starCount: 0, markCount: 0 };
+  const paras = container.querySelectorAll(".transcript-para");
+  const summaryLines = [];
+  let markCount = 0;
+  let starCount = 0;
+
+  paras.forEach((p, idx) => {
+    const isStarred = p.classList.contains("para-starred");
+    const contentEl = p.querySelector(".para-content");
+    if (!contentEl) return;
+
+    const marks = contentEl.querySelectorAll("mark.transcript-hl");
+    const markTexts = Array.from(marks).map(m => m.textContent.trim()).filter(Boolean);
+
+    if (isStarred) {
+      starCount++;
+      const paraText = (contentEl.innerText || contentEl.textContent || "").trim();
+      summaryLines.push(`⭐ 【重点段落 ${idx + 1}】\n${paraText}`);
+    } else if (markTexts.length > 0) {
+      markCount += markTexts.length;
+      summaryLines.push(`✨ 【段落 ${idx + 1} 核心划词】: ${markTexts.map(t => `「${t}」`).join("、")}`);
+    }
+  });
+
+  return {
+    summary: summaryLines.join("\n\n"),
+    totalCount: starCount + markCount,
+    starCount,
+    markCount
+  };
+}
+
+// 刷新重点计数徽章与状态
+function updateTranscriptStatsBadge(container) {
+  if (!container) return;
+  const badge = container.querySelector(".transcript-hl-badge");
+  const paras = container.querySelectorAll(".transcript-para");
+  let starCount = 0;
+  let markCount = 0;
+
+  paras.forEach((p) => {
+    const isStarred = p.classList.contains("para-starred");
+    const hasMark = !!p.querySelector("mark.transcript-hl");
+    p.classList.toggle("has-mark", hasMark);
+    if (isStarred) starCount++;
+    if (hasMark) {
+      markCount += p.querySelectorAll("mark.transcript-hl").length;
+    }
+  });
+
+  const total = starCount + markCount;
+  if (badge) {
+    if (total > 0) {
+      badge.style.display = "inline-flex";
+      badge.textContent = `⭐ ${total} 处重点`;
+    } else {
+      badge.style.display = "none";
+    }
+  }
+
+  // 空状态提示
+  const filterEmpty = container.querySelector(".transcript-filter-empty");
+  const isFilterActive = container.classList.contains("filter-highlights-only");
+  if (filterEmpty) {
+    filterEmpty.style.display = (isFilterActive && total === 0) ? "block" : "none";
+  }
+}
+
+// 自动持久化保存文案至 Cloudflare D1
+let _transcriptSaveTimeout = null;
+function triggerTranscriptAutoSave(container, noteId) {
+  const targetId = noteId || container?.dataset?.noteId || (state.activeDetailNote?.id);
+  if (!targetId || !container) return;
+
+  clearTimeout(_transcriptSaveTimeout);
+  _transcriptSaveTimeout = setTimeout(async () => {
+    const serialized = serializeTranscriptParagraphs(container);
+    try {
+      await fetch(`/api/notes/${targetId}/transcript`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({ transcript: serialized })
+      });
+      if (state.activeDetailNote && String(state.activeDetailNote.id) === String(targetId)) {
+        state.activeDetailNote.transcript = serialized;
+      }
+    } catch (e) {
+      console.warn("保存高亮文案到云端失败:", e);
+    }
+  }, 400);
+}
+
+// 划词操作气泡全局状态与处理函数
+let _currentActiveRange = null;
+let _currentActiveMark = null;
+
+function showPillForMark(mark) {
+  const pill = document.getElementById("transcript-selection-pill");
+  const btnHl = document.getElementById("btn-pill-hl");
+  const btnUnhl = document.getElementById("btn-pill-unhl");
+  if (!pill || !mark) return;
+
+  _currentActiveMark = mark;
+  _currentActiveRange = null;
+
+  if (btnHl) btnHl.style.display = "none";
+  if (btnUnhl) btnUnhl.style.display = "inline-flex";
+
+  const rect = mark.getBoundingClientRect();
+  positionTranscriptPill(rect);
+}
+
+function positionTranscriptPill(rect) {
+  const pill = document.getElementById("transcript-selection-pill");
+  if (!pill || !rect || (rect.width === 0 && rect.height === 0)) return;
+
+  pill.style.display = "flex";
+  const pillWidth = pill.offsetWidth || 230;
+  const pillHeight = pill.offsetHeight || 36;
+
+  let left = rect.left + rect.width / 2 - pillWidth / 2;
+  left = Math.max(10, Math.min(left, window.innerWidth - pillWidth - 10));
+
+  let top = rect.top - pillHeight - 8;
+  if (top < 10) {
+    top = rect.bottom + 8;
+  }
+
+  pill.style.left = `${left}px`;
+  pill.style.top = `${top}px`;
+}
+
+function hideTranscriptPill() {
+  const pill = document.getElementById("transcript-selection-pill");
+  if (pill) pill.style.display = "none";
+  _currentActiveRange = null;
+  _currentActiveMark = null;
+}
+
+// 初始化划词浮动气泡
+function initTranscriptSelectionPill() {
+  const pill = document.getElementById("transcript-selection-pill");
+  if (!pill) return;
+
+  const btnHl = document.getElementById("btn-pill-hl");
+  const btnUnhl = document.getElementById("btn-pill-unhl");
+  const btnThought = document.getElementById("btn-pill-thought");
+  const btnCopy = document.getElementById("btn-pill-copy");
+
+  function handleSelectionCheck() {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      if (!_currentActiveMark) {
+        hideTranscriptPill();
+      }
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const commonAncestor = range.commonAncestorContainer;
+    const wrap = commonAncestor.nodeType === Node.ELEMENT_NODE
+      ? commonAncestor.closest(".transcript-paragraphs-wrap")
+      : commonAncestor.parentElement?.closest(".transcript-paragraphs-wrap");
+
+    if (!wrap) {
+      hideTranscriptPill();
+      return;
+    }
+
+    const selectedText = selection.toString().trim();
+    if (!selectedText) {
+      hideTranscriptPill();
+      return;
+    }
+
+    _currentActiveRange = range.cloneRange();
+    _currentActiveMark = null;
+
+    const parentMark = commonAncestor.nodeType === Node.ELEMENT_NODE
+      ? commonAncestor.closest("mark.transcript-hl")
+      : commonAncestor.parentElement?.closest("mark.transcript-hl");
+
+    if (parentMark) {
+      _currentActiveMark = parentMark;
+      if (btnHl) btnHl.style.display = "none";
+      if (btnUnhl) btnUnhl.style.display = "inline-flex";
+    } else {
+      if (btnHl) btnHl.style.display = "inline-flex";
+      if (btnUnhl) btnUnhl.style.display = "none";
+    }
+
+    const rect = range.getBoundingClientRect();
+    positionTranscriptPill(rect);
+  }
+
+  // 监听划选事件 (支持移动端与桌面端)
+  let selTimer = null;
+  document.addEventListener("selectionchange", () => {
+    clearTimeout(selTimer);
+    selTimer = setTimeout(handleSelectionCheck, 120);
+  });
+
+  document.addEventListener("mouseup", (e) => {
+    if (pill.contains(e.target)) return;
+    setTimeout(handleSelectionCheck, 50);
+  });
+
+  document.addEventListener("touchend", (e) => {
+    if (pill.contains(e.target)) return;
+    setTimeout(handleSelectionCheck, 100);
+  });
+
+  // 点击外部收起气泡
+  document.addEventListener("mousedown", (e) => {
+    if (!pill.contains(e.target) && !e.target.closest(".transcript-paragraphs-wrap")) {
+      hideTranscriptPill();
+    }
+  });
+
+  // 1. 划选重点标记
+  btnHl?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!_currentActiveRange) return;
+
+    try {
+      const startPara = _currentActiveRange.startContainer.nodeType === Node.ELEMENT_NODE
+        ? _currentActiveRange.startContainer.closest(".para-content")
+        : _currentActiveRange.startContainer.parentElement?.closest(".para-content");
+      const endPara = _currentActiveRange.endContainer.nodeType === Node.ELEMENT_NODE
+        ? _currentActiveRange.endContainer.closest(".para-content")
+        : _currentActiveRange.endContainer.parentElement?.closest(".para-content");
+
+      if (!startPara) return;
+      if (startPara !== endPara) {
+        showToast("⚠️ 划选高亮仅支持在同一段落内标记，请分段划选");
+        hideTranscriptPill();
+        return;
+      }
+
+      const container = startPara.closest(".transcript-box");
+      const mark = document.createElement("mark");
+      mark.className = "transcript-hl";
+      mark.title = "重点标记 (点击可取消)";
+
+      const fragment = _currentActiveRange.extractContents();
+      mark.appendChild(fragment);
+      _currentActiveRange.insertNode(mark);
+
+      // 清理嵌套的旧 mark
+      mark.querySelectorAll("mark.transcript-hl").forEach((inner) => {
+        while (inner.firstChild) inner.parentNode.insertBefore(inner.firstChild, inner);
+        inner.remove();
+      });
+
+      startPara.normalize();
+      window.getSelection()?.removeAllRanges();
+      hideTranscriptPill();
+
+      if (container) {
+        updateTranscriptStatsBadge(container);
+        triggerTranscriptAutoSave(container);
+      }
+      showToast("✨ 已高亮标记重点，已自动同步保存！");
+    } catch (err) {
+      console.warn("划词高亮失败:", err);
+      showToast("高亮失败，请重试划选");
+    }
+  });
+
+  // 2. 取消重点标记
+  btnUnhl?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (_currentActiveMark) {
+      const container = _currentActiveMark.closest(".transcript-box");
+      const parent = _currentActiveMark.parentNode;
+      if (parent) {
+        while (_currentActiveMark.firstChild) {
+          parent.insertBefore(_currentActiveMark.firstChild, _currentActiveMark);
+        }
+        _currentActiveMark.remove();
+        parent.normalize();
+      }
+
+      hideTranscriptPill();
+      if (container) {
+        updateTranscriptStatsBadge(container);
+        triggerTranscriptAutoSave(container);
+      }
+      showToast("🧹 已取消该处重点高亮");
+    }
+  });
+
+  // 3. 将所选存入感想
+  btnThought?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = _currentActiveMark
+      ? _currentActiveMark.textContent.trim()
+      : (_currentActiveRange ? _currentActiveRange.toString().trim() : "");
+    if (!text) return;
+
+    const thoughtsInput = document.getElementById("modal-thoughts-input");
+    if (thoughtsInput) {
+      const prev = thoughtsInput.value.trim();
+      const snippet = `【摘录重点】${text}`;
+      thoughtsInput.value = prev ? `${prev}\n\n${snippet}` : snippet;
+      thoughtsInput.scrollIntoView({ behavior: "smooth", block: "center" });
+      thoughtsInput.focus();
+      showToast("📌 已存入随笔批注！别忘记点击「保存感想」");
+    }
+    hideTranscriptPill();
+  });
+
+  // 4. 复制所选
+  btnCopy?.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = _currentActiveMark
+      ? _currentActiveMark.textContent.trim()
+      : (_currentActiveRange ? _currentActiveRange.toString().trim() : "");
+    if (text) {
+      await navigator.clipboard.writeText(text);
+      showToast("📋 已复制所选重点文字");
+    }
+    hideTranscriptPill();
+  });
+}
+
+// 渲染语音文案面板 (置顶、自然分段、划词高亮、星标重点与仅看重点速览)
+function renderTranscriptBox(container, rawText, noteId) {
+  if (!container) return;
+  container.style.display = "block";
+  if (noteId) {
+    container.dataset.noteId = String(noteId);
+  }
+
+  const paragraphs = parseTranscriptParagraphs(rawText);
+  if (paragraphs.length === 0) {
+    container.innerHTML = `<div class="transcript-filter-empty">暂无有效文案</div>`;
+    return;
+  }
+
+  const paragraphsHtml = paragraphs.map((p, idx) => {
+    const num = (idx + 1).toString().padStart(2, "0");
+    const starClass = p.isStarred ? "active" : "";
+    const paraClass = p.isStarred ? "transcript-para para-starred" : "transcript-para";
+    return `
+      <div class="${paraClass}" data-idx="${idx}">
+        <div class="para-sidebar">
+          <span class="para-num">¶ ${num}</span>
+          <button type="button" class="btn-para-star ${starClass}" title="${p.isStarred ? '取消重点段落' : '标记为重点段落'}">⭐</button>
+        </div>
+        <div class="para-content">${p.html}</div>
+      </div>
+    `;
+  }).join("");
+
+  container.innerHTML = `
+    <div class="transcript-header">
+      <div class="transcript-header-left">
+        <span class="transcript-title">🎙️ 视频语音提取文案 (AI Whisper)</span>
+        <span class="transcript-hl-badge" style="display: none;">⭐ 0 处重点</span>
+      </div>
+      <div class="transcript-header-actions">
+        <button type="button" class="transcript-btn btn-toggle-filter" title="只显示标记了重点的段落和文字">
+          ⭐ 仅看重点
+        </button>
+        <button type="button" class="transcript-btn btn-append-thoughts" title="将高亮重点或全文追加到下方感想批注">
+          📌 追加重点到感想
+        </button>
+        <button type="button" class="transcript-btn btn-copy-transcript" title="复制纯文本格式文案">
+          📋 复制文案
+        </button>
+      </div>
+    </div>
+    <div class="transcript-paragraphs-wrap">
+      ${paragraphsHtml}
+      <div class="transcript-filter-empty" style="display: none;">
+        💡 暂无标记重点的内容。划选文字可高亮重点，或点击左侧 ⭐ 标记整段！
+      </div>
+    </div>
+  `;
+
+  const wrap = container.querySelector(".transcript-paragraphs-wrap");
+
+  // 1. 段落星标重点点击事件
+  container.querySelectorAll(".btn-para-star").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const para = btn.closest(".transcript-para");
+      if (!para) return;
+      const isStarred = para.classList.toggle("para-starred");
+      btn.classList.toggle("active", isStarred);
+      btn.title = isStarred ? "取消重点段落" : "标记为重点段落";
+      updateTranscriptStatsBadge(container);
+      triggerTranscriptAutoSave(container, noteId);
+      showToast(isStarred ? "⭐ 已将本段设为重点查看段落！" : "已取消该段落重点标记");
+    });
+  });
+
+  // 2. 点击已有高亮标签直接触发操作浮动气泡
+  if (wrap) {
+    wrap.addEventListener("click", (e) => {
+      const mark = e.target.closest("mark.transcript-hl");
+      if (mark) {
+        e.stopPropagation();
+        showPillForMark(mark);
+      }
+    });
+  }
+
+  // 3. 「⭐ 仅看重点」过滤切换
+  const toggleFilterBtn = container.querySelector(".btn-toggle-filter");
+  if (toggleFilterBtn) {
+    toggleFilterBtn.addEventListener("click", () => {
+      const isFilterActive = container.classList.toggle("filter-highlights-only");
+      toggleFilterBtn.classList.toggle("active", isFilterActive);
+      toggleFilterBtn.textContent = isFilterActive ? "👀 查看全部段落" : "⭐ 仅看重点";
+      updateTranscriptStatsBadge(container);
+      showToast(isFilterActive ? "🔍 已开启「仅看重点」速览过滤" : "已恢复显示全部段落");
+    });
+  }
+
+  // 4. 「📌 追加重点到感想」
+  const appendBtn = container.querySelector(".btn-append-thoughts");
+  if (appendBtn) {
+    appendBtn.addEventListener("click", () => {
+      const { summary, totalCount } = getTranscriptHighlightsSummary(container);
+      const thoughtsInput = document.getElementById("modal-thoughts-input");
+      const detailModal = document.getElementById("modal-note-detail");
+
+      let appendText = "";
+      if (totalCount > 0 && summary) {
+        appendText = `【视频重点速览】\n${summary}`;
+      } else {
+        const fullPlain = getTranscriptPlainText(container);
+        appendText = `【视频提取文案】\n${fullPlain}`;
+      }
+
+      if (detailModal && detailModal.classList.contains("active") && thoughtsInput) {
+        const prev = thoughtsInput.value.trim();
+        thoughtsInput.value = prev ? `${prev}\n\n${appendText}` : appendText;
+        thoughtsInput.scrollIntoView({ behavior: "smooth", block: "center" });
+        thoughtsInput.focus();
+        showToast(totalCount > 0 ? `📌 已将 ${totalCount} 处重点追加到随笔批注！别忘记点击「保存感想」` : "📌 已将文案追加到随笔批注！");
+      } else {
+        navigator.clipboard.writeText(appendText);
+        showToast("📋 已复制内容，可在笔记详情中存入感想批注");
+      }
+    });
+  }
+
+  // 5. 「📋 复制文案」
+  const copyBtn = container.querySelector(".btn-copy-transcript");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", async () => {
+      const isFilterActive = container.classList.contains("filter-highlights-only");
+      const { summary, totalCount } = getTranscriptHighlightsSummary(container);
+
+      let textToCopy = "";
+      if (isFilterActive && totalCount > 0) {
+        textToCopy = `【视频重点速览】\n${summary}`;
+      } else {
+        textToCopy = getTranscriptPlainText(container);
+      }
+
+      await navigator.clipboard.writeText(textToCopy);
+      showToast(isFilterActive && totalCount > 0 ? `📋 已复制全部 ${totalCount} 处重点内容` : "📋 已复制语音文案全文");
+    });
+  }
+
+  // 初始化重点统计徽章
+  updateTranscriptStatsBadge(container);
 }
 
 // 发送单个音频切片至后端 Whisper 接口，安全兼容 JSON 与异常响应
@@ -1239,16 +1785,17 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
     const targetNoteId = noteId || (state.activeDetailNote?.id);
     if (targetNoteId) {
       try {
+        const savedTranscript = serializeTranscriptParagraphs(container) || fullTranscript;
         await fetch(`/api/notes/${targetNoteId}/transcript`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
             "x-auth-pin": state.pin
           },
-          body: JSON.stringify({ transcript: fullTranscript })
+          body: JSON.stringify({ transcript: savedTranscript })
         });
         if (state.activeDetailNote && state.activeDetailNote.id === targetNoteId) {
-          state.activeDetailNote.transcript = fullTranscript;
+          state.activeDetailNote.transcript = savedTranscript;
         }
       } catch (err) {
         console.warn("保存 transcript 到数据库失败:", err);
@@ -1787,6 +2334,9 @@ function renderDetailTags(note) {
 
 // 4. 事件监听与初始化绑定
 document.addEventListener("DOMContentLoaded", () => {
+  // 初始化划词重点浮动气泡
+  initTranscriptSelectionPill();
+
   // 剪贴板开关初始化
   const clipSwitch = document.getElementById("clipboard-switch");
   if (clipSwitch) {

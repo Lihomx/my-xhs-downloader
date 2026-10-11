@@ -309,6 +309,31 @@
             <div id="detail-tags-chips" class="detail-tags-chips"></div>
           </section>
 
+          <!-- 视频与语音文案置顶区 (如果有视频，优先在最上方展示) -->
+          <div id="modal-video-wrap" style="display: none; margin-bottom: 20px;">
+            <div id="modal-video-player-container">
+              <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
+            </div>
+            <div id="modal-audio-player-wrap" style="display: none; margin-top: 8px;">
+              <audio id="modal-audio-player" controls style="width: 100%;"></audio>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; gap: 8px;">
+                <button id="btn-modal-toggle-audio" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
+                  🎧 纯听音频
+                </button>
+                <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
+                  🎙️ 提取语音文案
+                </button>
+              </div>
+              <button id="btn-modal-download-video" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
+                🎬 下载视频 (按标题拼音命名)
+              </button>
+            </div>
+            <!-- 语音文案面板 (高优先级置顶显示于视频下方) -->
+            <div id="modal-transcript-panel" class="transcript-box" style="display: none;"></div>
+          </div>
+
           <!-- 笔记标题编辑区 -->
           <section class="detail-edit-section">
             <div class="detail-edit-header">
@@ -336,30 +361,6 @@
             <button id="btn-save-note-detail" class="btn btn-primary" type="button">
               💾 保存标题与正文修改
             </button>
-          </div>
-
-          <!-- 视频 (如果有) -->
-          <div id="modal-video-wrap" style="display: none; margin-bottom: 16px;">
-            <div id="modal-video-player-container">
-              <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
-            </div>
-            <div id="modal-audio-player-wrap" style="display: none; margin-top: 8px;">
-              <audio id="modal-audio-player" controls style="width: 100%;"></audio>
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
-              <div style="display: flex; gap: 8px;">
-                <button id="btn-modal-toggle-audio" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
-                  🎧 纯听音频
-                </button>
-                <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
-                  🎙️ 提取语音文案
-                </button>
-              </div>
-              <button id="btn-modal-download-video" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
-                🎬 下载视频 (按标题拼音命名)
-              </button>
-            </div>
-            <div id="modal-transcript-panel" class="transcript-box" style="display: none;"></div>
           </div>
 
           <!-- 图片展示 -->
@@ -618,6 +619,22 @@
           <button id="btn-close-usage-footer" class="btn btn-primary" type="button">我知道了</button>
         </div>
       </div>
+    </div>
+
+    <!-- 划词高亮浮动操作气泡 -->
+    <div id="transcript-selection-pill" class="transcript-selection-pill" style="display: none;">
+      <button type="button" id="btn-pill-hl" class="btn-pill-action" title="高亮标记选中文本">
+        🖍️ 标记重点
+      </button>
+      <button type="button" id="btn-pill-unhl" class="btn-pill-action" title="取消选中的高亮" style="display: none;">
+        🧹 取消重点
+      </button>
+      <button type="button" id="btn-pill-thought" class="btn-pill-action" title="将选中重点存入随笔感想">
+        📌 存入感想
+      </button>
+      <button type="button" id="btn-pill-copy" class="btn-pill-action" title="复制选中的文字">
+        📋 复制
+      </button>
     </div>
 
     <!-- 底部轻提示 Toast -->
