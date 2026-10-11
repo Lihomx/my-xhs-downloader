@@ -23,6 +23,7 @@ export async function initDb(db) {
       videos_json TEXT,
       thoughts TEXT DEFAULT '',
       tags_json TEXT DEFAULT '[]',
+      transcript TEXT DEFAULT '',
       source_url TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
