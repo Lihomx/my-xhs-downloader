@@ -1084,6 +1084,8 @@ function correctSpeechTypos(text) {
   s = s.replace(/向了监工/g, "像个监工");
   s = s.replace(/彻底放全/g, "彻底放权");
   s = s.replace(/很抓检查/g, "狠抓检查");
+  s = s.replace(/团队执行类/g, "团队执行力");
+  s = s.replace(/执行类(?=[的人性的天花板强])/g, "执行力");
   return s;
 }
 
@@ -1226,9 +1228,12 @@ function splitHtmlIntoSentences(html) {
 function formatBySentences(rawText) {
   if (!rawText) return [];
 
-  // 1. 全文合并为单一连续文本，消除原有切片换行干扰，并将全角半角标点统一规范
+  // 1. 全文合并为单一连续文本，消除原有切片换行干扰，清除已有 ¶ 编号标记，并将全角半角标点统一规范
   let s = String(rawText)
+    .replace(/¶\s*\d+[:：\s]*/g, "")
     .replace(/\r\n/g, "\n")
+    .replace(/[，,、]\s*\n/g, "，")
+    .replace(/([^\n。！？!?])\n+/g, "$1。\n")
     .replace(/\n+/g, " ")
     .replace(/\s+/g, " ")
     .replace(/,/g, "，")
@@ -1251,9 +1256,11 @@ function formatBySentences(rawText) {
       let line = textPart;
       const punc = (puncPart.match(/[。！？!?]/) ? puncPart.replace(/\s+/g, "") : "") || "。";
       line += punc;
-      // 清理句首句末多余逗号
-      line = line.replace(/，([。！？])/g, "$1").replace(/([。！？])\s*，/g, "$1");
-      sentences.push(line);
+      // 清理句首多余逗号与句末异常标点
+      line = line.replace(/^[，\s]+/, "").replace(/，([。！？])/g, "$1").replace(/([。！？])\s*，/g, "$1");
+      if (line.replace(/[，。！？\s]/g, "").length > 0) {
+        sentences.push(line);
+      }
     }
   }
 
