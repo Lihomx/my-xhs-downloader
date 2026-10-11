@@ -67,6 +67,9 @@ export async function initDb(db) {
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN audio_r2_key TEXT DEFAULT ''").run();
     } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN in_shuffle INTEGER DEFAULT 0").run();
+    } catch {}
 
     const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
     if (!existingPin) {
@@ -447,7 +450,7 @@ export async function listNotes(db, { search = "", tag = "", limit = 20, offset 
   if (!db) return { total: 0, items: [] };
   await initDb(db);
 
-  let query = "SELECT id, title, cover_url, tags_json, SUBSTR(content, 1, 100) AS content_preview, SUBSTR(thoughts, 1, 80) AS thoughts_preview, created_at, updated_at FROM notes";
+  let query = "SELECT id, title, cover_url, tags_json, in_shuffle, audio_url, videos_json, SUBSTR(content, 1, 100) AS content_preview, SUBSTR(thoughts, 1, 80) AS thoughts_preview, created_at, updated_at FROM notes";
   let countQuery = "SELECT COUNT(*) AS total FROM notes";
   const conditions = [];
   const params = [];
@@ -481,11 +484,16 @@ export async function listNotes(db, { search = "", tag = "", limit = 20, offset 
   const items = (rows.results || []).map(r => {
     let noteTags = [];
     try { noteTags = JSON.parse(r.tags_json || '[]'); } catch {}
+    let videos = [];
+    try { videos = JSON.parse(r.videos_json || '[]'); } catch {}
+    const hasAudioOrVideo = Boolean((r.audio_url && r.audio_url.trim()) || (videos.length > 0 && videos[0]?.url));
     return {
       id: r.id,
       title: r.title,
       cover_url: r.cover_url,
       tags: Array.isArray(noteTags) ? noteTags : [],
+      inShuffle: Boolean(r.in_shuffle),
+      hasAudioOrVideo,
       content_preview: r.content_preview,
       thoughts_preview: r.thoughts_preview,
       created_at: r.created_at,
@@ -520,6 +528,7 @@ export async function getNote(db, id) {
     videos: row.videos_json ? JSON.parse(row.videos_json) : [],
     audioUrl: row.audio_url || "",
     audioR2Key: row.audio_r2_key || "",
+    inShuffle: Boolean(row.in_shuffle),
     thoughts: row.thoughts || "",
     tags: Array.isArray(tags) ? tags : [],
     transcript: row.transcript || "",
@@ -706,19 +715,115 @@ export async function saveNoteAudio(env, id, audioBuffer, mimeType = 'audio/wav'
 }
 
 /**
- * 服务 R2 媒体文件
+ * 服务 R2 媒体文件（完整支持 HTTP Range 206 请求，支持视频与音频自由拖拉快进快退，支持客户端分片离线缓存）
  */
-export async function serveMedia(r2, key) {
+export async function serveMedia(r2, key, request) {
   if (!r2) return new Response("R2 存储未绑定", { status: 503 });
-  const object = await r2.get(key);
+
+  const rangeHeader = request?.headers?.get('range');
+  let object;
+
+  if (rangeHeader) {
+    const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
+    if (match) {
+      const startStr = match[1];
+      const endStr = match[2];
+
+      let rangeOptions = {};
+      if (startStr !== '' && endStr !== '') {
+        const offset = parseInt(startStr, 10);
+        const length = parseInt(endStr, 10) - offset + 1;
+        rangeOptions = { offset, length };
+      } else if (startStr !== '') {
+        const offset = parseInt(startStr, 10);
+        rangeOptions = { offset };
+      } else if (endStr !== '') {
+        const suffix = parseInt(endStr, 10);
+        rangeOptions = { suffix };
+      }
+
+      try {
+        object = await r2.get(key, { range: rangeOptions });
+      } catch (e) {
+        console.warn("R2 range get error:", e);
+      }
+    }
+  }
+
+  if (!object) {
+    object = await r2.get(key);
+  }
+
   if (!object) return new Response("文件不存在", { status: 404 });
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set("etag", object.httpEtag);
   headers.set("cache-control", "public, max-age=31536000, immutable");
+  headers.set("accept-ranges", "bytes");
 
-  return new Response(object.body, { headers });
+  // 如果客户端发起了 Range 请求且 R2 返回了对应切片
+  if (rangeHeader && object.range) {
+    const offset = object.range.offset ?? 0;
+    const length = object.range.length ?? object.size;
+    const totalSize = object.size;
+    const end = Math.min(offset + length - 1, totalSize - 1);
+
+    headers.set("content-range", `bytes ${offset}-${end}/${totalSize}`);
+    headers.set("content-length", String(length));
+
+    return new Response(object.body, {
+      status: 206,
+      statusText: "Partial Content",
+      headers
+    });
+  }
+
+  headers.set("content-length", String(object.size));
+  return new Response(object.body, { status: 200, headers });
+}
+
+/**
+ * 切换笔记是否加入随机播放库
+ */
+export async function toggleNoteShuffle(db, id, inShuffle) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+  const val = inShuffle ? 1 : 0;
+  await db.prepare("UPDATE notes SET in_shuffle = ? WHERE id = ?").bind(val, id).run();
+  return { id, inShuffle: Boolean(val) };
+}
+
+/**
+ * 获取随机播放库中的全部音频笔记
+ */
+export async function getShuffleNotes(db) {
+  if (!db) return [];
+  await initDb(db);
+  const rows = await db.prepare(`
+    SELECT id, title, cover_url, audio_url, videos_json, transcript, tags_json, updated_at
+    FROM notes
+    WHERE in_shuffle = 1
+    ORDER BY updated_at DESC
+  `).all();
+
+  return (rows.results || []).map(r => {
+    let videos = [];
+    try { videos = JSON.parse(r.videos_json || '[]'); } catch {}
+    let tags = [];
+    try { tags = JSON.parse(r.tags_json || '[]'); } catch {}
+    const mediaUrl = r.audio_url || videos[0]?.url || "";
+    return {
+      id: r.id,
+      title: r.title,
+      coverUrl: r.cover_url,
+      audioUrl: r.audio_url || "",
+      videoUrl: videos[0]?.url || "",
+      mediaUrl,
+      transcript: r.transcript || "",
+      tags
+    };
+  }).filter(item => Boolean(item.mediaUrl));
 }
 
 /**

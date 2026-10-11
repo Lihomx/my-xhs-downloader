@@ -26,6 +26,8 @@ import {
   updateNoteDetail,
   deleteNoteMedia,
   saveNoteAudio,
+  toggleNoteShuffle,
+  getShuffleNotes,
   getStorageUsage
 } from './storage-service.js';
 
@@ -50,10 +52,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
       const path = url.pathname;
 
       try {
-        // 1. 媒体静态资源代理 (来自 R2)
+        // 1. 媒体静态资源代理 (来自 R2，支持 Range 206 自由拖拽和离线缓存)
         if (path.startsWith('/api/media/')) {
           const key = decodeURIComponent(path.slice('/api/media/'.length));
-          return await serveMedia(env.R2_BUCKET, key);
+          return await serveMedia(env.R2_BUCKET, key, request);
         }
 
         // 2. 健康检查
@@ -511,6 +513,16 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           return json({ success: true, ...result });
         }
 
+        // 5.1 获取随机播放库中的全部音频笔记: GET /api/shuffle-notes
+        if (path === '/api/shuffle-notes' && request.method === 'GET') {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const items = await getShuffleNotes(env.DB);
+          return json({ success: true, items });
+        }
+
         // 6. 单篇笔记操作 (GET, DELETE, 更新感想, 更新标签)
         if (path.startsWith('/api/notes/')) {
           const subPath = path.slice('/api/notes/'.length);
@@ -567,6 +579,13 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             }
             const contentType = request.headers.get('content-type') || 'audio/wav';
             const res = await saveNoteAudio(env, noteId, audioBuffer, contentType);
+            return json({ success: true, ...res });
+          }
+
+          // 切换加入/移出随机播放库: PUT /api/notes/:id/shuffle
+          if (parts[1] === 'shuffle' && request.method === 'PUT') {
+            const body = await request.json().catch(() => ({}));
+            const res = await toggleNoteShuffle(env.DB, noteId, body.inShuffle);
             return json({ success: true, ...res });
           }
 

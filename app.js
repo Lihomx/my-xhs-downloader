@@ -2,6 +2,184 @@ import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
 import { toPinyinFilename } from "./lib/pinyin.js";
 import { extractWavFromMedia, extractFullWavFromMedia, extractAudioChunksFromMedia } from "./lib/audio.js";
 
+// ========================================================
+// 离线媒体缓存管理系统 (IndexedDB + Blob URL)
+// 支持断网继续播放与自由拖拽进度条 (0 延迟即时跳转)
+// ========================================================
+const OFFLINE_DB_NAME = "xhs_offline_media_db";
+const OFFLINE_DB_VERSION = 1;
+const OFFLINE_STORE_NAME = "media_blobs";
+
+let _offlineDbPromise = null;
+function getOfflineDb() {
+  if (!_offlineDbPromise) {
+    _offlineDbPromise = new Promise((resolve, reject) => {
+      if (typeof window === "undefined" || !window.indexedDB) {
+        return resolve(null);
+      }
+      const req = indexedDB.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(OFFLINE_STORE_NAME)) {
+          db.createObjectStore(OFFLINE_STORE_NAME, { keyPath: "url" });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+  }
+  return _offlineDbPromise;
+}
+
+export const OfflineMediaManager = {
+  // 获取本地缓存的 Blob
+  async getBlob(url) {
+    if (!url) return null;
+    try {
+      const db = await getOfflineDb();
+      if (!db) return null;
+      return new Promise((resolve) => {
+        const tx = db.transaction(OFFLINE_STORE_NAME, "readonly");
+        const store = tx.objectStore(OFFLINE_STORE_NAME);
+        const req = store.get(url);
+        req.onsuccess = () => resolve(req.result?.blob || null);
+        req.onerror = () => resolve(null);
+      });
+    } catch {
+      return null;
+    }
+  },
+
+  // 存储 Blob 到本地 IndexedDB
+  async saveBlob(url, blob, meta = {}) {
+    if (!url || !blob) return;
+    try {
+      const db = await getOfflineDb();
+      if (!db) return;
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(OFFLINE_STORE_NAME, "readwrite");
+        const store = tx.objectStore(OFFLINE_STORE_NAME);
+        const req = store.put({
+          url,
+          blob,
+          size: blob.size,
+          type: blob.type,
+          noteId: meta.noteId || "",
+          title: meta.title || "",
+          coverUrl: meta.coverUrl || "",
+          transcript: meta.transcript || "",
+          tags: meta.tags || [],
+          cachedAt: Date.now()
+        });
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => resolve(false);
+      });
+    } catch (e) {
+      console.warn("Save offline blob error:", e);
+    }
+  },
+
+  // 缓存远端媒体 URL 到本地
+  async cacheUrl(url, meta = {}) {
+    if (!url) return null;
+    const existing = await this.getBlob(url);
+    if (existing) return existing;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      await this.saveBlob(url, blob, meta);
+      return blob;
+    } catch (e) {
+      console.warn("Cache media URL error:", url, e);
+      return null;
+    }
+  },
+
+  // 检查是否已离线缓存
+  async has(url) {
+    const b = await this.getBlob(url);
+    return Boolean(b);
+  },
+
+  // 删除离线缓存
+  async delete(url) {
+    if (!url) return;
+    try {
+      const db = await getOfflineDb();
+      if (!db) return;
+      const tx = db.transaction(OFFLINE_STORE_NAME, "readwrite");
+      tx.objectStore(OFFLINE_STORE_NAME).delete(url);
+    } catch {}
+  },
+
+  // 获取全部已离线缓存的 URL 集合
+  async getAllCachedUrls() {
+    try {
+      const db = await getOfflineDb();
+      if (!db) return new Set();
+      return new Promise((resolve) => {
+        const tx = db.transaction(OFFLINE_STORE_NAME, "readonly");
+        const store = tx.objectStore(OFFLINE_STORE_NAME);
+        const req = store.getAllKeys();
+        req.onsuccess = () => resolve(new Set(req.result || []));
+        req.onerror = () => resolve(new Set());
+      });
+    } catch {
+      return new Set();
+    }
+  },
+
+  // 获取本地已离线缓存的全部音频曲目 (供断网环境下随身听电台离线播放)
+  async getAllCachedTracks() {
+    try {
+      const db = await getOfflineDb();
+      if (!db) return [];
+      return new Promise((resolve) => {
+        const tx = db.transaction(OFFLINE_STORE_NAME, "readonly");
+        const store = tx.objectStore(OFFLINE_STORE_NAME);
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const list = (req.result || []).map((r) => ({
+            id: r.noteId || r.url,
+            title: r.title || "离线随身听音频",
+            coverUrl: r.coverUrl || "",
+            mediaUrl: r.url,
+            audioUrl: r.url,
+            transcript: r.transcript || "",
+            tags: r.tags || [],
+            isOfflineOnly: true
+          }));
+          resolve(list);
+        };
+        req.onerror = () => resolve([]);
+      });
+    } catch {
+      return [];
+    }
+  },
+
+  // 获取可播放媒体源 (如果是本地 Blob 则生成 ObjectURL，断网也可无缝播放且拖拽进度条 0 延迟；未缓存则后台静默预存)
+  async getPlayableSource(url, meta = {}) {
+    if (!url) return { src: "", isOffline: false };
+    const localBlob = await this.getBlob(url);
+    if (localBlob) {
+      const objectUrl = URL.createObjectURL(localBlob);
+      return { src: objectUrl, isOffline: true, blob: localBlob };
+    }
+
+    // 后台静默预缓存（供断网无缝播放）
+    if (navigator.onLine) {
+      setTimeout(() => {
+        this.cacheUrl(url, meta).catch(() => {});
+      }, 500);
+    }
+
+    return { src: url, isOffline: false };
+  }
+};
+
 // 智能规范化 Cookie 格式 (支持自动解析插件导出的 JSON 数组与多行文本)
 export function normalizeCookieString(raw) {
   if (!raw || typeof raw !== "string") return "";
@@ -2418,10 +2596,49 @@ async function loadNotes(search = "") {
           ${item.thoughts_preview ? `<div class="kb-card-thought-preview">💡 ${item.thoughts_preview}</div>` : ""}
           <div class="kb-card-footer">
             <span>📅 ${formatTime(item.created_at)}</span>
-            <span style="color: var(--primary); font-weight: 600;">查看详情 →</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              ${item.hasAudioOrVideo ? `
+                <label class="kb-shuffle-toggle ${item.inShuffle ? 'active' : ''}" title="勾选加入随身听随机播放库" onclick="event.stopPropagation();">
+                  <input type="checkbox" class="kb-shuffle-checkbox" data-id="${item.id}" ${item.inShuffle ? "checked" : ""} />
+                  <span>📻 随身听</span>
+                </label>
+              ` : ''}
+              <span style="color: var(--primary); font-weight: 600;">查看详情 →</span>
+            </div>
           </div>
         </div>
       `;
+
+      // 随身听勾选交互绑定
+      const chk = card.querySelector(".kb-shuffle-checkbox");
+      if (chk) {
+        chk.addEventListener("change", async (e) => {
+          e.stopPropagation();
+          const targetChecked = e.target.checked;
+          const parentLabel = e.target.closest(".kb-shuffle-toggle");
+          try {
+            const res = await fetch(`/api/notes/${item.id}/shuffle`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+              body: JSON.stringify({ inShuffle: targetChecked })
+            });
+            if (res.ok) {
+              item.inShuffle = targetChecked;
+              if (parentLabel) {
+                if (targetChecked) parentLabel.classList.add("active");
+                else parentLabel.classList.remove("active");
+              }
+              showToast(targetChecked ? "📻 已加入随身听播放库" : "已从随身听播放库移除");
+              ShufflePlayer.loadPlaylist();
+            } else {
+              throw new Error("更新失败");
+            }
+          } catch (err) {
+            e.target.checked = !targetChecked;
+            showToast(`操作失败: ${err.message}`);
+          }
+        });
+      }
 
       card.addEventListener("click", () => openNoteDetail(item.id));
       gridContainer.appendChild(card);
@@ -2526,6 +2743,54 @@ async function openNoteDetail(noteId) {
     const activeAudioUrl = hasAudio ? note.audioUrl : (hasVideo ? activeVideoUrl : "");
     const hasTranscript = Boolean(note.transcript && String(note.transcript).trim());
 
+    // 随身听加入/移出交互绑定
+    const toggleShuffleBtn = document.getElementById("btn-modal-toggle-shuffle");
+    if (toggleShuffleBtn) {
+      if (hasAudio || hasVideo) {
+        toggleShuffleBtn.style.display = "inline-flex";
+        const updateShuffleBtnUI = (inShuffle) => {
+          if (inShuffle) {
+            toggleShuffleBtn.classList.add("active");
+            toggleShuffleBtn.innerHTML = "📻 已在随身听 (点击移出)";
+            toggleShuffleBtn.style.borderColor = "var(--primary)";
+            toggleShuffleBtn.style.color = "var(--primary)";
+            toggleShuffleBtn.style.background = "var(--primary-light)";
+          } else {
+            toggleShuffleBtn.classList.remove("active");
+            toggleShuffleBtn.innerHTML = "📻 加入随身听";
+            toggleShuffleBtn.style.borderColor = "";
+            toggleShuffleBtn.style.color = "";
+            toggleShuffleBtn.style.background = "";
+          }
+        };
+        updateShuffleBtnUI(Boolean(note.inShuffle));
+
+        toggleShuffleBtn.onclick = async () => {
+          const nextState = !Boolean(note.inShuffle);
+          try {
+            const res = await fetch(`/api/notes/${note.id}/shuffle`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+              body: JSON.stringify({ inShuffle: nextState })
+            });
+            if (res.ok) {
+              note.inShuffle = nextState;
+              updateShuffleBtnUI(nextState);
+              showToast(nextState ? "📻 已加入随身听播放库" : "已从随身听播放库移出");
+              loadNotes(document.getElementById("kb-search-input")?.value || "");
+              ShufflePlayer.loadPlaylist();
+            } else {
+              throw new Error("更新失败");
+            }
+          } catch (err) {
+            showToast(`操作失败: ${err.message}`);
+          }
+        };
+      } else {
+        toggleShuffleBtn.style.display = "none";
+      }
+    }
+
     if (hasVideo) {
       if (vidWrap) vidWrap.style.display = "block";
       if (vidContainer) vidContainer.style.display = "block";
@@ -2533,8 +2798,29 @@ async function openNoteDetail(noteId) {
       if (audioStatusTag) audioStatusTag.style.display = "none";
       if (mediaActions) mediaActions.style.display = "flex";
       if (mediaFreedBanner) mediaFreedBanner.style.display = "none";
-      if (vidPlayer) vidPlayer.src = activeVideoUrl;
-      if (audioPlayer) audioPlayer.src = activeAudioUrl;
+
+      if (activeVideoUrl) {
+        OfflineMediaManager.getPlayableSource(activeVideoUrl, {
+          noteId: note.id,
+          title: note.title,
+          coverUrl: note.cover_url,
+          transcript: note.transcript,
+          tags: note.tags
+        }).then(({ src }) => {
+          if (vidPlayer) vidPlayer.src = src;
+        });
+      }
+      if (activeAudioUrl) {
+        OfflineMediaManager.getPlayableSource(activeAudioUrl, {
+          noteId: note.id,
+          title: note.title,
+          coverUrl: note.cover_url,
+          transcript: note.transcript,
+          tags: note.tags
+        }).then(({ src }) => {
+          if (audioPlayer) audioPlayer.src = src;
+        });
+      }
 
       if (downloadVideoBtn) downloadVideoBtn.style.display = "inline-flex";
       if (cleanupMediaBtn) cleanupMediaBtn.style.display = "inline-flex";
@@ -2574,7 +2860,18 @@ async function openNoteDetail(noteId) {
       if (audioStatusTag) audioStatusTag.style.display = "inline-block";
       if (mediaActions) mediaActions.style.display = "flex";
       if (mediaFreedBanner) mediaFreedBanner.style.display = "none";
-      if (audioPlayer) audioPlayer.src = activeAudioUrl;
+
+      if (activeAudioUrl) {
+        OfflineMediaManager.getPlayableSource(activeAudioUrl, {
+          noteId: note.id,
+          title: note.title,
+          coverUrl: note.cover_url,
+          transcript: note.transcript,
+          tags: note.tags
+        }).then(({ src }) => {
+          if (audioPlayer) audioPlayer.src = src;
+        });
+      }
 
       if (downloadVideoBtn) downloadVideoBtn.style.display = "none";
       if (toggleAudioBtn) toggleAudioBtn.style.display = "none";
@@ -2713,6 +3010,529 @@ function renderDetailTags(note) {
 
   container.appendChild(addBtn);
 }
+
+// ========================================================
+// 📻 随身听随机播客电台播放引擎 (ShufflePlayer)
+// 支持断网离线畅听、0 延迟进度条拖拽快进快退、随机/循环/单曲模式
+// ========================================================
+export const ShufflePlayer = {
+  playlist: [],
+  currentIndex: -1,
+  mode: "shuffle", // "shuffle" | "loop" | "single"
+  playbackRate: 1.0,
+  audioEl: null,
+  isScrubbing: false,
+  cachedUrls: new Set(),
+
+  init() {
+    this.audioEl = document.getElementById("shuffle-audio-element");
+    if (!this.audioEl) return;
+
+    // 播放/暂停
+    const playPauseBtn = document.getElementById("btn-shuffle-play-pause");
+    playPauseBtn?.addEventListener("click", () => this.togglePlay());
+
+    // 上一首 / 下一首
+    document.getElementById("btn-shuffle-prev-track")?.addEventListener("click", () => this.playPrev());
+    document.getElementById("btn-shuffle-next-track")?.addEventListener("click", () => this.playNext());
+
+    // 播放模式切换 (随机播放 / 列表循环 / 单曲循环)
+    const modeBtn = document.getElementById("btn-shuffle-mode-toggle");
+    modeBtn?.addEventListener("click", () => {
+      if (this.mode === "shuffle") {
+        this.mode = "loop";
+        modeBtn.innerHTML = "🔁 循环";
+        modeBtn.title = "列表循环模式";
+        showToast("已切换为：列表循环");
+      } else if (this.mode === "loop") {
+        this.mode = "single";
+        modeBtn.innerHTML = "🔂 单曲";
+        modeBtn.title = "单曲循环模式";
+        showToast("已切换为：单曲循环");
+      } else {
+        this.mode = "shuffle";
+        modeBtn.innerHTML = "🔀 随机";
+        modeBtn.title = "随机播放模式";
+        showToast("已切换为：随机播放");
+      }
+    });
+
+    // 倍速切换 (1.0x -> 1.25x -> 1.5x -> 2.0x -> 0.75x)
+    const speedBtn = document.getElementById("btn-shuffle-speed-toggle");
+    const speeds = [1.0, 1.25, 1.5, 2.0, 0.75];
+    speedBtn?.addEventListener("click", () => {
+      const idx = speeds.indexOf(this.playbackRate);
+      const nextIdx = (idx + 1) % speeds.length;
+      this.playbackRate = speeds[nextIdx];
+      if (this.audioEl) this.audioEl.playbackRate = this.playbackRate;
+      speedBtn.textContent = `${this.playbackRate}x`;
+      showToast(`播放倍速：${this.playbackRate}x`);
+    });
+
+    // 进度条拖拽绑定 (完美支持拖拽快进快退，无卡顿跳转)
+    const slider = document.getElementById("shuffle-scrub-slider");
+    const curTimeEl = document.getElementById("shuffle-time-current");
+    const durTimeEl = document.getElementById("shuffle-time-duration");
+
+    slider?.addEventListener("input", (e) => {
+      this.isScrubbing = true;
+      if (this.audioEl && this.audioEl.duration) {
+        const targetTime = (parseFloat(e.target.value) / 100) * this.audioEl.duration;
+        if (curTimeEl) curTimeEl.textContent = this.formatTimeSec(targetTime);
+      }
+    });
+
+    slider?.addEventListener("change", (e) => {
+      if (this.audioEl && this.audioEl.duration) {
+        const targetTime = (parseFloat(e.target.value) / 100) * this.audioEl.duration;
+        this.audioEl.currentTime = targetTime;
+      }
+      this.isScrubbing = false;
+    });
+
+    // 音频核心事件监听
+    this.audioEl.addEventListener("timeupdate", () => {
+      if (this.isScrubbing) return;
+      if (!this.audioEl.duration) return;
+      const cur = this.audioEl.currentTime;
+      const dur = this.audioEl.duration;
+      if (curTimeEl) curTimeEl.textContent = this.formatTimeSec(cur);
+      if (durTimeEl) durTimeEl.textContent = this.formatTimeSec(dur);
+      if (slider) slider.value = ((cur / dur) * 100).toFixed(1);
+    });
+
+    this.audioEl.addEventListener("loadedmetadata", () => {
+      if (durTimeEl && this.audioEl.duration) {
+        durTimeEl.textContent = this.formatTimeSec(this.audioEl.duration);
+      }
+    });
+
+    this.audioEl.addEventListener("play", () => {
+      this.updatePlayStateUI(true);
+    });
+
+    this.audioEl.addEventListener("pause", () => {
+      this.updatePlayStateUI(false);
+    });
+
+    this.audioEl.addEventListener("ended", () => {
+      if (this.mode === "single") {
+        this.audioEl.currentTime = 0;
+        this.audioEl.play().catch(() => {});
+      } else {
+        this.playNext();
+      }
+    });
+
+    this.audioEl.addEventListener("error", (e) => {
+      console.warn("Shuffle audio error:", e);
+      this.updatePlayStateUI(false);
+    });
+
+    // 顶部操作栏事件
+    document.getElementById("btn-shuffle-reload")?.addEventListener("click", () => {
+      this.loadPlaylist(true);
+    });
+
+    document.getElementById("btn-shuffle-cache-all")?.addEventListener("click", () => {
+      this.cacheAllTracks();
+    });
+
+    document.getElementById("btn-shuffle-clear-all")?.addEventListener("click", async () => {
+      if (this.playlist.length === 0) return;
+      if (!confirm("确定要清空随身听播放库中的所有音频吗？（笔记和文案仍然会保留）")) return;
+      showToast("正在清空播放库...");
+      try {
+        await Promise.all(
+          this.playlist.map((track) =>
+            fetch(`/api/notes/${track.id}/shuffle`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+              body: JSON.stringify({ inShuffle: false })
+            })
+          )
+        );
+        this.stop();
+        await this.loadPlaylist();
+        showToast("已清空随身听播放库");
+        loadNotes(document.getElementById("kb-search-input")?.value || "");
+      } catch (err) {
+        showToast(`清空失败: ${err.message}`);
+      }
+    });
+  },
+
+  formatTimeSec(seconds) {
+    if (isNaN(seconds) || seconds < 0) return "00:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  },
+
+  updatePlayStateUI(isPlaying) {
+    const icon = document.getElementById("shuffle-play-icon");
+    const coverWrap = document.getElementById("shuffle-cover-wrap");
+    if (icon) icon.textContent = isPlaying ? "⏸️" : "▶️";
+    if (coverWrap) {
+      if (isPlaying) coverWrap.classList.add("playing");
+      else coverWrap.classList.remove("playing");
+    }
+  },
+
+  async loadPlaylist(showNotify = false) {
+    try {
+      this.cachedUrls = await OfflineMediaManager.getAllCachedUrls();
+
+      let items = [];
+      try {
+        const res = await fetch("/api/shuffle-notes", {
+          headers: { "x-auth-pin": state.pin }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          items = data.items || [];
+        } else {
+          throw new Error("HTTP error");
+        }
+      } catch (networkErr) {
+        console.warn("Failed to fetch shuffle notes online, loading from local offline cache:", networkErr);
+        items = await OfflineMediaManager.getAllCachedTracks();
+      }
+
+      this.playlist = items;
+      this.updateBadgeCounts();
+      this.renderPlaylist();
+
+      if (showNotify) {
+        showToast(`已同步随身听播放库，共 ${this.playlist.length} 首音频`);
+      }
+
+      // 如果当前没有正在播放的音频且列表不为空，预载第一首
+      if (this.playlist.length > 0 && this.currentIndex === -1) {
+        this.prepareTrack(0, false);
+      }
+    } catch (err) {
+      console.error("loadPlaylist error:", err);
+    }
+  },
+
+  updateBadgeCounts() {
+    const total = this.playlist.length;
+    let cachedCount = 0;
+    this.playlist.forEach((track) => {
+      if (this.cachedUrls.has(track.mediaUrl)) cachedCount++;
+    });
+
+    const badge = document.getElementById("shuffle-badge");
+    const listBadge = document.getElementById("shuffle-list-badge");
+    const totalCountEl = document.getElementById("shuffle-total-count");
+    const cachedCountEl = document.getElementById("shuffle-cached-count");
+
+    if (badge) {
+      badge.textContent = total;
+      badge.style.display = total > 0 ? "inline-block" : "none";
+    }
+    if (listBadge) listBadge.textContent = total;
+    if (totalCountEl) totalCountEl.textContent = total;
+    if (cachedCountEl) cachedCountEl.textContent = cachedCount;
+
+    const cacheAllBtn = document.getElementById("btn-shuffle-cache-all");
+    if (cacheAllBtn) {
+      if (total > 0 && cachedCount >= total) {
+        cacheAllBtn.innerHTML = `✅ 已全部离线 (${cachedCount}/${total})`;
+        cacheAllBtn.disabled = true;
+      } else {
+        cacheAllBtn.innerHTML = `📥 一键离线缓存 (<span id="shuffle-cached-count">${cachedCount}</span>/<span id="shuffle-total-count">${total}</span>)`;
+        cacheAllBtn.disabled = total === 0;
+      }
+    }
+  },
+
+  renderPlaylist() {
+    const listWrap = document.getElementById("shuffle-playlist-wrap");
+    const emptyGuide = document.getElementById("shuffle-empty-guide");
+    if (!listWrap) return;
+
+    if (this.playlist.length === 0) {
+      listWrap.innerHTML = "";
+      if (emptyGuide) emptyGuide.style.display = "block";
+      this.renderCurrentTrackInfo(null);
+      return;
+    }
+
+    if (emptyGuide) emptyGuide.style.display = "none";
+    listWrap.innerHTML = "";
+
+    this.playlist.forEach((track, index) => {
+      const isCached = this.cachedUrls.has(track.mediaUrl);
+      const isActive = index === this.currentIndex;
+
+      const card = document.createElement("div");
+      card.className = `shuffle-item-card ${isActive ? "active" : ""}`;
+      card.dataset.index = index;
+
+      const tagsHtml = (track.tags || []).slice(0, 2).map((t) => `<span class="kb-chip-small">${t}</span>`).join("");
+
+      card.innerHTML = `
+        <img src="${track.coverUrl || '/favicon.svg'}" class="shuffle-item-cover" alt="封面" loading="lazy" />
+        <div class="shuffle-item-content">
+          <div class="shuffle-item-title">${track.title || "无标题音频"}</div>
+          <div class="shuffle-item-meta">
+            ${isCached ? '<span class="shuffle-item-cached-pill">💾 已离线</span>' : '<span style="color:#94a3b8;">☁️ 在线</span>'}
+            ${tagsHtml}
+          </div>
+        </div>
+        <div class="shuffle-item-actions">
+          <button class="btn-item-remove-shuffle" title="从播放库移出" type="button">✕</button>
+        </div>
+      `;
+
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".btn-item-remove-shuffle")) return;
+        this.playIndex(index);
+      });
+
+      card.querySelector(".btn-item-remove-shuffle")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await this.removeTrackFromShuffle(track.id, index);
+      });
+
+      listWrap.appendChild(card);
+    });
+  },
+
+  async removeTrackFromShuffle(noteId, index) {
+    try {
+      const res = await fetch(`/api/notes/${noteId}/shuffle`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+        body: JSON.stringify({ inShuffle: false })
+      });
+      if (res.ok) {
+        showToast("已从随身听播放库移出");
+        const wasActive = index === this.currentIndex;
+        this.playlist.splice(index, 1);
+        if (wasActive) {
+          if (this.playlist.length > 0) {
+            this.currentIndex = Math.min(index, this.playlist.length - 1);
+            this.prepareTrack(this.currentIndex, true);
+          } else {
+            this.stop();
+          }
+        } else if (index < this.currentIndex) {
+          this.currentIndex--;
+        }
+        this.updateBadgeCounts();
+        this.renderPlaylist();
+        loadNotes(document.getElementById("kb-search-input")?.value || "");
+      }
+    } catch (err) {
+      showToast(`移出失败: ${err.message}`);
+    }
+  },
+
+  async cacheAllTracks() {
+    if (this.playlist.length === 0) return;
+    const btn = document.getElementById("btn-shuffle-cache-all");
+    if (btn) btn.disabled = true;
+    showToast("正在缓存全部音频至本地存储，以便断网畅听...");
+
+    let cachedCount = 0;
+    for (let i = 0; i < this.playlist.length; i++) {
+      const track = this.playlist[i];
+      if (track.mediaUrl) {
+        try {
+          await OfflineMediaManager.cacheUrl(track.mediaUrl, {
+            noteId: track.id,
+            title: track.title,
+            coverUrl: track.coverUrl,
+            transcript: track.transcript,
+            tags: track.tags
+          });
+          this.cachedUrls.add(track.mediaUrl);
+          cachedCount++;
+          const curCached = document.getElementById("shuffle-cached-count");
+          if (curCached) curCached.textContent = cachedCount;
+        } catch (e) {
+          console.warn("Failed caching:", track.title, e);
+        }
+      }
+    }
+
+    this.updateBadgeCounts();
+    this.renderPlaylist();
+    showToast(`🎉 离线缓存完毕！即使完全断网无信号也可自由拖拽播放`);
+  },
+
+  async prepareTrack(index, autoPlay = true) {
+    if (index < 0 || index >= this.playlist.length) return;
+    this.currentIndex = index;
+    const track = this.playlist[index];
+
+    this.renderCurrentTrackInfo(track);
+    this.highlightActiveCard(index);
+
+    if (!this.audioEl) return;
+
+    // 获取离线 Blob 或流式 URL (支持 0 延迟拖拽快进快退与断网畅听)
+    const { src, isOffline } = await OfflineMediaManager.getPlayableSource(track.mediaUrl, {
+      noteId: track.id,
+      title: track.title,
+      coverUrl: track.coverUrl,
+      transcript: track.transcript,
+      tags: track.tags
+    });
+
+    this.audioEl.src = src;
+    this.audioEl.playbackRate = this.playbackRate;
+
+    const pill = document.getElementById("shuffle-offline-pill");
+    if (pill) {
+      if (isOffline) {
+        pill.className = "shuffle-offline-pill offline";
+        pill.textContent = "📥 本地离线播放 (0延迟秒切)";
+      } else {
+        pill.className = "shuffle-offline-pill online";
+        pill.textContent = "☁️ 云端流式播放 (支持断点拖拽)";
+      }
+    }
+
+    if (autoPlay) {
+      this.audioEl.play().catch((err) => {
+        console.warn("Audio auto-play blocked or failed:", err);
+      });
+    }
+  },
+
+  renderCurrentTrackInfo(track) {
+    const titleEl = document.getElementById("shuffle-track-title");
+    const coverEl = document.getElementById("shuffle-cover-img");
+    const tagsEl = document.getElementById("shuffle-track-tags");
+    const lyricsEl = document.getElementById("shuffle-lyrics-content");
+
+    if (!track) {
+      if (titleEl) titleEl.textContent = "暂无播放音频";
+      if (coverEl) coverEl.src = "/favicon.svg";
+      if (tagsEl) tagsEl.innerHTML = "";
+      if (lyricsEl) {
+        lyricsEl.innerHTML = `<div class="shuffle-lyrics-empty">在「📚 收藏知识库」勾选音频进入播放库后即可在此畅听并同步展现精读文案。</div>`;
+      }
+      return;
+    }
+
+    if (titleEl) titleEl.textContent = track.title || "无标题音频";
+    if (coverEl) coverEl.src = track.coverUrl || "/favicon.svg";
+
+    if (tagsEl) {
+      tagsEl.innerHTML = (track.tags || []).map((t) => `<span class="kb-chip-small">${t}</span>`).join("");
+    }
+
+    // 渲染文案 (逐句分段展示，高亮重点)
+    if (lyricsEl) {
+      const transcript = track.transcript || "";
+      if (!transcript.trim()) {
+        lyricsEl.innerHTML = `<div class="shuffle-lyrics-empty">本篇音频暂未提取文案。可在知识库中点击「🎙️ 提取语音文案」生成！</div>`;
+      } else {
+        // 解析句子与划词高亮
+        const lines = transcript
+          .split(/[\r\n]+/)
+          .map((l) => l.trim())
+          .filter(Boolean);
+
+        let html = "";
+        lines.forEach((line) => {
+          const isHighlight = line.includes("<mark") || line.includes("font-weight: 700");
+          html += `<div class="shuffle-lyrics-line ${isHighlight ? "highlight" : ""}">${line}</div>`;
+        });
+        lyricsEl.innerHTML = html;
+      }
+    }
+  },
+
+  highlightActiveCard(index) {
+    const cards = document.querySelectorAll(".shuffle-item-card");
+    cards.forEach((card, idx) => {
+      if (idx === index) card.classList.add("active");
+      else card.classList.remove("active");
+    });
+  },
+
+  playIndex(index) {
+    this.prepareTrack(index, true);
+  },
+
+  togglePlay() {
+    if (!this.audioEl) return;
+    if (this.playlist.length === 0) {
+      showToast("随身听播放库暂无音频，请先在知识库中勾选！");
+      return;
+    }
+    if (this.currentIndex === -1) {
+      this.prepareTrack(0, true);
+      return;
+    }
+    if (this.audioEl.paused) {
+      this.audioEl.play().catch(() => {});
+    } else {
+      this.audioEl.pause();
+    }
+  },
+
+  playNext() {
+    if (this.playlist.length <= 1) {
+      if (this.playlist.length === 1 && this.audioEl) {
+        this.audioEl.currentTime = 0;
+        this.audioEl.play().catch(() => {});
+      }
+      return;
+    }
+
+    let nextIndex;
+    if (this.mode === "shuffle") {
+      // 随机选取不同的曲目
+      do {
+        nextIndex = Math.floor(Math.random() * this.playlist.length);
+      } while (nextIndex === this.currentIndex && this.playlist.length > 1);
+    } else {
+      // 顺序下一个
+      nextIndex = (this.currentIndex + 1) % this.playlist.length;
+    }
+
+    this.playIndex(nextIndex);
+  },
+
+  playPrev() {
+    if (this.playlist.length <= 1) {
+      if (this.playlist.length === 1 && this.audioEl) {
+        this.audioEl.currentTime = 0;
+        this.audioEl.play().catch(() => {});
+      }
+      return;
+    }
+
+    let prevIndex;
+    if (this.mode === "shuffle") {
+      do {
+        prevIndex = Math.floor(Math.random() * this.playlist.length);
+      } while (prevIndex === this.currentIndex && this.playlist.length > 1);
+    } else {
+      prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
+    }
+
+    this.playIndex(prevIndex);
+  },
+
+  stop() {
+    if (this.audioEl) {
+      this.audioEl.pause();
+      this.audioEl.currentTime = 0;
+      this.audioEl.removeAttribute("src");
+    }
+    this.currentIndex = -1;
+    this.updatePlayStateUI(false);
+    this.renderCurrentTrackInfo(null);
+  }
+};
 
 // 4. 事件监听与初始化绑定
 document.addEventListener("DOMContentLoaded", () => {
@@ -2869,17 +3689,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 页面顶级标签页切换管理 (采集下载工具 vs 收藏知识库)
+  // 页面顶级标签页切换管理 (采集下载工具 vs 收藏知识库 vs 随身听电台)
   function switchPageTab(tabName) {
     const downloadTabBtn = document.getElementById("tab-nav-download");
     const kbTabBtn = document.getElementById("tab-nav-kb");
+    const shuffleTabBtn = document.getElementById("tab-nav-shuffle");
     const downloadView = document.getElementById("view-download");
     const kbView = document.getElementById("view-kb");
+    const shuffleView = document.getElementById("view-shuffle");
 
     if (tabName === "kb") {
       downloadTabBtn?.classList.remove("active");
+      shuffleTabBtn?.classList.remove("active");
       kbTabBtn?.classList.add("active");
       if (downloadView) downloadView.style.display = "none";
+      if (shuffleView) shuffleView.style.display = "none";
       if (kbView) kbView.style.display = "block";
       if (window.location.hash !== "#kb") {
         window.location.hash = "kb";
@@ -2887,12 +3711,26 @@ document.addEventListener("DOMContentLoaded", () => {
       loadTags();
       loadNotes();
       window.scrollTo({ top: 0, behavior: "smooth" });
+    } else if (tabName === "shuffle") {
+      downloadTabBtn?.classList.remove("active");
+      kbTabBtn?.classList.remove("active");
+      shuffleTabBtn?.classList.add("active");
+      if (downloadView) downloadView.style.display = "none";
+      if (kbView) kbView.style.display = "none";
+      if (shuffleView) shuffleView.style.display = "block";
+      if (window.location.hash !== "#shuffle") {
+        window.location.hash = "shuffle";
+      }
+      ShufflePlayer.loadPlaylist();
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } else {
       kbTabBtn?.classList.remove("active");
+      shuffleTabBtn?.classList.remove("active");
       downloadTabBtn?.classList.add("active");
       if (kbView) kbView.style.display = "none";
+      if (shuffleView) shuffleView.style.display = "none";
       if (downloadView) downloadView.style.display = "block";
-      if (window.location.hash === "#kb") {
+      if (window.location.hash === "#kb" || window.location.hash === "#shuffle") {
         window.location.hash = "download";
       }
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2901,6 +3739,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("tab-nav-download")?.addEventListener("click", () => switchPageTab("download"));
   document.getElementById("tab-nav-kb")?.addEventListener("click", () => switchPageTab("kb"));
+  document.getElementById("tab-nav-shuffle")?.addEventListener("click", () => switchPageTab("shuffle"));
+  document.getElementById("btn-shuffle-go-kb")?.addEventListener("click", () => switchPageTab("kb"));
   document.getElementById("brand-link")?.addEventListener("click", (e) => {
     e.preventDefault();
     switchPageTab("download");
@@ -2910,6 +3750,8 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("hashchange", () => {
     if (window.location.hash === "#kb") {
       switchPageTab("kb");
+    } else if (window.location.hash === "#shuffle") {
+      switchPageTab("shuffle");
     } else {
       switchPageTab("download");
     }
@@ -2917,6 +3759,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (window.location.hash === "#kb") {
     switchPageTab("kb");
+  } else if (window.location.hash === "#shuffle") {
+    switchPageTab("shuffle");
   }
 
   // 知识库解锁 PIN
@@ -3589,4 +4433,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // 初始获取一次徽标计数与存储用量
   refreshNotesBadge();
   loadStorageUsage();
+
+  // 初始化随身听播放引擎与播放库
+  ShufflePlayer.init();
+  ShufflePlayer.loadPlaylist();
 });

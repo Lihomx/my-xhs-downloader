@@ -2719,4 +2719,483 @@ mark.transcript-hl:hover {
   border-color: #e2e8f0;
 }
 
+/* ========================================================
+   随身听随机播客电台与离线播放样式
+   ======================================================== */
+.shuffle-page-wrapper {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 20px 16px 60px;
+}
+
+.shuffle-header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+}
+
+.shuffle-main-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 4px;
+}
+
+.shuffle-sub-title {
+  font-size: 12px;
+  color: var(--text-sub);
+  margin: 0;
+}
+
+.shuffle-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shuffle-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 480px) 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 860px) {
+  .shuffle-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 核心播放 Deck */
+.shuffle-deck-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.shuffle-cover-container {
+  width: 190px;
+  height: 190px;
+  margin: 10px auto 18px;
+  position: relative;
+}
+
+.shuffle-cover-disk {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: #111827;
+  padding: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.3s ease;
+}
+
+.shuffle-cover-disk.playing {
+  animation: diskSpin 20s linear infinite;
+}
+
+@keyframes diskSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.shuffle-disk-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.shuffle-disk-center {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  background: #ffffff;
+  border-radius: 50%;
+  border: 4px solid #111827;
+  box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.5);
+}
+
+.shuffle-track-info {
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.shuffle-track-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1.4;
+  margin-bottom: 6px;
+  max-height: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.shuffle-track-tags {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.shuffle-offline-indicator-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.shuffle-offline-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.shuffle-offline-pill.offline {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.shuffle-offline-pill.online {
+  background: #f0f9ff;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+/* 进度条与控制器 */
+.shuffle-scrubber-area {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.shuffle-time-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-sub);
+  margin-bottom: 6px;
+  font-family: monospace;
+}
+
+.shuffle-progress-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.shuffle-slider {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  appearance: none;
+  background: #e2e8f0;
+  outline: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.shuffle-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary);
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+
+.shuffle-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+}
+
+.shuffle-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 20px;
+}
+
+.btn-shuffle-ctrl {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-shuffle-ctrl:hover {
+  background: var(--border);
+}
+
+.btn-ctrl-round {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  padding: 0;
+}
+
+.btn-shuffle-play-hero {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #ffffff;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(255, 36, 66, 0.35);
+  transition: all 0.2s;
+}
+
+.btn-shuffle-play-hero:hover {
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px rgba(255, 36, 66, 0.45);
+}
+
+/* 文案歌词同步卡片 */
+.shuffle-lyrics-card {
+  width: 100%;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  text-align: left;
+}
+
+.shuffle-lyrics-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-sub);
+  margin-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 6px;
+}
+
+.shuffle-lyrics-badge {
+  background: #fef08a;
+  color: #854d0e;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.shuffle-lyrics-scroll-wrap {
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-main);
+  padding-right: 4px;
+}
+
+.shuffle-lyrics-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 24px 8px;
+}
+
+.shuffle-lyrics-line {
+  padding: 4px 6px;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  transition: all 0.2s;
+}
+
+.shuffle-lyrics-line.highlight {
+  background: #fef9c3;
+  color: #854d0e;
+  font-weight: 600;
+}
+
+/* 播放库列表栏 */
+.shuffle-playlist-panel {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.shuffle-playlist-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.shuffle-playlist-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.shuffle-playlist-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 600px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.shuffle-item-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.shuffle-item-card:hover {
+  background: var(--surface-hover);
+  border-color: #cbd5e1;
+}
+
+.shuffle-item-card.active {
+  background: #fff1f2;
+  border-color: #fda4af;
+}
+
+.shuffle-item-cover {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #000;
+}
+
+.shuffle-item-content {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.shuffle-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.shuffle-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.shuffle-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-item-remove-shuffle {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.btn-item-remove-shuffle:hover {
+  color: #ef4444;
+}
+
+/* 知识库卡片上的随身听勾选控件 */
+.kb-shuffle-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.kb-shuffle-toggle:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.kb-shuffle-toggle input[type="checkbox"] {
+  cursor: pointer;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #ea580c;
+}
+
+.kb-shuffle-toggle.active {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #c2410c;
+  font-weight: 600;
+}
+
 

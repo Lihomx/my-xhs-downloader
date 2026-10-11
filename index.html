@@ -16,7 +16,7 @@
           <span class="brand-title">小红书采集工具</span>
         </a>
 
-        <!-- 页面顶级标签页切换 (📥 采集下载 vs 📚 收藏知识库) -->
+        <!-- 页面顶级标签页切换 (📥 采集下载 vs 📚 收藏知识库 vs 📻 随身听电台) -->
         <nav class="nav-tabs" aria-label="页面切换">
           <button id="tab-nav-download" class="tab-item active" type="button">
             <span class="tab-icon">📥</span>
@@ -26,6 +26,11 @@
             <span class="tab-icon">📚</span>
             <span class="tab-text">收藏知识库</span>
             <span id="notes-badge" class="tab-badge" style="display: none;">0</span>
+          </button>
+          <button id="tab-nav-shuffle" class="tab-item" type="button" title="从笔记勾选的音频随机播客，支持断网离线畅听">
+            <span class="tab-icon">📻</span>
+            <span class="tab-text">随身听电台</span>
+            <span id="shuffle-badge" class="tab-badge" style="display: none;">0</span>
           </button>
         </nav>
 
@@ -264,6 +269,123 @@
       </div>
     </div>
 
+    <!-- 标签页面 3：📻 随身听随机播放台 (从笔记勾选音频入库，支持拖拉进度条与断网离线畅听) -->
+    <div id="view-shuffle" class="page-view" style="display: none;">
+      <div class="shuffle-page-wrapper">
+        <!-- 随身听顶部状态栏 -->
+        <div class="shuffle-header-bar">
+          <div class="shuffle-header-title-wrap">
+            <h2 class="shuffle-main-title">📻 随身听 · 随机播客电台</h2>
+            <p class="shuffle-sub-title">在知识库笔记勾选「📻 随身听」后自动进入此播放库，支持无网络离线畅听与任意拖拉快进快退。</p>
+          </div>
+          <div class="shuffle-header-actions">
+            <button id="btn-shuffle-cache-all" class="btn btn-secondary" type="button" title="把播放库全部音频下载缓存到本地 IndexedDB，即使完全断网坐飞机乘地铁也能畅听">
+              📥 一键离线缓存 (<span id="shuffle-cached-count">0</span>/<span id="shuffle-total-count">0</span>)
+            </button>
+            <button id="btn-shuffle-reload" class="btn btn-ghost" type="button" title="重新从云端同步播放库列表">
+              🔄 刷新
+            </button>
+            <button id="btn-shuffle-clear-all" class="btn btn-ghost" type="button" style="color: #ef4444;" title="清空全部勾选的音频">
+              🗑️ 清空播放库
+            </button>
+          </div>
+        </div>
+
+        <!-- 随身听主体：播放核心区 + 待播库列表 -->
+        <div class="shuffle-layout">
+          <!-- 左侧/上方：核心播放 Deck -->
+          <div class="shuffle-deck-card">
+            <!-- 唱片/封面展示与离线状态指示 -->
+            <div class="shuffle-cover-container">
+              <div id="shuffle-cover-wrap" class="shuffle-cover-disk">
+                <img id="shuffle-cover-img" src="/favicon.svg" alt="音频封面" class="shuffle-disk-img" />
+                <div class="shuffle-disk-center"></div>
+              </div>
+            </div>
+
+            <!-- 当前播放信息 -->
+            <div class="shuffle-track-info">
+              <div id="shuffle-track-title" class="shuffle-track-title">暂无播放音频</div>
+              <div id="shuffle-track-tags" class="shuffle-track-tags"></div>
+              <div class="shuffle-offline-indicator-wrap">
+                <span id="shuffle-offline-pill" class="shuffle-offline-pill online">☁️ 在线流式播放</span>
+              </div>
+            </div>
+
+            <!-- 音频元素 -->
+            <audio id="shuffle-audio-element" preload="auto" style="display: none;"></audio>
+
+            <!-- 自定义可拖拽高精进度条 -->
+            <div class="shuffle-scrubber-area">
+              <div class="shuffle-time-labels">
+                <span id="shuffle-time-current">00:00</span>
+                <span id="shuffle-time-duration">00:00</span>
+              </div>
+              <div class="shuffle-progress-wrapper">
+                <input type="range" id="shuffle-scrub-slider" min="0" max="100" value="0" step="0.1" class="shuffle-slider" />
+              </div>
+            </div>
+
+            <!-- 播放控制按钮群 -->
+            <div class="shuffle-controls-row">
+              <button id="btn-shuffle-mode-toggle" class="btn-shuffle-ctrl" type="button" title="切换播放模式 (随机播放 / 列表循环 / 单曲循环)">
+                🔀 随机
+              </button>
+              <button id="btn-shuffle-prev-track" class="btn-shuffle-ctrl btn-ctrl-round" type="button" title="上一首">
+                ⏮️
+              </button>
+              <button id="btn-shuffle-play-pause" class="btn-shuffle-play-hero" type="button" title="播放 / 暂停">
+                <span id="shuffle-play-icon">▶️</span>
+              </button>
+              <button id="btn-shuffle-next-track" class="btn-shuffle-ctrl btn-ctrl-round" type="button" title="下一首">
+                ⏭️
+              </button>
+              <button id="btn-shuffle-speed-toggle" class="btn-shuffle-ctrl" type="button" title="切换播放倍速">
+                1.0x
+              </button>
+            </div>
+
+            <!-- 文案同步卡片 (Speech Transcript Lyrics) -->
+            <div class="shuffle-lyrics-card">
+              <div class="shuffle-lyrics-header">
+                <span>🎙️ 提取语音文案 · 随声同步精读</span>
+                <span id="shuffle-lyrics-badge" class="shuffle-lyrics-badge">精选重点</span>
+              </div>
+              <div id="shuffle-lyrics-content" class="shuffle-lyrics-scroll-wrap">
+                <div class="shuffle-lyrics-empty">播放音频时，若该篇笔记已提取过文案，将在此同步滚动展示句子与划词重点。</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右侧/下方：播放库列表 -->
+          <div class="shuffle-playlist-panel">
+            <div class="shuffle-playlist-header">
+              <div class="shuffle-playlist-title">
+                <span>🎵 播放库音频 (<span id="shuffle-list-badge">0</span>)</span>
+              </div>
+              <span style="font-size: 11px; color: var(--text-muted);">点击任意一首立即播放</span>
+            </div>
+
+            <div id="shuffle-playlist-wrap" class="shuffle-playlist-scroll">
+              <!-- 动态插入播放库音频项目 -->
+            </div>
+
+            <!-- 空列表引导提示 -->
+            <div id="shuffle-empty-guide" class="shuffle-empty-state" style="display: none;">
+              <div style="font-size: 42px; margin-bottom: 12px;">📻</div>
+              <h3 style="font-size: 16px; margin-bottom: 6px;">随机播放库暂无音频</h3>
+              <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 14px;">
+                在「📚 收藏知识库」的任意笔记卡片上勾选 <strong>「📻 随身听」</strong>，或在笔记详情中点击「加入随身听」，音频即可自动入库！
+              </p>
+              <button id="btn-shuffle-go-kb" class="btn btn-primary" type="button">
+                👉 前往知识库勾选音频笔记
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 标签字典管理弹窗 -->
     <div id="modal-manage-tags" class="modal-overlay">
       <div class="modal" style="max-width: 440px;">
@@ -337,6 +459,9 @@
                 </button>
                 <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
                   🎙️ 提取语音文案
+                </button>
+                <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
+                  📻 加入随身听
                 </button>
                 <button id="btn-modal-cleanup-media" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; color: #b45309; border-color: #fde68a; background: #fffbeb;" type="button" title="选择性删除视频或语音以腾出 Cloudflare 空间，文案与笔记完整保留">
                   ⚡ 释放媒体空间
