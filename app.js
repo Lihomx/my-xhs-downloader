@@ -2137,7 +2137,11 @@ function cleanWhisperHallucinationsClient(text) {
   for (const pattern of hallucinationPatterns) {
     cleaned = cleaned.replace(pattern, " ");
   }
-  cleaned = cleaned.replace(/(.{2,25}?)\1{2,}/g, "$1");
+  // 消除连续重复短语 (短语长度 2~40，如果复读超过 4 次则彻底丢弃幻觉，否则保留 1 次)
+  cleaned = cleaned.replace(/(.{2,40}?)\1{2,}/g, (match, g1) => {
+    if (match.length >= g1.length * 4) return "";
+    return g1;
+  });
   return cleaned.trim();
 }
 
@@ -2168,8 +2172,8 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
 
   try {
     const isGroq = state.whisperProvider === "groq" || Boolean(document.getElementById("settings-whisper-key")?.value);
-    // Groq 单次请求支持 25MB 大音频，单段切片扩大至 180 秒 (3分钟)，普通视频 1 秒整篇出全文！
-    const chunkDuration = isGroq ? 180 : 30;
+    // Whisper 原生核心感受野严格为 30 秒。切片控制在 25 秒，杜绝跨窗口自回归滚雪球幻觉复读
+    const chunkDuration = 25;
 
     const { duration, chunks } = await extractAudioChunksFromMedia(mediaUrl, (msg) => {
       if (statusText) statusText.textContent = msg;

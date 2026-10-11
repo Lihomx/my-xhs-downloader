@@ -193,7 +193,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           }
 
           // 连续相同短语重复死循环消除 (Whisper 重复循环幻觉)
-          cleaned = cleaned.replace(/(.{2,25}?)\1{2,}/g, "$1");
+          cleaned = cleaned.replace(/(.{2,40}?)\1{2,}/g, (match, g1) => {
+            if (match.length >= g1.length * 4) return "";
+            return g1;
+          });
 
           return cleaned.trim();
         }
@@ -241,12 +244,12 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 : new Blob([audioBuffer], { type: 'audio/wav' });
               formData.append('file', audioFile, 'audio.wav');
               
-              // Groq 官方推荐：优先使用 whisper-large-v3-turbo (速度 4x，防复读幻觉能力显著更优)
-              formData.append('model', isGroq ? 'whisper-large-v3-turbo' : 'whisper-1');
+              // Groq 官方推荐：优先使用 whisper-large-v3 (32层完整解码器，15.5亿参数，抗噪与中文防死循环能力远优于4层蒸馏版turbo)
+              formData.append('model', isGroq ? 'whisper-large-v3' : 'whisper-1');
               formData.append('language', 'zh');
               formData.append('temperature', '0');
               formData.append('response_format', 'json');
-              // 注意：千万不要向 Whisper 传递指令类 prompt 提示词，否则 Whisper 会当成语音上一句不断复读！
+              formData.append('prompt', '这是一段中文普通话演讲与知识分享口语录音。请准确听写文字，使用简体中文及规范标点符号。');
 
               const aiRes = await fetch(endpoint, {
                 method: 'POST',
@@ -264,7 +267,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                   success: true,
                   text: cleanedText,
                   provider: isGroq ? 'groq' : 'custom',
-                  model: isGroq ? 'whisper-large-v3-turbo' : 'whisper-1'
+                  model: isGroq ? 'whisper-large-v3' : 'whisper-1'
                 });
               } else {
                 const errText = await aiRes.text();
@@ -370,7 +373,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (!rawText) return json({ success: false, message: "文本不能为空" }, 400);
 
           let punctuatedText = '';
-          const systemPrompt = "你是一个专业的中文口语整理、对话听写断句与语音识别（ASR）错别字纠错大师。你将接收一段由语音识别生成的口语文本，其中可能缺少标点符号、断句混乱（或多句话连续堆砌在一起），并且可能包含发音相近的同音错别字与口误。\n\n你的核心任务：\n1. 【对话与短句精细断句】：遇到人物对话、陈述或一句话说完，必须准确添加全角中文句号「。」；遇到疑问或反问语气（如多少钱、能优惠不、行不、好不、为啥、怎么）必须使用全角问号「？」；遇到强烈感叹或应答（如好嘞、行、太厉害了、错）使用感叹号「！」；\n2. 【逗号自然停顿】：句子内部较长或有语意短暂停顿时，合理补充中文逗号「，」，使阅读节奏极其舒适；\n3. 【核心排版：一个完整句子独立成一段】：每一个以句号「。」、问号「？」或感叹号「！」结尾的完整句子，必须单独换行独立成一个自然段！严禁将两句或多句话堆在同一段中；\n4. 【纠正同音字与口语错别字】：结合上下文语境（如生活对话、商业买卖、职场管理等），智能将口语误识别词纠正为标准字词或规范成语；\n5. 【严禁多余废话】：严禁输出任何开场白、解释说明、前言、总结或 markdown 标记，直接输出分段整理后的纯文本：";
+          const systemPrompt = "你是一个专业的中文口语整理、对话听写断句与语音识别（ASR）错别字纠错大师。你将接收一段由语音识别生成的口语文本，其中可能缺少标点符号、断句混乱（或多句话连续堆砌在一起），并且可能包含发音相近的同音错别字、口误以及背景音乐诱发的重复复读词句。\n\n你的核心任务：\n1. 【对话与短句精细断句】：遇到人物对话、陈述或一句话说完，必须准确添加全角中文句号「。」；遇到疑问或反问语气（如多少钱、能优惠不、行不、好不、为啥、怎么）必须使用全角问号「？」；遇到强烈感叹或应答（如好嘞、行、太厉害了、错）使用感叹号「！」；\n2. 【逗号自然停顿】：句子内部较长或有语意短暂停顿时，合理补充中文逗号「，」，使阅读节奏极其舒适；\n3. 【核心排版：一个完整句子独立成一段】：每一个以句号「。」、问号「？」或感叹号「！」结尾的完整句子，必须单独换行独立成一个自然段！严禁将两句或多句话堆在同一段中；\n4. 【消除异常复读死循环】：如果输入中包含连续重复的无意义复读片段（如同一句话重复出现多次），请自动将其去重过滤，只保留合理语义内容；\n5. 【纠正同音字与口语错别字】：结合上下文语境（如生活对话、商业买卖、职场管理等），智能将口语误识别词纠正为标准字词或规范成语；\n6. 【严禁多余废话】：严禁输出任何开场白、解释说明、前言、总结或 markdown 标记，直接输出分段整理后的纯文本：";
 
           // 优先策略 1: 如果配置了 Groq API Key，使用 Groq 极速大模型 (llama-3.1-8b-instant，0.2 秒神速响应)
           let thirdPartyKey = '';
