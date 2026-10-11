@@ -16,19 +16,7 @@
     "not_found_handling": "none",
     "run_worker_first": ["/api/*", "/admin*"]
   },
-  "services": [
-    { "binding": "PYTHON_API", "service": "brclio-xhs-python" }
-  ],
-  "durable_objects": {
-    "bindings": [
-      { "name": "ACCOUNT_RUNTIME", "class_name": "AccountRuntime" },
-      { "name": "PARSE_RUNTIME", "class_name": "ParseRuntime" }
-    ]
-  },
-  "migrations": [
-    { "tag": "account-runtime-v1", "new_sqlite_classes": ["AccountRuntime"] },
-    { "tag": "parse-runtime-v1", "new_sqlite_classes": ["ParseRuntime"] }
-  ],
+
   "version_metadata": { "binding": "DEPLOYMENT" },
   "observability": { "enabled": true },
   "build": { "command": "npm run build:web" }
