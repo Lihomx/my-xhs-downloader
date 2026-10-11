@@ -127,6 +127,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             return json({ success: false, message: "未接收到音频数据" }, 400);
           }
 
+          const zhPrompt = "这是一段中文普通话演讲，请务必使用简体中文，并在语调停顿处正确添加逗号、句号、感叹号、问号等标点符号。";
+
           // 优先检查第三方 Whisper API Key (如 Groq / OpenAI)
           let thirdPartyKey = '';
           let thirdPartyEndpoint = '';
@@ -142,6 +144,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               formData.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav');
               formData.append('model', endpoint.includes('groq') ? 'whisper-large-v3' : 'whisper-1');
               formData.append('language', 'zh');
+              formData.append('prompt', zhPrompt);
               formData.append('response_format', 'json');
 
               const aiRes = await fetch(endpoint, {
@@ -172,7 +175,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             // 策略 1: Uint8Array 二进制对象 (直接传递，0 内存膨胀，符合 Cloudflare AI 'binary' 规范)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper', {
-                audio: uint8
+                audio: uint8,
+                initial_prompt: zhPrompt
               });
               if (aiResp && typeof aiResp.text === 'string') {
                 return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-uint8' });
@@ -184,7 +188,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             // 策略 2: @cf/openai/whisper-large-v3-turbo (Uint8Array)
             try {
               const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                audio: uint8
+                audio: uint8,
+                initial_prompt: zhPrompt
               });
               if (aiResp && typeof aiResp.text === 'string') {
                 return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-turbo-uint8' });
@@ -197,7 +202,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             if (audioBuffer.byteLength <= 1.5 * 1024 * 1024) {
               try {
                 const aiResp = await env.AI.run('@cf/openai/whisper', {
-                  audio: Array.from(uint8)
+                  audio: Array.from(uint8),
+                  initial_prompt: zhPrompt
                 });
                 if (aiResp && typeof aiResp.text === 'string') {
                   return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-array' });
@@ -218,7 +224,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 const base64Audio = btoa(binary);
 
                 const aiResp = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-                  audio: base64Audio
+                  audio: base64Audio,
+                  initial_prompt: zhPrompt
                 });
                 if (aiResp && typeof aiResp.text === 'string') {
                   return json({ success: true, text: aiResp.text || '', provider: 'cloudflare-ai-base64' });
@@ -235,6 +242,59 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             success: false,
             message: "未检测到可用的 AI 语音转写服务。请在设置中配置第三方 Whisper API Key (如 Groq / OpenAI)，或开启 Cloudflare Workers AI 绑定。"
           }, 503);
+        }
+
+        // 智能标点符号恢复与排版接口: POST /api/punctuate
+        if (path === '/api/punctuate' && request.method === 'POST') {
+          const pin = request.headers.get('x-auth-pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const body = await request.json().catch(() => ({}));
+          const rawText = String(body.text || '').trim();
+          if (!rawText) return json({ success: false, message: "文本不能为空" }, 400);
+
+          let punctuatedText = '';
+          if (env.AI) {
+            const systemPrompt = "你是一个专业的中文排版与标点符号修正助手。请为用户提供的语音转写文本添加规范的中文标点符号（包括逗号、句号、问号、感叹号、顿号），并按自然语意换行分段。严格保持原文字词不变，绝对不要改变或增减任何字词，不要添加任何开场白或解释说明，直接输出带有标点符号和分段换行的纯文本：";
+            const candidateModels = [
+              '@cf/meta/llama-3.2-3b-instruct',
+              '@cf/meta/llama-3.2-1b-instruct',
+              '@cf/qwen/qwen3-30b-a3b-fp8'
+            ];
+            for (const model of candidateModels) {
+              try {
+                const aiRes = await env.AI.run(model, {
+                  messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: rawText }
+                  ],
+                  max_tokens: 2000,
+                  temperature: 0.1
+                });
+                const reply = (aiRes && (aiRes.response || aiRes.text || ''))?.trim();
+                if (reply && reply.length >= rawText.length * 0.7) {
+                  punctuatedText = reply;
+                  break;
+                }
+              } catch (e) {
+                console.warn(`Punctuate model ${model} error:`, e.message);
+              }
+            }
+          }
+
+          if (body.noteId && env.DB && punctuatedText) {
+            try {
+              await updateTranscript(env.DB, body.noteId, punctuatedText);
+            } catch (e) {
+              console.warn("Auto update transcript in db failed:", e);
+            }
+          }
+
+          return json({
+            success: true,
+            text: punctuatedText || rawText
+          });
         }
 
         // 兼容旧接口：修改 PIN 码

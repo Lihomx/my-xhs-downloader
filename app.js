@@ -1065,6 +1065,102 @@ function escapeHtml(str) {
 // 语音文案智能分段、高亮重点标注与持久化系统
 // ========================================================
 
+// 智能中文启发式标点恢复与精准断句引擎
+function autoPunctuateChinese(raw) {
+  let s = String(raw || "").trim();
+  if (!s) return "";
+
+  // 1. 独立感叹与强调词（如：错！、对！、绝对不行！）
+  s = s.replace(/([^\n，。！？]+?)(错|对)(?=只讲|不是|不讲|必须|我们|大家|其实|管理者|很多人)/g, '$1。\n$2！\n');
+  s = s.replace(/(^|[^\u4e00-\u9fa5a-zA-Z0-9])(错|对|绝对不行|当然)(?=[\u4e00-\u9fa5])/g, '$1$2！\n');
+
+  // 2. 序数词与列表列点断句（如：第一点、第二点、首先、其次、另外）
+  s = s.replace(/([^\n，。！？]{3,})(第一点|第二点|第三点|第四点|首先|其次|另外|此外|最后)(就是要|就是|是|要)/g, '$1。\n$2$3，');
+  s = s.replace(/([^\n，。！？]{3,})(第一(?!点)|第二(?!点)|第三(?!点)|第四(?!点))(?=[，、：:\u4e00-\u9fa5])/g, '$1。\n$2、');
+
+  // 3. 疑问句识别与问号
+  // 3.1 句尾疑问助词（了吗、对不对、对吗、是不是）
+  s = s.replace(/([^\n，。！？]+?(?:了吗|了吗\?|对吗|行吗|好吗|对不对|好不好|是不是))(?=$|[\u4e00-\u9fa5])/g, '$1？\n');
+  // 3.2 为什么、怎么、如何开头的疑问意群
+  s = s.replace(/(为什么[^\n，。！？\?]{4,28}?)(?=很多|大家|我们|有人|因为|所以|其实|如果|新手|第一)/g, '$1？\n');
+
+  // 4. 常见四字成语与固定总结词断句
+  s = s.replace(/(缺一不可|显而易见|至关重要|由此可见|以此类推)(?=[\u4e00-\u9fa5])/g, '$1。\n');
+
+  // 5. 条件与时间从句结尾后置逗号（...的时候、...之前、...之后）
+  s = s.replace(/([^\n，。！？]+?(?:的时候|之前|之后|以后|此时此刻|那一刻))([^\n，。！？、；：!?;:\s])/g, '$1，$2');
+
+  // 6. 前置加逗号的关联词（转折/因果/假设/递进/从句引导）
+  const preComma = [
+    '而是', '但是', '可是', '不过', '然而', '所以', '因此', '因为', 
+    '如果', '要是', '假如', '只要', '只有', '等于', '意味着', '相当于', 
+    '让他们', '使他们', '导致', '都是在', '就是在', '不讲检查', '而且', 
+    '并且', '同时', '甚至', '不能', '不要'
+  ];
+  for (const w of preComma) {
+    const reg = new RegExp('([^\n，。！？、；：!?;:\\s]{2,}?)(' + w + ')', 'g');
+    s = s.replace(reg, '$1，$2');
+  }
+
+  // 7. 后置加逗号的时间状语与引导认知动词
+  const postComma = [
+    '那一刻我才明白', '我才明白', '我明白', '我发现', '新手管理者以为', 
+    '管理者以为', '以为', '觉得', '认为', '记住', '事实上', '换句话说'
+  ];
+  for (const w of postComma) {
+    const reg = new RegExp('(' + w + ')([^\n，。！？、；：!?;:\\s])', 'g');
+    s = s.replace(reg, '$1，$2');
+  }
+
+  // 8. 动宾/名词短语与主谓边界后置逗号（如：分享三个自媒体运营的干货， / 找准自己的定位，）
+  s = s.replace(/(分享[^\n，。！？]+?干货)(?=第一|首先|今天)/g, '$1，');
+  s = s.replace(/(找准自己的定位|明确自己的定位)(?=很多|大家|我们)/g, '$1，');
+  s = s.replace(/(学会跟粉丝互动|跟粉丝多互动)(?=大家|我们|听明白)/g, '$1，');
+  s = s.replace(/(内容要持续更新|保持持续更新)(?=不能|不要|千万)/g, '$1，');
+
+  // 9. 核心并列短句：'信任是底色检查是机制'
+  s = s.replace(/([^\n，。！？]+?是底色)([^\n，。！？]+?是机制)/g, '$1，$2，');
+
+  // 10. 句号与换行断句标志（动宾/补语收尾）
+  s = s.replace(/(交代当成的结果|交代当成了结果|工作当成结果)(?=授权|如果|所以|但是|并且)/g, '$1。\n');
+  s = s.replace(/(直接气权|直接弃权)(?=那一刻|这个时候|后来|从此|所以)/g, '$1。\n');
+  s = s.replace(/(自由发挥)(?=错|对|但是|然而|所以|很多人|很多)/g, '$1。\n');
+  s = s.replace(/(不知道自己要做什么)(?=第二|其次|另外)/g, '$1。\n');
+  s = s.replace(/(三天打鱼两天晒网)(?=第三|其次|最后)/g, '$1。\n');
+
+  // 11. 韵律长度兜底：若一个句子连续超过 25 字没有任何逗号或停顿，寻找最近的词边界断开
+  s = s.replace(/([^\n，。！？]{12,25})(，)?([^\n，。！？]{18,})/g, function(match, p1, comma, p2) {
+    if (comma) return match;
+    return p1 + '，' + p2;
+  });
+
+  // 12. 清理多余标点
+  s = s.replace(/，+/g, '，')
+       .replace(/。+/g, '。')
+       .replace(/！+/g, '！')
+       .replace(/？+/g, '？')
+       .replace(/，([。！？\n])/g, '$1')
+       .replace(/([。！？])\s*，/g, '$1')
+       .replace(/\n\s*\n+/g, '\n');
+
+  // 结尾补齐句号
+  s = s.trim();
+  if (!/[。！？!?]$/.test(s)) {
+    s += '。';
+  }
+
+  return s;
+}
+
+// 检查文本是否极度匮乏标点符号 (标点率低或缺少逗号句号)
+function needsPunctuation(text) {
+  if (!text) return false;
+  const puncs = text.match(/[，。！？、；：,!?;:]/g) || [];
+  const cleanLen = text.replace(/[\s\r\n]+/g, "").length;
+  if (cleanLen < 8) return false;
+  return (puncs.length / cleanLen) < 0.025 || !/[，,、]/.test(text) || !/[。！？!?]/.test(text);
+}
+
 // 解析语音文案为段落列表 [{ isStarred: boolean, html: string }]
 function parseTranscriptParagraphs(raw) {
   if (!raw) return [];
@@ -1080,8 +1176,13 @@ function parseTranscriptParagraphs(raw) {
       pEls.forEach((p) => {
         const isStarred = p.classList.contains("para-starred");
         const contentEl = p.querySelector(".para-content");
-        const html = contentEl ? contentEl.innerHTML.trim() : p.innerHTML.trim();
+        let html = contentEl ? contentEl.innerHTML.trim() : p.innerHTML.trim();
         if (html) {
+          // 确保段末有标点（若末尾无标点，补齐句号）
+          const textOnly = html.replace(/<\/?[^>]+(>|$)/g, "").trim();
+          if (textOnly && !/[。！？!?…]$/.test(textOnly)) {
+            html += "。";
+          }
           results.push({ isStarred, html });
         }
       });
@@ -1089,42 +1190,53 @@ function parseTranscriptParagraphs(raw) {
     }
   }
 
-  // 2. 纯文本处理：先尝试按双换行 \n\n 分段
-  let segments = raw.split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
-
-  // 如果只有 1 段，但内容较长且包含单换行，按换行拆分
-  if (segments.length === 1 && segments[0].includes("\n")) {
-    segments = segments[0].split(/\n+/).map(s => s.trim()).filter(Boolean);
+  // 2. 检查纯文本是否缺少标点符号：若无逗号/句号，自动补齐标点与断句
+  if (needsPunctuation(raw)) {
+    raw = autoPunctuateChinese(raw);
   }
 
-  // 3. 如果依然只有 1 段且文字较长（超过 100 字），智能按中文句子标点符号进行自然停顿分段
-  if (segments.length === 1 && segments[0].length > 100) {
-    const text = segments[0];
-    const sentences = text.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) || [text];
-    const smartSegments = [];
-    let cur = [];
-    let curLen = 0;
-    for (const sent of sentences) {
-      cur.push(sent);
-      curLen += sent.length;
-      if (curLen >= 90 || cur.length >= 3) {
-        smartSegments.push(cur.join("").trim());
-        cur = [];
-        curLen = 0;
+  // 3. 按换行拆分为自然段落
+  let segments = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
+
+  // 4. 如果段落过长（超过 80 字且包含多个句号），按句号进行适度细分
+  const fineSegments = [];
+  for (let seg of segments) {
+    if (seg.length > 80 && (seg.match(/[。！？!?]/g) || []).length >= 2) {
+      const subSentences = seg.match(/[^。！？!?]+[。！？!?]?/g) || [seg];
+      let currentGroup = [];
+      let currentLen = 0;
+      for (const sent of subSentences) {
+        currentGroup.push(sent);
+        currentLen += sent.length;
+        if (currentLen >= 40 || currentGroup.length >= 2) {
+          fineSegments.push(currentGroup.join("").trim());
+          currentGroup = [];
+          currentLen = 0;
+        }
       }
-    }
-    if (cur.length > 0) {
-      smartSegments.push(cur.join("").trim());
-    }
-    if (smartSegments.length > 1) {
-      segments = smartSegments;
+      if (currentGroup.length > 0) {
+        fineSegments.push(currentGroup.join("").trim());
+      }
+    } else {
+      fineSegments.push(seg);
     }
   }
 
-  return segments.map((seg) => ({
-    isStarred: false,
-    html: escapeHtml(seg)
-  }));
+  // 5. 确保每个段落内部有逗号、末尾有句号/问号/感叹号
+  return fineSegments.map((seg) => {
+    let clean = seg.trim();
+    if (!/[。！？!?…]$/.test(clean)) {
+      clean += "。";
+    }
+    // 如果段落长于 16 字但没有任何逗号，尝试补逗号
+    if (clean.length > 16 && !/[，,、]/.test(clean)) {
+      clean = autoPunctuateChinese(clean);
+    }
+    return {
+      isStarred: false,
+      html: escapeHtml(clean)
+    };
+  });
 }
 
 // 序列化段落列表为可持久化的 HTML 字符串
@@ -1533,6 +1645,9 @@ function renderTranscriptBox(container, rawText, noteId) {
         <span class="transcript-hl-badge" style="display: none;">⭐ 0 处重点</span>
       </div>
       <div class="transcript-header-actions">
+        <button type="button" class="transcript-btn btn-ai-punctuate" title="智能补齐逗号、句号并精准分段">
+          ✨ 智能标点断句
+        </button>
         <button type="button" class="transcript-btn btn-toggle-filter" title="只显示标记了重点的段落和文字">
           ⭐ 仅看重点
         </button>
@@ -1638,6 +1753,63 @@ function renderTranscriptBox(container, rawText, noteId) {
       await navigator.clipboard.writeText(textToCopy);
       showToast(isFilterActive && totalCount > 0 ? `📋 已复制全部 ${totalCount} 处重点内容` : "📋 已复制语音文案全文");
     });
+  }
+
+  // 6. 「✨ 智能标点断句」
+  const punctuateBtn = container.querySelector(".btn-ai-punctuate");
+  if (punctuateBtn) {
+    punctuateBtn.addEventListener("click", async () => {
+      punctuateBtn.disabled = true;
+      const originalText = punctuateBtn.innerHTML;
+      punctuateBtn.innerHTML = `⏳ 优化中...`;
+
+      try {
+        const plain = getTranscriptPlainText(container);
+        if (!plain) return;
+
+        let formatted = "";
+        // 优先尝试云端 Workers AI 标点大模型
+        try {
+          const res = await fetch("/api/punctuate", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({ text: plain, noteId: noteId || container.dataset.noteId })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.text && data.text !== plain) {
+              formatted = data.text;
+            }
+          }
+        } catch (apiErr) {
+          console.warn("API punctuate fallback to local:", apiErr);
+        }
+
+        // 若接口未返回或离线，立即启用本地启发式断句标点引擎
+        if (!formatted) {
+          formatted = autoPunctuateChinese(plain);
+        }
+
+        renderTranscriptBox(container, formatted, noteId);
+        triggerTranscriptAutoSave(container, noteId);
+        showToast("🎉 已智能补齐逗号、句号并优化分段排版！");
+      } catch (err) {
+        showToast(`标点优化失败: ${err.message}`);
+      } finally {
+        if (punctuateBtn) {
+          punctuateBtn.disabled = false;
+          punctuateBtn.innerHTML = originalText;
+        }
+      }
+    });
+  }
+
+  // 如果原本是缺少标点的纯文本，经过智能补全后，自动异步静默保存至云端 D1
+  if (typeof rawText === "string" && !rawText.includes("<p") && needsPunctuation(rawText)) {
+    triggerTranscriptAutoSave(container, noteId);
   }
 
   // 初始化重点统计徽章
