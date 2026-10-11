@@ -1122,11 +1122,17 @@ function autoPunctuateChinese(raw) {
   s = s.replace(/([^\n，。！？]+?是底色)([^\n，。！？]+?是机制)/g, '$1，$2，');
 
   // 10. 句号与换行断句标志（动宾/补语收尾）
-  s = s.replace(/(交代当成的结果|交代当成了结果|工作当成结果)(?=授权|如果|所以|但是|并且)/g, '$1。\n');
-  s = s.replace(/(直接气权|直接弃权)(?=那一刻|这个时候|后来|从此|所以)/g, '$1。\n');
-  s = s.replace(/(自由发挥)(?=错|对|但是|然而|所以|很多人|很多)/g, '$1。\n');
-  s = s.replace(/(不知道自己要做什么)(?=第二|其次|另外)/g, '$1。\n');
-  s = s.replace(/(三天打鱼两天晒网)(?=第三|其次|最后)/g, '$1。\n');
+  s = s.replace(/(我以前也不是这样|以前也不是这样)(?=[，,、\s]*(?:刚当|那时候|当时))/g, '$1。\n');
+  s = s.replace(/(下属也烦的|下属也烦|把自己累死)(?=[，,、\s]*(?:我要么|我彻底))/g, '$1。\n');
+  s = s.replace(/(用人不疑|用人疑人)(?=[，,、\s]*(?:结果))/g, '$1。\n');
+  s = s.replace(/(烂的一塌糊涂|一塌糊涂)(?=[，,、\s]*(?:后来))/g, '$1。\n');
+  s = s.replace(/(彻底点响了我|彻底点醒了我)(?=[，,、\s]*(?:你的问题))/g, '$1。\n');
+  s = s.replace(/(交代当成的结果|交代当成了结果|工作当成结果)(?=[，,、\s]*(?:授权|如果|所以|但是|并且))/g, '$1。\n');
+  s = s.replace(/(等于直接汽权|等于直接气权|等于直接弃权)(?=[，,、\s]*(?:那一刻|这个时候|后来|从此|所以|管理者的检查力度|管理者))/g, '$1。\n');
+  s = s.replace(/(缺一不可|至关重要|显而易见)(?=[，,、\s]*(?:为什么|很多|大家))/g, '$1。\n');
+  s = s.replace(/(自由发挥)(?=[，,、\s]*(?:错|对|但是|然而|所以|很多人|很多))/g, '$1。\n');
+  s = s.replace(/(不知道自己要做什么)(?=[，,、\s]*(?:第二|其次|另外))/g, '$1。\n');
+  s = s.replace(/(三天打鱼两天晒网)(?=[，,、\s]*(?:第三|其次|最后))/g, '$1。\n');
 
   // 11. 韵律长度兜底：若一个句子连续超过 25 字没有任何逗号或停顿，寻找最近的词边界断开
   s = s.replace(/([^\n，。！？]{12,25})(，)?([^\n，。！？]{18,})/g, function(match, p1, comma, p2) {
@@ -1161,12 +1167,75 @@ function needsPunctuation(text) {
   return (puncs.length / cleanLen) < 0.025 || !/[，,、]/.test(text) || !/[。！？!?]/.test(text);
 }
 
+// 将 HTML 字符串按句号、问号、感叹号安全拆分为独立单句
+function splitHtmlIntoSentences(html) {
+  if (!html) return [];
+  const parts = [];
+  const tokens = html.split(/([。！？!?]+)/);
+  for (let i = 0; i < tokens.length; i += 2) {
+    const textPart = tokens[i]?.trim();
+    const puncPart = tokens[i + 1] || "";
+    if (textPart) {
+      let sent = textPart + (puncPart || "。");
+      // 检查标签未闭合情况（如 <mark> 在本句中未闭合）
+      const openMarks = (sent.match(/<mark\b[^>]*>/gi) || []).length;
+      const closeMarks = (sent.match(/<\/mark>/gi) || []).length;
+      if (openMarks > closeMarks) {
+        sent += "</mark>";
+      } else if (closeMarks > openMarks) {
+        sent = "<mark class=\"transcript-hl\">" + sent;
+      }
+      parts.push(sent);
+    }
+  }
+  return parts.length > 0 ? parts : [html];
+}
+
+// 全文合并、智能标点与单句独立成段：一个句号/问号/感叹号为一个段落
+function formatBySentences(rawText) {
+  if (!rawText) return [];
+
+  // 1. 全文合并为单一连续文本，消除原有切片换行干扰，并将全角半角标点统一规范
+  let s = String(rawText)
+    .replace(/\r\n/g, "\n")
+    .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/,/g, "，")
+    .replace(/\?/g, "？")
+    .replace(/!/g, "！")
+    .replace(/;/g, "；")
+    .replace(/:/g, "：")
+    .trim();
+
+  // 2. 启发式补全标点与语义断句标志
+  s = autoPunctuateChinese(s);
+
+  // 3. 核心分段逻辑：一个句号（以及？、！）为一个段落！
+  const sentences = [];
+  const tokens = s.split(/([。！？!?\n]+)/);
+  for (let i = 0; i < tokens.length; i += 2) {
+    const textPart = tokens[i]?.trim();
+    const puncPart = tokens[i + 1]?.trim() || "";
+    if (textPart) {
+      let line = textPart;
+      const punc = (puncPart.match(/[。！？!?]/) ? puncPart.replace(/\s+/g, "") : "") || "。";
+      line += punc;
+      // 清理句首句末多余逗号
+      line = line.replace(/，([。！？])/g, "$1").replace(/([。！？])\s*，/g, "$1");
+      sentences.push(line);
+    }
+  }
+
+  return sentences;
+}
+
 // 解析语音文案为段落列表 [{ isStarred: boolean, html: string }]
+// 核心规则：全文合并组织，一个句号/问号/感叹号为一个段落卡片显示
 function parseTranscriptParagraphs(raw) {
   if (!raw) return [];
   raw = String(raw).trim();
 
-  // 1. 如果包含 <p 或 transcript-para 或 <mark 标签，说明是已格式化/包含重点保存的 HTML
+  // 1. 如果包含 <p 或 transcript-para 或 <mark 标签，说明是已保存的 HTML
   if (raw.includes("<p") || raw.includes("transcript-para") || raw.includes("<mark")) {
     const temp = document.createElement("div");
     temp.innerHTML = raw;
@@ -1178,65 +1247,23 @@ function parseTranscriptParagraphs(raw) {
         const contentEl = p.querySelector(".para-content");
         let html = contentEl ? contentEl.innerHTML.trim() : p.innerHTML.trim();
         if (html) {
-          // 确保段末有标点（若末尾无标点，补齐句号）
-          const textOnly = html.replace(/<\/?[^>]+(>|$)/g, "").trim();
-          if (textOnly && !/[。！？!?…]$/.test(textOnly)) {
-            html += "。";
+          // 严格按句子拆分：一个句号为一个段落卡片！
+          const subSentences = splitHtmlIntoSentences(html);
+          for (let sub of subSentences) {
+            results.push({ isStarred, html: sub });
           }
-          results.push({ isStarred, html });
         }
       });
       if (results.length > 0) return results;
     }
   }
 
-  // 2. 检查纯文本是否缺少标点符号：若无逗号/句号，自动补齐标点与断句
-  if (needsPunctuation(raw)) {
-    raw = autoPunctuateChinese(raw);
-  }
-
-  // 3. 按换行拆分为自然段落
-  let segments = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
-
-  // 4. 如果段落过长（超过 80 字且包含多个句号），按句号进行适度细分
-  const fineSegments = [];
-  for (let seg of segments) {
-    if (seg.length > 80 && (seg.match(/[。！？!?]/g) || []).length >= 2) {
-      const subSentences = seg.match(/[^。！？!?]+[。！？!?]?/g) || [seg];
-      let currentGroup = [];
-      let currentLen = 0;
-      for (const sent of subSentences) {
-        currentGroup.push(sent);
-        currentLen += sent.length;
-        if (currentLen >= 40 || currentGroup.length >= 2) {
-          fineSegments.push(currentGroup.join("").trim());
-          currentGroup = [];
-          currentLen = 0;
-        }
-      }
-      if (currentGroup.length > 0) {
-        fineSegments.push(currentGroup.join("").trim());
-      }
-    } else {
-      fineSegments.push(seg);
-    }
-  }
-
-  // 5. 确保每个段落内部有逗号、末尾有句号/问号/感叹号
-  return fineSegments.map((seg) => {
-    let clean = seg.trim();
-    if (!/[。！？!?…]$/.test(clean)) {
-      clean += "。";
-    }
-    // 如果段落长于 16 字但没有任何逗号，尝试补逗号
-    if (clean.length > 16 && !/[，,、]/.test(clean)) {
-      clean = autoPunctuateChinese(clean);
-    }
-    return {
-      isStarred: false,
-      html: escapeHtml(clean)
-    };
-  });
+  // 2. 纯文本处理：全文合并，智能标点与一个句号一段显示
+  const sentences = formatBySentences(raw);
+  return sentences.map((sent) => ({
+    isStarred: false,
+    html: escapeHtml(sent)
+  }));
 }
 
 // 序列化段落列表为可持久化的 HTML 字符串
@@ -1788,14 +1815,13 @@ function renderTranscriptBox(container, rawText, noteId) {
           console.warn("API punctuate fallback to local:", apiErr);
         }
 
-        // 若接口未返回或离线，立即启用本地启发式断句标点引擎
-        if (!formatted) {
-          formatted = autoPunctuateChinese(plain);
-        }
+        // 统一按单句（一个句号/问号/感叹号一段）组织文本
+        const sentences = formatBySentences(formatted || plain);
+        formatted = sentences.join("\n");
 
         renderTranscriptBox(container, formatted, noteId);
         triggerTranscriptAutoSave(container, noteId);
-        showToast("🎉 已智能补齐逗号、句号并优化分段排版！");
+        showToast("🎉 已将全文合并，并按「一个句号一个段落」精准分段！");
       } catch (err) {
         showToast(`标点优化失败: ${err.message}`);
       } finally {
