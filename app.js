@@ -11,16 +11,66 @@ const state = {
   selectedImages: new Set()
 };
 
-// 工具函数：轻提示
-function showToast(message, duration = 2400) {
+// 工具函数：轻提示 (错误提示一直显示在底部，附带关闭按钮)
+function showToast(message, options = {}) {
   const toast = document.getElementById("toast-bar");
   if (!toast) return;
-  toast.textContent = message;
-  toast.classList.add("show");
+
   clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => {
-    toast.classList.remove("show");
-  }, duration);
+
+  const isErr = typeof options === "object" && options.isError
+    ? Boolean(options.isError)
+    : (typeof message === "string" && message.startsWith("❌"));
+
+  // 错误提示一直常驻显示在底部，直到用户手动关闭或重新解析
+  const isPersistent = typeof options === "object" && typeof options.persistent === "boolean"
+    ? options.persistent
+    : isErr;
+
+  const duration = typeof options === "number" ? options : (options.duration || 3000);
+
+  toast.className = `toast-bar show ${isErr ? "toast-error" : ""}`;
+  toast.innerHTML = "";
+
+  const contentSpan = document.createElement("span");
+  contentSpan.className = "toast-content";
+  contentSpan.textContent = message;
+  toast.appendChild(contentSpan);
+
+  // 若错误提示中包含【设置】或指定了 actionText，附带一键直达按钮
+  if ((typeof message === "string" && message.includes("【设置】")) || options.actionText) {
+    const actBtn = document.createElement("button");
+    actBtn.className = "toast-btn";
+    actBtn.textContent = options.actionText || "⚙️ 立即前往设置";
+    actBtn.onclick = () => {
+      if (typeof options.onAction === "function") {
+        options.onAction();
+      } else {
+        document.getElementById("modal-settings")?.classList.add("active");
+        const cookieEl = document.getElementById("settings-xhs-cookie");
+        if (cookieEl) cookieEl.value = state.xhsCookie || "";
+        const oldPinEl = document.getElementById("settings-old-pin");
+        if (oldPinEl) oldPinEl.value = state.pin || "1987";
+      }
+    };
+    toast.appendChild(actBtn);
+  }
+
+  // 错误或常驻提示显示独立的关闭按钮
+  if (isPersistent) {
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "toast-close";
+    closeBtn.setAttribute("aria-label", "关闭提示");
+    closeBtn.textContent = "✕";
+    closeBtn.onclick = () => {
+      toast.classList.remove("show");
+    };
+    toast.appendChild(closeBtn);
+  } else {
+    showToast.timer = setTimeout(() => {
+      toast.classList.remove("show");
+    }, duration);
+  }
 }
 
 // 格式化时间戳
@@ -77,6 +127,8 @@ async function startParsing() {
   if (btn) btn.disabled = true;
   if (btnText) btnText.style.display = "none";
   if (spinner) spinner.style.display = "inline-block";
+
+  document.getElementById("toast-bar")?.classList.remove("show");
 
   try {
     const reqHeaders = { "Content-Type": "application/json" };
