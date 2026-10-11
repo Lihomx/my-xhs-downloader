@@ -6,6 +6,7 @@ import {
   extractOriginalAssetToken,
   fetchNotePage,
   isDirectImageUrl,
+  normalizeCookieString,
   parseNoteHtml,
   validateAssetToken
 } from "../lib/xhs.js";
@@ -65,7 +66,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const cookie = req.headers?.["x-xhs-cookie"] || body.cookie || "";
+    const rawCookie = req.headers?.["x-xhs-cookie"] || body.cookie || "";
+    const cookie = normalizeCookieString(rawCookie);
     const { finalUrl, html } = await fetchNotePage(inputUrl, { cookie });
     let noteId = extractNoteId(finalUrl) || extractNoteId(inputUrl);
 

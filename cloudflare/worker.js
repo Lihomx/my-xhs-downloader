@@ -4,6 +4,7 @@ import video from '../api/video.js';
 import packageInfo from '../package.json' with { type: 'json' };
 import { parseWithFallback } from './parse-fallback.js';
 import { invokeHandler } from './http-adapter.js';
+import { normalizeCookieString } from '../lib/xhs.js';
 import {
   initDb,
   verifyPin,
@@ -85,7 +86,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               await changePin(env.DB, pin, body.newPin);
             }
             if (typeof body.xhsCookie === 'string') {
-              await setSetting(env.DB, 'xhs_cookie', body.xhsCookie.trim());
+              const cleanCookie = normalizeCookieString(body.xhsCookie);
+              await setSetting(env.DB, 'xhs_cookie', cleanCookie);
             }
             return json({ success: true, message: "设置已保存成功" });
           }

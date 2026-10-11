@@ -1,10 +1,53 @@
 import { makeZipBlob, makeNoteTextFileData } from "./lib/archive.js";
 
+// 智能规范化 Cookie 格式 (支持自动解析插件导出的 JSON 数组与多行文本)
+export function normalizeCookieString(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  let text = raw.trim();
+  if (!text) return "";
+
+  if (text.startsWith("[") || text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        const pairs = [];
+        for (const item of parsed) {
+          if (item && item.name && item.value !== undefined) {
+            pairs.push(`${item.name}=${item.value}`);
+          }
+        }
+        if (pairs.length > 0) return pairs.join("; ");
+      } else if (parsed && typeof parsed === "object") {
+        const pairs = [];
+        for (const [k, v] of Object.entries(parsed)) {
+          if (k && v !== undefined) pairs.push(`${k}=${v}`);
+        }
+        if (pairs.length > 0) return pairs.join("; ");
+      }
+    } catch {}
+  }
+
+  const lines = text.split(/[\r\n]+/);
+  const items = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(";");
+    for (const part of parts) {
+      const p = part.trim();
+      if (p && p.includes("=")) items.push(p);
+    }
+  }
+
+  if (items.length > 0) return items.join("; ");
+  return text.replace(/[\r\n\t]+/g, " ").trim();
+}
+
 // 全局状态
 const state = {
   pin: localStorage.getItem("xhs_pin") || "1987",
   autoClipboard: localStorage.getItem("xhs_auto_clipboard") !== "false",
-  xhsCookie: localStorage.getItem("xhs_cookie") || "",
+  xhsCookie: normalizeCookieString(localStorage.getItem("xhs_cookie") || ""),
   lastProcessedClipboard: "",
   currentParsedNote: null,
   activeDetailNote: null,
@@ -131,15 +174,16 @@ async function startParsing() {
   document.getElementById("toast-bar")?.classList.remove("show");
 
   try {
+    const cleanCookie = normalizeCookieString(state.xhsCookie);
     const reqHeaders = { "Content-Type": "application/json" };
-    if (state.xhsCookie) {
-      reqHeaders["x-xhs-cookie"] = state.xhsCookie;
+    if (cleanCookie) {
+      reqHeaders["x-xhs-cookie"] = cleanCookie;
     }
 
     const res = await fetch("/api/parse", {
       method: "POST",
       headers: reqHeaders,
-      body: JSON.stringify({ text, cookie: state.xhsCookie || "" })
+      body: JSON.stringify({ text, cookie: cleanCookie })
     });
 
     const data = await res.json();
@@ -706,7 +750,12 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-submit-change-pin")?.addEventListener("click", async () => {
     const oldPin = document.getElementById("settings-old-pin")?.value.trim() || state.pin;
     const newPin = document.getElementById("settings-new-pin")?.value.trim();
-    const cookieVal = document.getElementById("settings-xhs-cookie")?.value.trim() || "";
+    const rawCookie = document.getElementById("settings-xhs-cookie")?.value || "";
+    const cookieVal = normalizeCookieString(rawCookie);
+    const cookieInput = document.getElementById("settings-xhs-cookie");
+    if (cookieInput && cookieVal) {
+      cookieInput.value = cookieVal;
+    }
     const msg = document.getElementById("settings-msg");
 
     if (!oldPin) {
