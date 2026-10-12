@@ -996,6 +996,43 @@ function renderParseResult(note) {
     sourceBar.style.display = "none";
   }
 
+  // 笔记博主账号与主页链接展示
+  const authorBar = document.getElementById("result-author-bar");
+  const authorNameEl = document.getElementById("result-author-name");
+  const authorLinkEl = document.getElementById("result-author-link");
+  const copyAuthorBtn = document.getElementById("btn-copy-author-link");
+  const authorName = (note.authorName || note.user?.nickname || "").trim();
+  const authorProfileUrl = (note.authorProfileUrl || note.user?.profileUrl || (note.authorId || note.user?.userId ? `https://www.xiaohongshu.com/user/profile/${note.authorId || note.user?.userId}` : "")).trim();
+
+  if (authorBar && (authorName || authorProfileUrl)) {
+    authorBar.style.display = "flex";
+    if (authorNameEl) {
+      authorNameEl.textContent = authorName || "（未提供昵称）";
+    }
+    if (authorLinkEl) {
+      if (authorProfileUrl) {
+        authorLinkEl.style.display = "inline";
+        authorLinkEl.href = authorProfileUrl;
+        authorLinkEl.textContent = authorProfileUrl;
+      } else {
+        authorLinkEl.style.display = "none";
+      }
+    }
+    if (copyAuthorBtn) {
+      if (authorProfileUrl) {
+        copyAuthorBtn.style.display = "inline-block";
+        copyAuthorBtn.onclick = async () => {
+          await navigator.clipboard.writeText(authorProfileUrl);
+          showToast("已复制博主主页链接");
+        };
+      } else {
+        copyAuthorBtn.style.display = "none";
+      }
+    }
+  } else if (authorBar) {
+    authorBar.style.display = "none";
+  }
+
   // 图片处理
   const imgSection = document.getElementById("image-section");
   const imgGrid = document.getElementById("image-grid");
@@ -1128,6 +1165,9 @@ async function triggerCloudSync(note) {
           title: note.title,
           content: note.content,
           sourceUrl: note.sourceUrl || document.getElementById("input-text")?.value,
+          authorName: note.authorName || note.user?.nickname || "",
+          authorId: note.authorId || note.user?.userId || "",
+          authorProfileUrl: note.authorProfileUrl || note.user?.profileUrl || "",
           images: note.images || [],
           videos: note.videos || []
         }
@@ -2876,7 +2916,7 @@ async function loadNotes(search = "") {
           <div class="kb-card-preview">${item.content_preview || "暂无正文描述..."}</div>
           ${item.thoughts_preview ? `<div class="kb-card-thought-preview">💡 ${item.thoughts_preview}</div>` : ""}
           <div class="kb-card-footer">
-            <span>📅 ${formatTime(item.created_at)}</span>
+            <span>${item.author_name ? `👤 ${item.author_name} · ` : ''}📅 ${formatTime(item.created_at)}</span>
             <div style="display: flex; align-items: center; gap: 8px;">
               ${item.hasAudioOrVideo ? `
                 <label class="kb-shuffle-toggle ${item.inShuffle ? 'active' : ''}" title="勾选加入随身听随机播放库" onclick="event.stopPropagation();">
@@ -2976,6 +3016,43 @@ async function openNoteDetail(noteId) {
       }
     } else if (sourceBar) {
       sourceBar.style.display = "none";
+    }
+
+    // 渲染博主账号与主页链接
+    const modalAuthorBar = document.getElementById("modal-author-bar");
+    const modalAuthorName = document.getElementById("modal-author-name");
+    const modalAuthorLink = document.getElementById("modal-author-link");
+    const copyModalAuthorBtn = document.getElementById("btn-modal-copy-author-link");
+    const noteAuthorName = (note.authorName || note.user?.nickname || "").trim();
+    const noteAuthorProfileUrl = (note.authorProfileUrl || note.user?.profileUrl || (note.authorId || note.user?.userId ? `https://www.xiaohongshu.com/user/profile/${note.authorId || note.user?.userId}` : "")).trim();
+
+    if (modalAuthorBar && (noteAuthorName || noteAuthorProfileUrl)) {
+      modalAuthorBar.style.display = "flex";
+      if (modalAuthorName) {
+        modalAuthorName.textContent = noteAuthorName || "（未提供昵称）";
+      }
+      if (modalAuthorLink) {
+        if (noteAuthorProfileUrl) {
+          modalAuthorLink.style.display = "inline";
+          modalAuthorLink.href = noteAuthorProfileUrl;
+          modalAuthorLink.textContent = noteAuthorProfileUrl;
+        } else {
+          modalAuthorLink.style.display = "none";
+        }
+      }
+      if (copyModalAuthorBtn) {
+        if (noteAuthorProfileUrl) {
+          copyModalAuthorBtn.style.display = "inline-block";
+          copyModalAuthorBtn.onclick = async () => {
+            await navigator.clipboard.writeText(noteAuthorProfileUrl);
+            showToast("已复制博主主页链接");
+          };
+        } else {
+          copyModalAuthorBtn.style.display = "none";
+        }
+      }
+    } else if (modalAuthorBar) {
+      modalAuthorBar.style.display = "none";
     }
 
     // 渲染分类标签交互 Chips

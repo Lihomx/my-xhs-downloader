@@ -660,6 +660,9 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                   title: parsed.title,
                   content: parsed.content,
                   sourceUrl: parsed.sourceUrl || "",
+                  authorName: parsed.authorName || parsed.user?.nickname || "",
+                  authorId: parsed.authorId || parsed.user?.userId || "",
+                  authorProfileUrl: parsed.authorProfileUrl || parsed.user?.profileUrl || "",
                   images: parsed.images || [],
                   videos: parsed.videos || []
                 }).catch(err => console.error("Auto archive background error:", err));

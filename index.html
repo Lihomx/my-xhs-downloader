@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.18" />
+    <link rel="stylesheet" href="/style.css?v=2.0.19" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -157,6 +157,17 @@
                 <span class="source-label">🔗 原始采集链接：</span>
                 <a id="result-source-link" href="#" target="_blank" rel="noopener" class="source-link"></a>
                 <button id="btn-copy-source-link" class="btn-copy-link" type="button">复制链接</button>
+              </div>
+              <div id="result-author-bar" class="author-info-bar" style="display: none;">
+                <div class="author-row">
+                  <span class="author-label">👤 笔记博主：</span>
+                  <span id="result-author-name" class="author-name-text"></span>
+                </div>
+                <div class="author-row" style="margin-top: 4px;">
+                  <span class="author-label">🏠 博主主页：</span>
+                  <a id="result-author-link" href="#" target="_blank" rel="noopener" class="author-link"></a>
+                  <button id="btn-copy-author-link" class="btn-copy-link" type="button">复制主页</button>
+                </div>
               </div>
             </div>
           </div>
@@ -416,10 +427,23 @@
           <div id="modal-note-time" style="font-size: 12px; color: var(--text-sub); margin-bottom: 8px;"></div>
           
           <!-- 原始采集链接 -->
-          <div id="modal-source-bar" class="source-link-bar" style="display: none; margin-bottom: 14px;">
+          <div id="modal-source-bar" class="source-link-bar" style="display: none; margin-bottom: 8px;">
             <span class="source-label">🔗 原始采集链接：</span>
             <a id="modal-source-link" href="#" target="_blank" rel="noopener" class="source-link"></a>
             <button id="btn-modal-copy-source-link" class="btn-copy-link" type="button">复制链接</button>
+          </div>
+
+          <!-- 博主账号与主页链接 -->
+          <div id="modal-author-bar" class="author-info-bar" style="display: none; margin-bottom: 14px;">
+            <div class="author-row">
+              <span class="author-label">👤 笔记博主：</span>
+              <span id="modal-author-name" class="author-name-text"></span>
+            </div>
+            <div class="author-row" style="margin-top: 4px;">
+              <span class="author-label">🏠 博主主页：</span>
+              <a id="modal-author-link" href="#" target="_blank" rel="noopener" class="author-link"></a>
+              <button id="btn-modal-copy-author-link" class="btn-copy-link" type="button">复制主页</button>
+            </div>
           </div>
 
           <!-- 所属分类标签选择区 -->
@@ -898,6 +922,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.18"></script>
+    <script type="module" src="/app.js?v=2.0.19"></script>
   </body>
 </html>

@@ -1794,6 +1794,53 @@ input:checked + .slider:before {
   color: var(--primary);
 }
 
+/* 博主信息与主页链接栏 */
+.author-info-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.author-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.author-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.author-name-text {
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.author-link {
+  color: var(--primary);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.author-link:hover {
+  text-decoration: underline;
+}
+
 /* ========================================================
    语音转文字文案面板与高亮重点排版系统
    ======================================================== */

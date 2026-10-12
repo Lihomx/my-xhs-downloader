@@ -50,11 +50,14 @@ export async function initDb(db) {
       tags_json TEXT DEFAULT '[]',
       transcript TEXT DEFAULT '',
       source_url TEXT,
+      author_name TEXT DEFAULT '',
+      author_id TEXT DEFAULT '',
+      author_profile_url TEXT DEFAULT '',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )`).run();
 
-    // 数据库迁移：如果旧 notes 表没有 tags_json / transcript / audio_url / audio_r2_key 字段则动态补充
+    // 数据库迁移：如果旧 notes 表没有 tags_json / transcript / audio_url / audio_r2_key / author 字段则动态补充
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN tags_json TEXT DEFAULT '[]'").run();
     } catch {}
@@ -69,6 +72,15 @@ export async function initDb(db) {
     } catch {}
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN in_shuffle INTEGER DEFAULT 0").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN author_name TEXT DEFAULT ''").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN author_id TEXT DEFAULT ''").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN author_profile_url TEXT DEFAULT ''").run();
     } catch {}
 
     const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
@@ -404,9 +416,13 @@ export async function archiveNote(env, noteData) {
   }
   cleanTitle = cleanTitle || "小红书笔记";
 
+  const authorName = (noteData.authorName || noteData.user?.nickname || "").trim();
+  const authorId = (noteData.authorId || noteData.user?.userId || "").trim();
+  const authorProfileUrl = (noteData.authorProfileUrl || (authorId ? `https://www.xiaohongshu.com/user/profile/${authorId}` : "")).trim();
+
   await env.DB.prepare(`
-    INSERT INTO notes (id, title, content, cover_url, images_json, videos_json, thoughts, tags_json, source_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO notes (id, title, content, cover_url, images_json, videos_json, thoughts, tags_json, source_url, author_name, author_id, author_profile_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       content = excluded.content,
@@ -415,6 +431,9 @@ export async function archiveNote(env, noteData) {
       videos_json = excluded.videos_json,
       tags_json = excluded.tags_json,
       source_url = excluded.source_url,
+      author_name = excluded.author_name,
+      author_id = excluded.author_id,
+      author_profile_url = excluded.author_profile_url,
       updated_at = excluded.updated_at
   `).bind(
     noteId,
@@ -426,6 +445,9 @@ export async function archiveNote(env, noteData) {
     thoughts,
     JSON.stringify(tags),
     noteData.sourceUrl || "",
+    authorName,
+    authorId,
+    authorProfileUrl,
     createdAt,
     now
   ).run();
@@ -437,6 +459,9 @@ export async function archiveNote(env, noteData) {
     title: cleanTitle,
     coverUrl,
     tags,
+    authorName,
+    authorId,
+    authorProfileUrl,
     imagesCount: storedImages.length,
     videosCount: storedVideos.length,
     archivedAt: now
@@ -450,7 +475,7 @@ export async function listNotes(db, { search = "", tag = "", limit = 20, offset 
   if (!db) return { total: 0, items: [] };
   await initDb(db);
 
-  let query = "SELECT id, title, cover_url, tags_json, in_shuffle, audio_url, videos_json, SUBSTR(content, 1, 100) AS content_preview, SUBSTR(thoughts, 1, 80) AS thoughts_preview, created_at, updated_at FROM notes";
+  let query = "SELECT id, title, cover_url, tags_json, in_shuffle, audio_url, videos_json, author_name, author_id, author_profile_url, SUBSTR(content, 1, 100) AS content_preview, SUBSTR(thoughts, 1, 80) AS thoughts_preview, created_at, updated_at FROM notes";
   let countQuery = "SELECT COUNT(*) AS total FROM notes";
   const conditions = [];
   const params = [];
@@ -491,6 +516,9 @@ export async function listNotes(db, { search = "", tag = "", limit = 20, offset 
       id: r.id,
       title: r.title,
       cover_url: r.cover_url,
+      author_name: r.author_name || "",
+      author_id: r.author_id || "",
+      author_profile_url: r.author_profile_url || (r.author_id ? `https://www.xiaohongshu.com/user/profile/${r.author_id}` : ""),
       tags: Array.isArray(noteTags) ? noteTags : [],
       inShuffle: Boolean(r.in_shuffle),
       hasAudioOrVideo,
@@ -533,6 +561,9 @@ export async function getNote(db, id) {
     tags: Array.isArray(tags) ? tags : [],
     transcript: row.transcript || "",
     sourceUrl: row.source_url,
+    authorName: row.author_name || "",
+    authorId: row.author_id || "",
+    authorProfileUrl: row.author_profile_url || (row.author_id ? `https://www.xiaohongshu.com/user/profile/${row.author_id}` : ""),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
