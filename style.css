@@ -1949,6 +1949,8 @@ input:checked + .slider:before {
   padding-right: 8px;
   border-right: 1px solid #e2e8f0;
   user-select: none;
+  min-width: 56px;
+  flex-shrink: 0;
 }
 
 .para-num {
@@ -1956,6 +1958,33 @@ input:checked + .slider:before {
   color: #94a3b8;
   font-family: ui-monospace, monospace;
   font-weight: 600;
+}
+
+.para-time-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  color: #0369a1;
+  background: #e0f2fe;
+  border: 1px solid #bae6fd;
+  padding: 1px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.para-time-badge:hover {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #0284c7;
+  transform: scale(1.06);
 }
 
 .btn-para-star {

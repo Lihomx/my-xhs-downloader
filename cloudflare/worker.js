@@ -174,6 +174,11 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           const hallucinationPatterns = [
             /请务必使用简体中文.*?标点符号[。！!？?]?/g,
             /这是一段中文普通话演讲.*?标点符号[。！!？?]?/g,
+            /这是一段中文普通话演讲与知识分享口语录音[。！!？?]?/g,
+            /请准确听写文字.*?标点符号[。！!？?]?/g,
+            /请准确听写文字[。！!？?]?/g,
+            /使用简体中文及规范标点符号[。！!？?]?/g,
+            /普通话[，, ]*口语[，, ]*对话[，, ]*简体中文[。！!？?]?/g,
             /请不吝点赞.*?栏目[。！!？?]?/g,
             /请不吝点赞.*?支持[。！!？?]?/g,
             /欢迎订阅.*?频道[。！!？?]?/g,
@@ -248,8 +253,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               formData.append('model', isGroq ? 'whisper-large-v3' : 'whisper-1');
               formData.append('language', 'zh');
               formData.append('temperature', '0');
-              formData.append('response_format', 'json');
-              formData.append('prompt', '这是一段中文普通话演讲与知识分享口语录音。请准确听写文字，使用简体中文及规范标点符号。');
+              formData.append('response_format', 'verbose_json');
+              formData.append('prompt', '普通话，口语，对话，简体中文。');
 
               const aiRes = await fetch(endpoint, {
                 method: 'POST',
@@ -263,9 +268,16 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 const aiData = await aiRes.json();
                 const rawRecognized = aiData.text || '';
                 const cleanedText = cleanWhisperHallucinations(rawRecognized);
+                const segments = (aiData.segments || []).map(s => ({
+                  start: typeof s.start === 'number' ? s.start : 0,
+                  end: typeof s.end === 'number' ? s.end : 0,
+                  text: cleanWhisperHallucinations(s.text || '')
+                })).filter(s => Boolean(s.text.trim()));
+
                 return json({
                   success: true,
                   text: cleanedText,
+                  segments,
                   provider: isGroq ? 'groq' : 'custom',
                   model: isGroq ? 'whisper-large-v3' : 'whisper-1'
                 });
@@ -396,13 +408,14 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                     { role: 'user', content: rawText }
                   ],
                   temperature: 0.1,
-                  max_tokens: 3500
+                  max_tokens: 8192
                 })
               });
               if (groqChatRes.ok) {
                 const groqData = await groqChatRes.json();
                 const reply = groqData.choices?.[0]?.message?.content?.trim();
-                if (reply && reply.length >= rawText.length * 0.6) {
+                // 严格校验完整度：长度不得低于 85%，防止长文本被截断截尾
+                if (reply && reply.length >= rawText.length * 0.85) {
                   punctuatedText = reply;
                 }
               }

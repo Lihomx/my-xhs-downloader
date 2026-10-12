@@ -1446,8 +1446,70 @@ function formatBySentences(rawText) {
 }
 
 
-// 解析语音文案为段落列表 [{ isStarred: boolean, html: string }]
-// 核心规则：全文合并组织，一个句号/问号/感叹号为一个段落卡片显示
+// 时间戳格式化 (秒数转 MM:SS 或 HH:MM:SS)
+function formatTimestamp(sec) {
+  if (typeof sec !== "number" || isNaN(sec) || sec < 0) sec = 0;
+  const totalSec = Math.floor(sec);
+  const s = totalSec % 60;
+  const m = Math.floor((totalSec / 60) % 60);
+  const h = Math.floor(totalSec / 3600);
+  const sStr = String(s).padStart(2, "0");
+  const mStr = String(m).padStart(2, "0");
+  if (h > 0) {
+    return `${String(h).padStart(2, "0")}:${mStr}:${sStr}`;
+  }
+  return `${mStr}:${sStr}`;
+}
+
+// 时间戳字符串解析为秒数
+function parseTimestampToSeconds(str) {
+  if (!str) return 0;
+  const clean = String(str).replace(/[^\d:]/g, "").trim();
+  const parts = clean.split(":").map(Number);
+  if (parts.some(isNaN)) return 0;
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  } else if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  return 0;
+}
+
+// 同步跳转播放页面或弹窗中的媒体 (视频或音频)
+function seekAllMediaTo(seconds) {
+  if (typeof seconds !== "number" || isNaN(seconds) || seconds < 0) return;
+  const detailModal = document.getElementById("modal-note-detail");
+  const isModalActive = detailModal && (detailModal.classList.contains("active") || detailModal.style.display === "block" || detailModal.style.display === "flex");
+
+  const candidates = [];
+  if (isModalActive) {
+    candidates.push(document.getElementById("modal-video-player"));
+    candidates.push(document.getElementById("modal-audio-player"));
+  }
+  candidates.push(document.getElementById("video-player"));
+  candidates.push(document.getElementById("audio-player"));
+  candidates.push(document.getElementById("shuffle-audio-element"));
+
+  let sought = false;
+  for (const media of candidates) {
+    if (media && (media.src || media.currentSrc)) {
+      try {
+        media.currentTime = seconds;
+        media.play().catch(() => {});
+        sought = true;
+      } catch (e) {
+        console.warn("Media seek error:", e);
+      }
+    }
+  }
+
+  if (sought) {
+    showToast(`⏱️ 已跳转至 ${formatTimestamp(seconds)} 处同步播放`);
+  }
+}
+
+// 解析语音文案为段落列表 [{ isStarred: boolean, html: string, timeStr: string, timeSec: number|null }]
+// 核心规则：全文自然分段，一个句号/问号/感叹号为一个段落卡片显示，支持时间戳
 function parseTranscriptParagraphs(raw) {
   if (!raw) return [];
   raw = String(raw).trim();
@@ -1463,11 +1525,30 @@ function parseTranscriptParagraphs(raw) {
         const isStarred = p.classList.contains("para-starred");
         const contentEl = p.querySelector(".para-content");
         let html = contentEl ? contentEl.innerHTML.trim() : p.innerHTML.trim();
+
+        let timeSec = p.dataset.time !== undefined && p.dataset.time !== "" ? parseFloat(p.dataset.time) : null;
+        let timeStr = p.dataset.timestr || "";
+        const timeBtn = p.querySelector(".para-time-badge");
+        if (timeBtn) {
+          if (!timeStr) timeStr = timeBtn.textContent.replace(/[⏱️\s]/g, "");
+          if (timeSec === null && timeBtn.dataset.time) timeSec = parseFloat(timeBtn.dataset.time);
+          timeBtn.remove();
+        }
+
+        // 识别可能内嵌在 html 开头的时间戳如 [00:15] 或 ⏱️ 00:15
+        const m = html.match(/^(?:\[|⏱️\s*)(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\s+)/);
+        if (m) {
+          if (!timeStr) {
+            timeStr = m[1];
+            timeSec = parseTimestampToSeconds(m[1]);
+          }
+          html = html.slice(m[0].length).trim();
+        }
+
         if (html) {
-          // 严格按句子拆分：一个句号为一个段落卡片！
           const subSentences = splitHtmlIntoSentences(html);
           for (let sub of subSentences) {
-            results.push({ isStarred, html: sub });
+            results.push({ isStarred, html: sub, timeStr, timeSec });
           }
         }
       });
@@ -1475,10 +1556,44 @@ function parseTranscriptParagraphs(raw) {
     }
   }
 
-  // 2. 纯文本处理：全文合并，智能标点与一个句号一段显示
+  // 2. 纯文本处理：支持 [MM:SS] 时间戳、¶ 编号与自然分段
+  const lines = raw.split(/\r?\n+/).map(l => l.trim()).filter(Boolean);
+  const results = [];
+
+  for (const line of lines) {
+    let cleanLine = line;
+    let timeStr = "";
+    let timeSec = null;
+
+    const timeMatch = cleanLine.match(/^(?:\[|⏱️\s*)(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\s+)/);
+    if (timeMatch) {
+      timeStr = timeMatch[1];
+      timeSec = parseTimestampToSeconds(timeStr);
+      cleanLine = cleanLine.slice(timeMatch[0].length).trim();
+    }
+
+    cleanLine = cleanLine.replace(/^¶\s*\d+[:：\s]*/, "").trim();
+    if (!cleanLine) continue;
+
+    const sentences = formatBySentences(cleanLine);
+    for (const sent of sentences) {
+      results.push({
+        isStarred: false,
+        timeStr,
+        timeSec,
+        html: escapeHtml(sent)
+      });
+    }
+  }
+
+  if (results.length > 0) return results;
+
+  // 保底纯文本
   const sentences = formatBySentences(raw);
   return sentences.map((sent) => ({
     isStarred: false,
+    timeStr: "",
+    timeSec: null,
     html: escapeHtml(sent)
   }));
 }
@@ -1491,31 +1606,41 @@ function serializeTranscriptParagraphs(container) {
   paras.forEach((p) => {
     const isStarred = p.classList.contains("para-starred");
     const contentEl = p.querySelector(".para-content");
+    const timeBtn = p.querySelector(".para-time-badge");
+    const timeSec = timeBtn?.dataset?.time ?? p.dataset?.time ?? "";
+    const timeStr = timeBtn?.textContent?.replace(/[⏱️\s]/g, "") ?? p.dataset?.timestr ?? "";
     const html = contentEl ? contentEl.innerHTML.trim() : "";
     if (html) {
-      if (isStarred) {
-        parts.push(`<p class="para-starred">${html}</p>`);
-      } else {
-        parts.push(`<p>${html}</p>`);
-      }
+      const starAttr = isStarred ? ' class="para-starred"' : '';
+      const timeAttr = (timeSec !== "" && timeStr) ? ` data-time="${timeSec}" data-timestr="${timeStr}"` : '';
+      parts.push(`<p${starAttr}${timeAttr}>${html}</p>`);
     }
   });
   return parts.join("\n");
 }
 
-// 获取文案纯文本（剥离所有 HTML 标签，换行连接）
+// 获取文案纯文本（格式化为带时间戳和段落号的结构化纯文本）
 function getTranscriptPlainText(container) {
   if (!container) return "";
   const paras = container.querySelectorAll(".transcript-para");
   const lines = [];
-  paras.forEach((p) => {
+  paras.forEach((p, idx) => {
+    const num = (idx + 1).toString().padStart(2, "0");
     const contentEl = p.querySelector(".para-content");
+    const timeBtn = p.querySelector(".para-time-badge");
+    const timeStr = timeBtn ? timeBtn.textContent.replace(/[⏱️\s]/g, "") : (p.dataset?.timestr || "");
     if (contentEl) {
-      const text = contentEl.innerText || contentEl.textContent || "";
-      if (text.trim()) lines.push(text.trim());
+      const text = (contentEl.innerText || contentEl.textContent || "").trim();
+      if (text) {
+        if (timeStr) {
+          lines.push(`[${timeStr}] ¶ ${num}：${text}`);
+        } else {
+          lines.push(`¶ ${num}：${text}`);
+        }
+      }
     }
   });
-  return lines.join("\n\n");
+  return lines.join("\n");
 }
 
 // 获取全部重点摘要（星标重点段落 + 划词核心金句）
@@ -1529,6 +1654,9 @@ function getTranscriptHighlightsSummary(container) {
   paras.forEach((p, idx) => {
     const isStarred = p.classList.contains("para-starred");
     const contentEl = p.querySelector(".para-content");
+    const timeBtn = p.querySelector(".para-time-badge");
+    const timeStr = timeBtn ? timeBtn.textContent.replace(/[⏱️\s]/g, "") : (p.dataset?.timestr || "");
+    const timePrefix = timeStr ? `[${timeStr}] ` : "";
     if (!contentEl) return;
 
     const marks = contentEl.querySelectorAll("mark.transcript-hl");
@@ -1537,10 +1665,10 @@ function getTranscriptHighlightsSummary(container) {
     if (isStarred) {
       starCount++;
       const paraText = (contentEl.innerText || contentEl.textContent || "").trim();
-      summaryLines.push(`⭐ 【重点段落 ${idx + 1}】\n${paraText}`);
+      summaryLines.push(`⭐ 【重点段落 ${idx + 1}】${timePrefix}\n${paraText}`);
     } else if (markTexts.length > 0) {
       markCount += markTexts.length;
-      summaryLines.push(`✨ 【段落 ${idx + 1} 核心划词】: ${markTexts.map(t => `「${t}」`).join("、")}`);
+      summaryLines.push(`✨ 【段落 ${idx + 1} 核心划词】${timePrefix}: ${markTexts.map(t => `「${t}」`).join("、")}`);
     }
   });
 
@@ -1879,10 +2007,17 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
     const num = (idx + 1).toString().padStart(2, "0");
     const starClass = p.isStarred ? "active" : "";
     const paraClass = p.isStarred ? "transcript-para para-starred" : "transcript-para";
+    const timeBadgeHtml = p.timeStr ? `
+      <button type="button" class="para-time-badge" data-time="${p.timeSec ?? 0}" title="点击跳转至 ${p.timeStr} 播放视频">
+        ⏱️ ${p.timeStr}
+      </button>
+    ` : "";
+
     return `
-      <div class="${paraClass}" data-idx="${idx}">
+      <div class="${paraClass}" data-idx="${idx}" data-time="${p.timeSec ?? ''}" data-timestr="${p.timeStr || ''}">
         <div class="para-sidebar">
           <span class="para-num">¶ ${num}</span>
+          ${timeBadgeHtml}
           <button type="button" class="btn-para-star ${starClass}" title="${p.isStarred ? '取消重点段落' : '标记为重点段落'}">
             <svg class="star-icon" viewBox="0 0 24 24">
               <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
@@ -1941,9 +2076,16 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
     });
   });
 
-  // 2. 点击已有高亮标签直接触发操作浮动气泡
+  // 2. 点击时间戳跳转播放 & 点击高亮标签弹出浮动气泡
   if (wrap) {
     wrap.addEventListener("click", (e) => {
+      const timeBtn = e.target.closest(".para-time-badge");
+      if (timeBtn) {
+        e.stopPropagation();
+        const sec = parseFloat(timeBtn.dataset.time || "0");
+        seekAllMediaTo(sec);
+        return;
+      }
       const mark = e.target.closest("mark.transcript-hl");
       if (mark) {
         e.stopPropagation();
@@ -2023,37 +2165,34 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
       punctuateBtn.innerHTML = `⏳ 优化中...`;
 
       try {
-        const plain = getTranscriptPlainText(container);
-        if (!plain) return;
+        const paras = parseTranscriptParagraphs(container.innerHTML);
+        if (paras.length === 0) return;
 
-        let formatted = "";
-        // 优先尝试云端 Workers AI 标点大模型
-        try {
-          const res = await fetch("/api/punctuate", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-auth-pin": state.pin
-            },
-            body: JSON.stringify({ text: plain, noteId: noteId || container.dataset.noteId })
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success && data.text && data.text !== plain) {
-              formatted = data.text;
-            }
+        // 保持每段时间戳，并按一个句号/问号/感叹号为一个独立段落分段
+        const formattedParas = [];
+        for (const p of paras) {
+          const rawSentText = p.html.replace(/<[^>]+>/g, "").trim();
+          if (!rawSentText) continue;
+          const subSents = formatBySentences(rawSentText);
+          for (const s of subSents) {
+            formattedParas.push({
+              isStarred: p.isStarred,
+              timeStr: p.timeStr || "",
+              timeSec: p.timeSec ?? null,
+              html: escapeHtml(s)
+            });
           }
-        } catch (apiErr) {
-          console.warn("API punctuate fallback to local:", apiErr);
         }
 
-        // 统一按单句（一个句号/问号/感叹号一段）组织文本
-        const sentences = formatBySentences(formatted || plain);
-        formatted = sentences.join("\n");
+        const serialized = formattedParas.map(p => {
+          const timeAttr = (p.timeSec !== null && p.timeStr) ? ` data-time="${p.timeSec}" data-timestr="${p.timeStr}"` : '';
+          const starAttr = p.isStarred ? ' class="para-starred"' : '';
+          return `<p${starAttr}${timeAttr}>${p.html}</p>`;
+        }).join("\n");
 
-        renderTranscriptBox(container, formatted, noteId);
+        renderTranscriptBox(container, serialized, noteId);
         triggerTranscriptAutoSave(container, noteId);
-        showToast("🎉 已将全文合并，并按「一个句号一个段落」精准分段！");
+        showToast("🎉 已完成智能标点断句，并保留每段时间戳！");
       } catch (err) {
         showToast(`标点优化失败: ${err.message}`);
       } finally {
@@ -2110,6 +2249,7 @@ async function sendAudioChunkForTranscription(blob) {
 
   return {
     text: (data.text || "").trim(),
+    segments: Array.isArray(data.segments) ? data.segments : [],
     provider: data.provider || "cloudflare",
     model: data.model || ""
   };
@@ -2121,6 +2261,11 @@ function cleanWhisperHallucinationsClient(text) {
   const hallucinationPatterns = [
     /请务必使用简体中文.*?标点符号[。！!？?]?/g,
     /这是一段中文普通话演讲.*?标点符号[。！!？?]?/g,
+    /这是一段中文普通话演讲与知识分享口语录音[。！!？?]?/g,
+    /请准确听写文字.*?标点符号[。！!？?]?/g,
+    /请准确听写文字[。！!？?]?/g,
+    /使用简体中文及规范标点符号[。！!？?]?/g,
+    /普通话[，, ]*口语[，, ]*对话[，, ]*简体中文[。！!？?]?/g,
     /请不吝点赞.*?栏目[。！!？?]?/g,
     /请不吝点赞.*?支持[。！!？?]?/g,
     /欢迎订阅.*?频道[。！!？?]?/g,
@@ -2192,7 +2337,7 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
         : `音频共 ${durationStr}，正在通过 AI 进行精准转写...`;
     }
 
-    const transcribedParts = [];
+    const collectedItems = [];
     let detectedProvider = state.whisperProvider || "cloudflare";
 
     for (let i = 0; i < totalChunks; i++) {
@@ -2200,11 +2345,7 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
       const chunkIndex = i + 1;
       const percent = Math.round(((i) / totalChunks) * 100);
 
-      // 跳过纯静音分段，杜绝静音诱发的幻觉
-      if (chunk.isSilent && totalChunks > 1) {
-        continue;
-      }
-
+      // 绝不跳过任何分段（包含低音量片段），确保 100% 完整录音全部进入转写
       if (progressBar) progressBar.style.width = `${percent}%`;
       if (statusText) {
         statusText.textContent = totalChunks > 1
@@ -2235,71 +2376,81 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
         console.warn(`Chunk ${chunkIndex} error:`, lastErr);
       }
 
-      let text = (chunkResult?.text || "").trim();
-      text = cleanWhisperHallucinationsClient(text);
+      if (chunkResult) {
+        if (Array.isArray(chunkResult.segments) && chunkResult.segments.length > 0) {
+          for (const seg of chunkResult.segments) {
+            let segText = (seg.text || "").trim();
+            segText = cleanWhisperHallucinationsClient(segText);
+            if (!segText) continue;
 
-      if (text) {
-        // 如果与上一分段内容完全相同（模型死循环幻觉），不重复追加
-        if (transcribedParts.length === 0 || transcribedParts[transcribedParts.length - 1] !== text) {
-          transcribedParts.push(text);
-
-          // 实时流式呈现在预览区
-          if (livePreview) {
-            livePreview.style.display = "block";
-            livePreview.textContent = transcribedParts.join("\n\n");
-            livePreview.scrollTop = livePreview.scrollHeight;
+            const absStart = Math.max(0, Math.floor(chunk.startTime + (typeof seg.start === "number" ? seg.start : 0)));
+            // 防止连续复读幻觉
+            if (collectedItems.length > 0 && collectedItems[collectedItems.length - 1].text === segText) {
+              continue;
+            }
+            collectedItems.push({
+              timeSec: absStart,
+              timeStr: formatTimestamp(absStart),
+              text: segText
+            });
           }
+        } else {
+          // 兼容无 segments 返回的服务商
+          let text = (chunkResult.text || "").trim();
+          text = cleanWhisperHallucinationsClient(text);
+          if (text) {
+            const sentences = formatBySentences(text);
+            const chunkSpan = Math.max(1, (chunk.endTime || chunk.startTime + chunkDuration) - chunk.startTime);
+            sentences.forEach((sent, sIdx) => {
+              const absStart = Math.max(0, Math.floor(chunk.startTime + (sIdx / Math.max(1, sentences.length)) * chunkSpan));
+              if (collectedItems.length === 0 || collectedItems[collectedItems.length - 1].text !== sent) {
+                collectedItems.push({
+                  timeSec: absStart,
+                  timeStr: formatTimestamp(absStart),
+                  text: sent
+                });
+              }
+            });
+          }
+        }
+
+        // 实时流式呈现在预览区
+        if (livePreview && collectedItems.length > 0) {
+          livePreview.style.display = "block";
+          livePreview.textContent = collectedItems.map(it => `[${it.timeStr}] ${it.text}`).join("\n\n");
+          livePreview.scrollTop = livePreview.scrollHeight;
         }
       }
     }
 
     if (progressBar) progressBar.style.width = "100%";
 
-    const fullTranscript = transcribedParts.join("\n\n").trim();
-    if (!fullTranscript) {
+    const fullTranscript = collectedItems.map(it => `[${it.timeStr}] ${it.text}`).join("\n\n").trim();
+    if (!fullTranscript || collectedItems.length === 0) {
       throw new Error("未能识别出有效语音或音频中无清晰人声");
     }
 
     if (statusText) {
-      statusText.textContent = "✨ 语音提取完成，正在进行智能标点与「一个句号一段」排版...";
+      statusText.textContent = "✨ 语音提取完成，正在组织带时间戳的段落排版...";
     }
 
-    let finalTranscript = fullTranscript;
-    const targetNoteId = noteId || (state.activeDetailNote?.id);
-
-    // 自动调用大模型智能标点与口语同音字纠错接口
-    try {
-      const punctuateRes = await fetch("/api/punctuate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-auth-pin": state.pin
-        },
-        body: JSON.stringify({
-          text: fullTranscript,
-          noteId: targetNoteId
-        })
-      });
-      if (punctuateRes.ok) {
-        const pData = await punctuateRes.json();
-        if (pData.success && pData.text && pData.text.length >= fullTranscript.length * 0.6) {
-          finalTranscript = pData.text;
-        }
+    // 组织为带时间戳的完整文本：每一个完整单句独立成一个自然段卡片
+    const finalLines = [];
+    for (const item of collectedItems) {
+      const subSents = formatBySentences(item.text);
+      for (const sent of subSents) {
+        finalLines.push(`[${item.timeStr}] ${sent}`);
       }
-    } catch (pErr) {
-      console.warn("Auto punctuate error, falling back to local:", pErr);
     }
-
-    // 严格按「一个句号/问号/感叹号一段」排版
-    const sentences = formatBySentences(finalTranscript);
-    finalTranscript = sentences.join("\n");
+    const finalTranscript = finalLines.join("\n");
+    const targetNoteId = noteId || (state.activeDetailNote?.id);
 
     // 渲染最终文案结果面板
     renderTranscriptBox(container, finalTranscript, noteId, detectedProvider);
     if (detectedProvider === "groq") {
-      showToast(`⚡ 视频文案已由 Groq 提取并完成智能断句排版 (共 ${sentences.length} 个段落)！`);
+      showToast(`⚡ 视频文案已由 Groq Whisper Large-v3 提取并生成精准时间戳 (共 ${finalLines.length} 个段落)！`);
     } else {
-      showToast(`🎉 视频语音文案已提取完成 (共 ${sentences.length} 个段落)！`);
+      showToast(`🎉 视频语音文案已提取完成 (共 ${finalLines.length} 个段落)！`);
     }
 
     if (targetNoteId) {
