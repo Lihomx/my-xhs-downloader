@@ -2373,13 +2373,24 @@ function attachMediaSyncListeners() {
 }
 
 // 发送单个音频切片至后端 Whisper 接口，安全兼容 JSON 与异常响应
-async function sendAudioChunkForTranscription(blob) {
+async function sendAudioChunkForTranscription(blob, options = {}) {
+  const headers = {
+    "x-auth-pin": state.pin,
+    "Content-Type": "audio/wav"
+  };
+  if (options.prompt) {
+    headers["x-whisper-prompt"] = encodeURIComponent(options.prompt.slice(-150));
+  }
+  if (options.temperature !== undefined) {
+    headers["x-whisper-temperature"] = String(options.temperature);
+  }
+  if (options.model) {
+    headers["x-whisper-model"] = options.model;
+  }
+
   const res = await fetch("/api/transcribe", {
     method: "POST",
-    headers: {
-      "x-auth-pin": state.pin,
-      "Content-Type": "audio/wav"
-    },
+    headers,
     body: blob
   });
 
@@ -2429,6 +2440,7 @@ function cleanWhisperHallucinationsClient(text) {
     /请准确听写文字[。！!？?]?/g,
     /使用简体中文及规范标点符号[。！!？?]?/g,
     /普通话[，, ]*口语[，, ]*对话[，, ]*简体中文[。！!？?]?/g,
+    /普通话视频对话录音.*?口述内容[。！!？?]?/g,
     /请不吝点赞.*?栏目[。！!？?]?/g,
     /请不吝点赞.*?支持[。！!？?]?/g,
     /欢迎订阅.*?频道[。！!？?]?/g,
@@ -2480,10 +2492,10 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
 
   try {
     const isGroq = state.whisperProvider === "groq" || Boolean(document.getElementById("settings-whisper-key")?.value);
-    // 切片时长优化为 45 秒：切片总数减半，彻底远离 API 频率限制 (429)，且每段上下文更丰富
-    const chunkDuration = 45;
+    // 切片时长优化为 20 秒：严格契合 Whisper 30s 声学窗口，大幅减少因背景杂音/转场特效触发的早停遗漏
+    const chunkDuration = 20;
 
-    const { duration, chunks } = await extractAudioChunksFromMedia(mediaUrl, (msg) => {
+    const { duration, chunks, sliceAudioBlob } = await extractAudioChunksFromMedia(mediaUrl, (msg) => {
       if (statusText) statusText.textContent = msg;
     }, chunkDuration);
 
@@ -2496,12 +2508,13 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
 
     if (statusText) {
       statusText.textContent = totalChunks > 1
-        ? `音频共 ${durationStr}，已智能切分为 ${totalChunks} 个分段并发起 AI 识别...`
+        ? `音频共 ${durationStr}，已智能切分为 ${totalChunks} 个分段并发起 AI 深度识别...`
         : `音频共 ${durationStr}，正在通过 AI 进行精准转写...`;
     }
 
     const collectedItems = [];
     let detectedProvider = state.whisperProvider || "cloudflare";
+    let lastChunkSentence = "";
 
     for (let i = 0; i < totalChunks; i++) {
       const chunk = chunks[i];
@@ -2516,12 +2529,18 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
           : "正在通过 AI (Whisper) 深度识别文本，请稍候...";
       }
 
+      // 上下文顺延：将上一段末尾语句作为本次转写 Prompt，维持上下文语义连贯，防止 Whisper 换段早停或幻觉
+      const carryPrompt = lastChunkSentence ? lastChunkSentence.slice(-60) : "";
+
       // 携带多轮指数退避重试机制 (最多 4 次，绝不静默丢失任何切片)
       let chunkResult = null;
       let lastErr = null;
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
-          chunkResult = await sendAudioChunkForTranscription(chunk.blob);
+          chunkResult = await sendAudioChunkForTranscription(chunk.blob, {
+            prompt: carryPrompt,
+            temperature: 0.2
+          });
           if (chunkResult?.provider) {
             detectedProvider = chunkResult.provider;
           }
@@ -2539,14 +2558,17 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
         }
       }
 
-      // 请求之间保留轻量缓冲延迟 (400ms)，避免突发并发打满 API 频率
-      await new Promise((r) => setTimeout(r, 400));
+      // 请求之间保留轻量缓冲延迟 (350ms)，避免突发并发打满 API 频率
+      await new Promise((r) => setTimeout(r, 350));
 
       if (lastErr && !chunkResult?.text) {
         console.warn(`Chunk ${chunkIndex} all attempts failed:`, lastErr);
       }
 
       if (chunkResult) {
+        let maxSegEnd = 0;
+        const chunkSpan = chunk.duration || (chunk.endTime - chunk.startTime);
+
         if (Array.isArray(chunkResult.segments) && chunkResult.segments.length > 0) {
           for (const seg of chunkResult.segments) {
             let segText = (seg.text || "").trim();
@@ -2555,6 +2577,7 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
 
             const segStart = typeof seg.start === "number" ? seg.start : 0;
             const segEnd = typeof seg.end === "number" ? seg.end : segStart + 2;
+            if (segEnd > maxSegEnd) maxSegEnd = segEnd;
             const segDuration = Math.max(1, segEnd - segStart);
 
             // 拆分为单句并进行时间戳内插，避免多个独立句子共享完全相同的时间戳
@@ -2576,7 +2599,6 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
           text = cleanWhisperHallucinationsClient(text);
           if (text) {
             const sentences = formatBySentences(text);
-            const chunkSpan = Math.max(1, (chunk.endTime || chunk.startTime + chunkDuration) - chunk.startTime);
             sentences.forEach((sent, sIdx) => {
               const absStart = Math.max(0, Math.floor(chunk.startTime + (sIdx / Math.max(1, sentences.length)) * chunkSpan));
               if (collectedItems.length === 0 || collectedItems[collectedItems.length - 1].text !== sent) {
@@ -2588,6 +2610,74 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
               }
             });
           }
+        }
+
+        // 核心：早停自愈补录机制 (Early Cutoff Rescue)
+        // 若切片时长 >= 8 秒，但识别末尾距离切片终点大于 4 秒，说明 Whisper 因背景乐/音效提前中止。
+        // 自动截取后半段音频并以微调温度发起补录，彻底杜绝遗漏！
+        const chunkRemainingSec = chunkSpan - maxSegEnd;
+        if (maxSegEnd > 0 && chunkRemainingSec >= 4.0 && sliceAudioBlob) {
+          const rescueStartSec = chunk.startTime + maxSegEnd;
+          const rescueEndSec = chunk.endTime;
+          console.warn(`[早停检测] 分段 ${chunkIndex} 在 ${maxSegEnd.toFixed(1)}s 提前中断，后半段剩余 ${chunkRemainingSec.toFixed(1)}s，正在自动补录...`);
+          if (statusText) {
+            statusText.textContent = `检测到分段 [${chunkIndex}/${totalChunks}] 遇到音效干扰提前中止，正在自动补录后半段音频...`;
+          }
+
+          try {
+            const rescueBlob = sliceAudioBlob(rescueStartSec, rescueEndSec);
+            const rescuePrompt = collectedItems[collectedItems.length - 1]?.text || carryPrompt;
+            const rescueResult = await sendAudioChunkForTranscription(rescueBlob, {
+              prompt: rescuePrompt,
+              temperature: 0.3
+            });
+
+            if (rescueResult) {
+              const rescueSegments = Array.isArray(rescueResult.segments) ? rescueResult.segments : [];
+              if (rescueSegments.length > 0) {
+                for (const rSeg of rescueSegments) {
+                  let rText = cleanWhisperHallucinationsClient((rSeg.text || "").trim());
+                  if (!rText) continue;
+                  const rStart = typeof rSeg.start === "number" ? rSeg.start : 0;
+                  const rEnd = typeof rSeg.end === "number" ? rSeg.end : rStart + 2;
+                  const rDur = Math.max(1, rEnd - rStart);
+                  const subSents = formatBySentences(rText);
+                  subSents.forEach((sent, sIdx) => {
+                    const absStart = Math.max(0, Math.floor(rescueStartSec + rStart + (sIdx / Math.max(1, subSents.length)) * rDur));
+                    if (collectedItems.length === 0 || collectedItems[collectedItems.length - 1].text !== sent) {
+                      collectedItems.push({
+                        timeSec: absStart,
+                        timeStr: formatTimestamp(absStart),
+                        text: sent
+                      });
+                    }
+                  });
+                }
+              } else if (rescueResult.text) {
+                let rText = cleanWhisperHallucinationsClient((rescueResult.text || "").trim());
+                if (rText) {
+                  const subSents = formatBySentences(rText);
+                  const rSpan = Math.max(1, rescueEndSec - rescueStartSec);
+                  subSents.forEach((sent, sIdx) => {
+                    const absStart = Math.max(0, Math.floor(rescueStartSec + (sIdx / Math.max(1, subSents.length)) * rSpan));
+                    if (collectedItems.length === 0 || collectedItems[collectedItems.length - 1].text !== sent) {
+                      collectedItems.push({
+                        timeSec: absStart,
+                        timeStr: formatTimestamp(absStart),
+                        text: sent
+                      });
+                    }
+                  });
+                }
+              }
+            }
+          } catch (rescueErr) {
+            console.warn(`分段 ${chunkIndex} 早停补录异常:`, rescueErr);
+          }
+        }
+
+        if (collectedItems.length > 0) {
+          lastChunkSentence = collectedItems[collectedItems.length - 1].text;
         }
 
         // 实时流式呈现在预览区

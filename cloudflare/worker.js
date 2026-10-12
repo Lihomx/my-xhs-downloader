@@ -181,6 +181,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             /请准确听写文字[。！!？?]?/g,
             /使用简体中文及规范标点符号[。！!？?]?/g,
             /普通话[，, ]*口语[，, ]*对话[，, ]*简体中文[。！!？?]?/g,
+            /普通话视频对话录音.*?口述内容[。！!？?]?/g,
             /请不吝点赞.*?栏目[。！!？?]?/g,
             /请不吝点赞.*?支持[。！!？?]?/g,
             /欢迎订阅.*?频道[。！!？?]?/g,
@@ -231,6 +232,15 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           // 自动判断生效引擎
           const effectiveProvider = whisperProvider || (thirdPartyKey ? 'groq' : 'cloudflare');
 
+          // 接收客户端可选传递的上下文参数与调优配置
+          const rawPrompt = request.headers.get('x-whisper-prompt');
+          let clientPrompt = '';
+          if (rawPrompt) {
+            try { clientPrompt = decodeURIComponent(rawPrompt); } catch { clientPrompt = rawPrompt; }
+          }
+          const clientTemp = request.headers.get('x-whisper-temperature') || '0.2';
+          const clientModel = request.headers.get('x-whisper-model');
+
           // 分支 A: 选用 Groq 或 自定义第三方
           if (effectiveProvider === 'groq' || effectiveProvider === 'custom') {
             if (!thirdPartyKey) {
@@ -243,6 +253,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             try {
               const endpoint = thirdPartyEndpoint || 'https://api.groq.com/openai/v1/audio/transcriptions';
               const isGroq = endpoint.includes('groq') || effectiveProvider === 'groq';
+              const targetModel = clientModel || (isGroq ? 'whisper-large-v3' : 'whisper-1');
               const formData = new FormData();
               
               // 构造标准 WAV 文件体
@@ -251,20 +262,47 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 : new Blob([audioBuffer], { type: 'audio/wav' });
               formData.append('file', audioFile, 'audio.wav');
               
-              // Groq 官方推荐：优先使用 whisper-large-v3 (32层完整解码器，15.5亿参数，抗噪与中文防死循环能力远优于4层蒸馏版turbo)
-              formData.append('model', isGroq ? 'whisper-large-v3' : 'whisper-1');
+              formData.append('model', targetModel);
               formData.append('language', 'zh');
-              formData.append('temperature', '0');
+              formData.append('temperature', clientTemp);
               formData.append('response_format', 'verbose_json');
-              formData.append('prompt', '普通话，口语，对话，简体中文。');
+              if (clientPrompt) {
+                formData.append('prompt', clientPrompt);
+              } else {
+                formData.append('prompt', '普通话视频对话录音，请完整转写所有口述内容。');
+              }
 
-              const aiRes = await fetch(endpoint, {
+              let aiRes = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                   Authorization: `Bearer ${thirdPartyKey.trim()}`
                 },
                 body: formData
               });
+
+              // 如果 Groq whisper-large-v3 遇到偶发异常且不是 401，自动切换至 whisper-large-v3-turbo 快速兜底
+              if (!aiRes.ok && isGroq && targetModel === 'whisper-large-v3' && aiRes.status !== 401) {
+                try {
+                  const retryFormData = new FormData();
+                  retryFormData.append('file', audioFile, 'audio.wav');
+                  retryFormData.append('model', 'whisper-large-v3-turbo');
+                  retryFormData.append('language', 'zh');
+                  retryFormData.append('temperature', clientTemp);
+                  retryFormData.append('response_format', 'verbose_json');
+                  if (clientPrompt) retryFormData.append('prompt', clientPrompt);
+
+                  const turboRes = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${thirdPartyKey.trim()}` },
+                    body: retryFormData
+                  });
+                  if (turboRes.ok) {
+                    aiRes = turboRes;
+                  }
+                } catch (retryErr) {
+                  console.warn("Groq whisper-large-v3-turbo retry error:", retryErr);
+                }
+              }
 
               if (aiRes.ok) {
                 const aiData = await aiRes.json();
