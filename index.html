@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.19" />
+    <link rel="stylesheet" href="/style.css?v=2.0.20" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -237,11 +237,14 @@
             <!-- 搜索与操作按钮行 -->
             <div class="kb-search-row">
               <div class="kb-search-box">
-                <input type="text" id="kb-search-input" class="search-input" placeholder="🔍 检索标题、正文、随笔批注或标签..." />
+                <input type="text" id="kb-search-input" class="search-input" placeholder="🔍 检索标题、正文、博主、随笔批注或标签..." />
               </div>
               <div class="kb-actions-group">
                 <button id="btn-kb-usage-pill" class="btn btn-secondary kb-usage-pill-btn" type="button" title="点击查看 Cloudflare 免费配额与存储用量">
                   ☁️ <span id="kb-usage-text">硬盘: 计算中...</span>
+                </button>
+                <button id="btn-backfill-authors" class="btn btn-secondary" type="button" title="从原链接重新识别补齐历史已收藏笔记博主与主页">
+                  🔄 补全博主信息
                 </button>
                 <button id="btn-add-tag-quick" class="btn btn-secondary" type="button">
                   ➕ 新建分类
@@ -253,10 +256,26 @@
               </div>
             </div>
 
-            <!-- 分类标签筛选栏 (横向平滑滚动胶囊列表，极佳适配平板和手机触摸操作) -->
+            <!-- 分类模式切换条：🏷️ 标签分类 vs 👤 博主分类 -->
+            <div class="kb-filter-nav">
+              <div class="filter-mode-tabs">
+                <button id="btn-mode-tags" class="filter-mode-tab active" type="button">
+                  🏷️ 标签分类
+                </button>
+                <button id="btn-mode-authors" class="filter-mode-tab" type="button">
+                  👤 博主分类 <span id="kb-authors-count-badge" class="filter-mode-badge">0</span>
+                </button>
+              </div>
+              <div id="kb-active-filter-indicator" class="active-filter-indicator" style="display: none;">
+                <span id="kb-active-filter-text">当前筛选: ...</span>
+                <button id="btn-clear-active-filter" class="btn-clear-filter" type="button" title="清除此筛选">✕</button>
+              </div>
+            </div>
+
+            <!-- 分类标签与博主胶囊筛选栏 (横向平滑滚动) -->
             <div class="kb-tags-bar">
               <div id="kb-tag-list" class="kb-tags-scroll-wrap">
-                <!-- 动态插入分类标签胶囊 -->
+                <!-- 动态插入分类标签胶囊 或 博主胶囊 -->
               </div>
             </div>
           </div>
@@ -438,8 +457,14 @@
             <div class="author-row">
               <span class="author-label">👤 笔记博主：</span>
               <span id="modal-author-name" class="author-name-text"></span>
+              <button id="btn-modal-filter-by-author" class="btn btn-ghost btn-sm" type="button" style="font-size: 11px; padding: 2px 8px; margin-left: 6px; display: none;" title="在知识库中筛选该博主的全部笔记">
+                🔍 查看TA的笔记
+              </button>
+              <button id="btn-modal-refresh-author" class="btn btn-secondary btn-sm" type="button" style="font-size: 11px; padding: 2px 8px; margin-left: auto;" title="从原采集链接重新获取博主和主页">
+                🔄 重新识别博主
+              </button>
             </div>
-            <div class="author-row" style="margin-top: 4px;">
+            <div id="modal-author-link-row" class="author-row" style="margin-top: 4px;">
               <span class="author-label">🏠 博主主页：</span>
               <a id="modal-author-link" href="#" target="_blank" rel="noopener" class="author-link"></a>
               <button id="btn-modal-copy-author-link" class="btn-copy-link" type="button">复制主页</button>
@@ -608,6 +633,35 @@
         </div>
         <div class="modal-footer" style="justify-content: flex-end;">
           <button id="btn-cancel-cleanup" class="btn btn-secondary" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 批量补全已收藏笔记博主信息弹窗 -->
+    <div id="modal-backfill-authors" class="modal-overlay">
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header">
+          <h3 style="font-size: 16px;">🔄 批量补全历史笔记博主信息</h3>
+          <button id="btn-close-backfill-modal" class="drawer-close" type="button">✕</button>
+        </div>
+        <div class="modal-body" style="padding: 18px 20px;">
+          <p id="backfill-intro-text" style="font-size: 13px; color: var(--text-sub); line-height: 1.6; margin-bottom: 14px;">
+            正在检查未识别博主的笔记...
+          </p>
+          <div id="backfill-progress-wrap" style="display: none; margin-bottom: 14px;">
+            <div style="background: var(--surface-alt); border-radius: 6px; height: 10px; overflow: hidden; border: 1px solid var(--border);">
+              <div id="backfill-progress-fill" style="background: var(--primary); height: 100%; width: 0%; transition: width 0.25s ease;"></div>
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px; display: flex; justify-content: space-between;">
+              <span id="backfill-status-desc">准备中...</span>
+              <span id="backfill-status-num">0%</span>
+            </div>
+          </div>
+          <div id="backfill-result-list" style="max-height: 160px; overflow-y: auto; font-size: 12px; color: var(--text-muted); display: none; background: var(--surface-alt); border-radius: 6px; padding: 8px 12px; border: 1px solid var(--border); line-height: 1.6;"></div>
+        </div>
+        <div class="modal-footer" style="padding: 12px 20px; justify-content: flex-end; gap: 8px;">
+          <button id="btn-cancel-backfill" class="btn btn-secondary" type="button">取消</button>
+          <button id="btn-start-backfill" class="btn btn-primary" type="button">开始自动补全</button>
         </div>
       </div>
     </div>
@@ -922,6 +976,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.19"></script>
+    <script type="module" src="/app.js?v=2.0.20"></script>
   </body>
 </html>

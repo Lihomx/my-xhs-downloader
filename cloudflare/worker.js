@@ -28,6 +28,8 @@ import {
   saveNoteAudio,
   toggleNoteShuffle,
   getShuffleNotes,
+  updateNoteAuthor,
+  getAuthorsWithCounts,
   getStorageUsage
 } from './storage-service.js';
 
@@ -526,10 +528,11 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
           const search = url.searchParams.get('q') || '';
           const tag = url.searchParams.get('tag') || '';
+          const author = url.searchParams.get('author') || '';
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 20));
           const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
 
-          const result = await listNotes(env.DB, { search, tag, limit, offset });
+          const result = await listNotes(env.DB, { search, tag, author, limit, offset });
           return json({ success: true, ...result });
         }
 
@@ -541,6 +544,35 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
           const items = await getShuffleNotes(env.DB);
           return json({ success: true, items });
+        }
+
+        // 5.2 获取所有笔记博主分类及统计: GET /api/authors
+        if (path === '/api/authors' && request.method === 'GET') {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const data = await getAuthorsWithCounts(env.DB);
+          return json({ success: true, ...data });
+        }
+
+        // 5.3 获取未识别博主的笔记列表 (用于批量补全): GET /api/notes-missing-authors
+        if (path === '/api/notes-missing-authors' && request.method === 'GET') {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const rows = await env.DB.prepare(`
+            SELECT id, title, source_url
+            FROM notes
+            WHERE (author_name IS NULL OR TRIM(author_name) = '')
+              AND source_url IS NOT NULL
+              AND TRIM(source_url) != ''
+            ORDER BY created_at DESC
+            LIMIT 100
+          `).all();
+
+          return json({ success: true, count: rows.results?.length || 0, items: rows.results || [] });
         }
 
         // 6. 单篇笔记操作 (GET, DELETE, 更新感想, 更新标签)
@@ -606,6 +638,55 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (parts[1] === 'shuffle' && request.method === 'PUT') {
             const body = await request.json().catch(() => ({}));
             const res = await toggleNoteShuffle(env.DB, noteId, body.inShuffle);
+            return json({ success: true, ...res });
+          }
+
+          // 重新识别/补全单篇笔记博主信息: POST /api/notes/:id/refresh-author
+          if (parts[1] === 'refresh-author' && request.method === 'POST') {
+            const note = await getNote(env.DB, noteId);
+            if (!note) return json({ success: false, message: "笔记不存在" }, 404);
+            if (!note.sourceUrl) return json({ success: false, message: "该笔记缺少原始采集链接，无法自动补全" }, 400);
+
+            let savedCookie = '';
+            if (env.DB) {
+              savedCookie = await getSetting(env.DB, 'xhs_cookie', '');
+            }
+
+            const parseReq = new Request(new URL('/api/parse', request.url), {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                ...(savedCookie ? { 'x-xhs-cookie': savedCookie } : {})
+              },
+              body: JSON.stringify({ text: note.sourceUrl })
+            });
+
+            const parseResp = await parseWithFallback(parseReq, env, nativeRequest => invokeHandler(nodeRoutes['/api/parse'], nativeRequest));
+            const parsedData = await parseResp.json();
+
+            if (!parseResp.ok || !parsedData?.success) {
+              return json({
+                success: false,
+                message: parsedData?.message || "从小红书重新获取博主信息失败，笔记可能已下架或需要配置 Cookie"
+              }, 422);
+            }
+
+            const authorName = (parsedData.authorName || parsedData.user?.nickname || "").trim();
+            const authorId = (parsedData.authorId || parsedData.user?.userId || "").trim();
+            const authorProfileUrl = (parsedData.authorProfileUrl || parsedData.user?.profileUrl || "").trim();
+
+            const updated = await updateNoteAuthor(env.DB, noteId, { authorName, authorId, authorProfileUrl });
+            return json({ success: true, ...updated });
+          }
+
+          // 手动修改博主信息: PUT /api/notes/:id/author
+          if (parts[1] === 'author' && request.method === 'PUT') {
+            const body = await request.json().catch(() => ({}));
+            const res = await updateNoteAuthor(env.DB, noteId, {
+              authorName: body.authorName,
+              authorId: body.authorId,
+              authorProfileUrl: body.authorProfileUrl
+            });
             return json({ success: true, ...res });
           }
 

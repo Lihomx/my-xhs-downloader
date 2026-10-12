@@ -1291,6 +1291,90 @@ input:checked + .slider:before {
   border: 1px solid var(--border);
 }
 
+/* 分类模式切换导航条 (标签分类 vs 博主分类) */
+.kb-filter-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-mode-tabs {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  gap: 4px;
+}
+
+.filter-mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.filter-mode-tab:hover {
+  color: var(--text-main);
+}
+
+.filter-mode-tab.active {
+  background: #ffffff;
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.filter-mode-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(234, 44, 67, 0.1);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.active-filter-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-weight: 500;
+}
+
+.btn-clear-filter {
+  background: none;
+  border: none;
+  color: #1d4ed8;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  font-weight: 700;
+}
+
+.btn-clear-filter:hover {
+  color: #dc2626;
+}
+
 /* 分类标签横向平滑滚动条 (平板与手机极佳触摸体验) */
 .kb-tags-bar {
   overflow-x: auto;

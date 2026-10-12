@@ -469,9 +469,9 @@ export async function archiveNote(env, noteData) {
 }
 
 /**
- * 分页与关键词、分类检索笔记列表
+ * 分页与关键词、分类、博主检索笔记列表
  */
-export async function listNotes(db, { search = "", tag = "", limit = 20, offset = 0 } = {}) {
+export async function listNotes(db, { search = "", tag = "", author = "", limit = 20, offset = 0 } = {}) {
   if (!db) return { total: 0, items: [] };
   await initDb(db);
 
@@ -487,10 +487,17 @@ export async function listNotes(db, { search = "", tag = "", limit = 20, offset 
     params.push(`%"${tag}"%`);
   }
 
+  if (author === '__unknown__') {
+    conditions.push("(author_name IS NULL OR TRIM(author_name) = '')");
+  } else if (author && author !== '__all__') {
+    conditions.push("author_name = ?");
+    params.push(author);
+  }
+
   if (search.trim()) {
     const keyword = `%${search.trim()}%`;
-    conditions.push("(title LIKE ? OR content LIKE ? OR thoughts LIKE ? OR tags_json LIKE ?)");
-    params.push(keyword, keyword, keyword, keyword);
+    conditions.push("(title LIKE ? OR content LIKE ? OR thoughts LIKE ? OR tags_json LIKE ? OR author_name LIKE ?)");
+    params.push(keyword, keyword, keyword, keyword, keyword);
   }
 
   if (conditions.length > 0) {
@@ -609,6 +616,60 @@ export async function updateNoteDetail(db, id, { title, content }) {
     .bind(cleanTitle, cleanContent, now, id)
     .run();
   return { id, title: cleanTitle, content: cleanContent, updatedAt: now };
+}
+
+/**
+ * 更新单篇笔记的博主信息
+ */
+export async function updateNoteAuthor(db, id, { authorName, authorId, authorProfileUrl } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+  const now = Date.now();
+  const cleanName = typeof authorName === "string" ? authorName.trim() : "";
+  const cleanId = typeof authorId === "string" ? authorId.trim() : "";
+  const cleanUrl = typeof authorProfileUrl === "string" ? authorProfileUrl.trim() : (cleanId ? `https://www.xiaohongshu.com/user/profile/${cleanId}` : "");
+
+  await db.prepare("UPDATE notes SET author_name = ?, author_id = ?, author_profile_url = ?, updated_at = ? WHERE id = ?")
+    .bind(cleanName, cleanId, cleanUrl, now, id)
+    .run();
+  return { id, authorName: cleanName, authorId: cleanId, authorProfileUrl: cleanUrl, updatedAt: now };
+}
+
+/**
+ * 获取所有笔记博主列表及其笔记统计
+ */
+export async function getAuthorsWithCounts(db) {
+  if (!db) return { total: 0, unknownCount: 0, authors: [] };
+  await initDb(db);
+
+  const totalRow = await db.prepare("SELECT COUNT(*) AS total FROM notes").first();
+  const total = totalRow?.total || 0;
+
+  const unknownRow = await db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM notes
+    WHERE author_name IS NULL OR TRIM(author_name) = ''
+  `).first();
+  const unknownCount = unknownRow?.c || 0;
+
+  const rows = await db.prepare(`
+    SELECT author_name, author_id, author_profile_url, COUNT(*) AS count
+    FROM notes
+    WHERE author_name IS NOT NULL AND TRIM(author_name) != ''
+    GROUP BY author_name
+    ORDER BY count DESC, author_name COLLATE NOCASE ASC
+  `).all();
+
+  return {
+    total,
+    unknownCount,
+    authors: (rows.results || []).map(r => ({
+      name: r.author_name,
+      id: r.author_id,
+      profileUrl: r.author_profile_url || (r.author_id ? `https://www.xiaohongshu.com/user/profile/${r.author_id}` : ""),
+      count: r.count
+    }))
+  };
 }
 
 /**

@@ -235,6 +235,10 @@ const state = {
   currentCategory: "__all__",
   tags: [],
   tagCounts: {},
+  filterMode: "tags",
+  currentAuthor: "__all__",
+  authors: [],
+  unknownAuthorCount: 0,
   // 批量采集队列状态
   batchQueue: [],
   isBatchRunning: false,
@@ -2794,7 +2798,7 @@ function renderStorageUsageUI(data) {
   }
 }
 
-// 知识库分类与笔记加载
+// 知识库分类、博主与笔记加载
 async function loadTags() {
   const tagListContainer = document.getElementById("kb-tag-list");
   const totalBadge = document.getElementById("kb-total-badge");
@@ -2818,9 +2822,41 @@ async function loadTags() {
       totalBadge.textContent = `${state.tagCounts.__all__ || 0} 篇`;
     }
 
-    renderTagsList();
+    if (state.filterMode === "tags") {
+      renderTagsList();
+    }
+    // 同时刷新博主数据
+    loadAuthors();
   } catch (err) {
     console.warn("loadTags error:", err);
+  }
+}
+
+async function loadAuthors() {
+  const badge = document.getElementById("kb-authors-count-badge");
+  try {
+    const res = await fetch("/api/authors", {
+      headers: { "x-auth-pin": state.pin }
+    });
+    if (res.status === 401) {
+      showPinLockView(true);
+      return;
+    }
+    const data = await res.json();
+    if (!data.success) return;
+
+    state.authors = data.authors || [];
+    state.unknownAuthorCount = data.unknownCount || 0;
+
+    if (badge) {
+      badge.textContent = state.authors.length;
+    }
+
+    if (state.filterMode === "authors") {
+      renderAuthorsList();
+    }
+  } catch (err) {
+    console.warn("loadAuthors error:", err);
   }
 }
 
@@ -2857,13 +2893,95 @@ function renderTagsList() {
     item.addEventListener("click", () => switchCategory(tag, tag));
     tagListContainer.appendChild(item);
   });
+
+  updateActiveFilterIndicator();
+}
+
+function renderAuthorsList() {
+  const tagListContainer = document.getElementById("kb-tag-list");
+  if (!tagListContainer) return;
+  tagListContainer.innerHTML = "";
+
+  const allItem = document.createElement("div");
+  allItem.className = `kb-tag-item ${state.currentAuthor === "__all__" ? "active" : ""}`;
+  const totalNotes = state.tagCounts.__all__ || 0;
+  allItem.innerHTML = `
+    <span>👤 全部博主</span>
+    <span class="tag-badge">${totalNotes}</span>
+  `;
+  allItem.addEventListener("click", () => switchAuthor("__all__", "全部博主"));
+  tagListContainer.appendChild(allItem);
+
+  state.authors.forEach((author) => {
+    const item = document.createElement("div");
+    item.className = `kb-tag-item ${state.currentAuthor === author.name ? "active" : ""}`;
+    item.innerHTML = `
+      <span>👤 ${author.name}</span>
+      <span class="tag-badge">${author.count || 0}</span>
+    `;
+    item.addEventListener("click", () => switchAuthor(author.name, `博主: ${author.name}`));
+    tagListContainer.appendChild(item);
+  });
+
+  if (state.unknownAuthorCount > 0) {
+    const unkItem = document.createElement("div");
+    unkItem.className = `kb-tag-item ${state.currentAuthor === "__unknown__" ? "active" : ""}`;
+    unkItem.innerHTML = `
+      <span>❓ 未识别博主</span>
+      <span class="tag-badge">${state.unknownAuthorCount}</span>
+    `;
+    unkItem.addEventListener("click", () => switchAuthor("__unknown__", "未识别博主"));
+    tagListContainer.appendChild(unkItem);
+  }
+
+  updateActiveFilterIndicator();
+}
+
+function setFilterMode(mode) {
+  state.filterMode = mode;
+  const btnTags = document.getElementById("btn-mode-tags");
+  const btnAuthors = document.getElementById("btn-mode-authors");
+  if (mode === "tags") {
+    btnTags?.classList.add("active");
+    btnAuthors?.classList.remove("active");
+    renderTagsList();
+  } else {
+    btnAuthors?.classList.add("active");
+    btnTags?.classList.remove("active");
+    renderAuthorsList();
+  }
+  updateActiveFilterIndicator();
+}
+
+function updateActiveFilterIndicator() {
+  const indicator = document.getElementById("kb-active-filter-indicator");
+  const textEl = document.getElementById("kb-active-filter-text");
+  if (!indicator || !textEl) return;
+
+  const hasAuthorFilter = state.currentAuthor && state.currentAuthor !== "__all__";
+  const hasTagFilter = state.currentCategory && state.currentCategory !== "__all__";
+
+  if (state.filterMode === "authors" && hasTagFilter) {
+    indicator.style.display = "inline-flex";
+    textEl.textContent = `🏷️ 兼选分类: ${state.currentCategory === '__uncategorized__' ? '未分类' : state.currentCategory}`;
+  } else if (state.filterMode === "tags" && hasAuthorFilter) {
+    indicator.style.display = "inline-flex";
+    textEl.textContent = `👤 兼选博主: ${state.currentAuthor === '__unknown__' ? '未识别博主' : state.currentAuthor}`;
+  } else {
+    indicator.style.display = "none";
+  }
 }
 
 function switchCategory(category, label) {
   state.currentCategory = category;
-  const hint = document.getElementById("kb-filter-hint");
-  if (hint) hint.textContent = label;
   renderTagsList();
+  const searchVal = document.getElementById("kb-search-input")?.value || "";
+  loadNotes(searchVal);
+}
+
+function switchAuthor(author, label) {
+  state.currentAuthor = author;
+  renderAuthorsList();
   const searchVal = document.getElementById("kb-search-input")?.value || "";
   loadNotes(searchVal);
 }
@@ -2876,7 +2994,13 @@ async function loadNotes(search = "") {
   gridContainer.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding: 40px; color: var(--text-sub);">正在加载知识库笔记...</div>`;
 
   try {
-    const url = `/api/notes?limit=100&tag=${encodeURIComponent(state.currentCategory)}&q=${encodeURIComponent(search)}`;
+    let url = `/api/notes?limit=100&q=${encodeURIComponent(search)}`;
+    if (state.currentCategory && state.currentCategory !== "__all__") {
+      url += `&tag=${encodeURIComponent(state.currentCategory)}`;
+    }
+    if (state.currentAuthor && state.currentAuthor !== "__all__") {
+      url += `&author=${encodeURIComponent(state.currentAuthor)}`;
+    }
     const res = await fetch(url, {
       headers: { "x-auth-pin": state.pin }
     });
@@ -3022,37 +3146,87 @@ async function openNoteDetail(noteId) {
     const modalAuthorBar = document.getElementById("modal-author-bar");
     const modalAuthorName = document.getElementById("modal-author-name");
     const modalAuthorLink = document.getElementById("modal-author-link");
+    const modalAuthorLinkRow = document.getElementById("modal-author-link-row");
     const copyModalAuthorBtn = document.getElementById("btn-modal-copy-author-link");
+    const filterByAuthorBtn = document.getElementById("btn-modal-filter-by-author");
+    const refreshAuthorBtn = document.getElementById("btn-modal-refresh-author");
+
     const noteAuthorName = (note.authorName || note.user?.nickname || "").trim();
     const noteAuthorProfileUrl = (note.authorProfileUrl || note.user?.profileUrl || (note.authorId || note.user?.userId ? `https://www.xiaohongshu.com/user/profile/${note.authorId || note.user?.userId}` : "")).trim();
 
-    if (modalAuthorBar && (noteAuthorName || noteAuthorProfileUrl)) {
+    if (modalAuthorBar) {
       modalAuthorBar.style.display = "flex";
       if (modalAuthorName) {
-        modalAuthorName.textContent = noteAuthorName || "（未提供昵称）";
+        modalAuthorName.textContent = noteAuthorName || "（未识别博主）";
       }
-      if (modalAuthorLink) {
+
+      if (modalAuthorLinkRow) {
         if (noteAuthorProfileUrl) {
-          modalAuthorLink.style.display = "inline";
-          modalAuthorLink.href = noteAuthorProfileUrl;
-          modalAuthorLink.textContent = noteAuthorProfileUrl;
+          modalAuthorLinkRow.style.display = "flex";
+          if (modalAuthorLink) {
+            modalAuthorLink.href = noteAuthorProfileUrl;
+            modalAuthorLink.textContent = noteAuthorProfileUrl;
+          }
+          if (copyModalAuthorBtn) {
+            copyModalAuthorBtn.onclick = async () => {
+              await navigator.clipboard.writeText(noteAuthorProfileUrl);
+              showToast("已复制博主主页链接");
+            };
+          }
         } else {
-          modalAuthorLink.style.display = "none";
+          modalAuthorLinkRow.style.display = "none";
         }
       }
-      if (copyModalAuthorBtn) {
-        if (noteAuthorProfileUrl) {
-          copyModalAuthorBtn.style.display = "inline-block";
-          copyModalAuthorBtn.onclick = async () => {
-            await navigator.clipboard.writeText(noteAuthorProfileUrl);
-            showToast("已复制博主主页链接");
+
+      // 🔍 查看TA的笔记 快捷按钮
+      if (filterByAuthorBtn) {
+        if (noteAuthorName) {
+          filterByAuthorBtn.style.display = "inline-flex";
+          filterByAuthorBtn.onclick = () => {
+            closeNoteModal();
+            setFilterMode("authors");
+            switchAuthor(noteAuthorName, `博主: ${noteAuthorName}`);
           };
         } else {
-          copyModalAuthorBtn.style.display = "none";
+          filterByAuthorBtn.style.display = "none";
         }
       }
-    } else if (modalAuthorBar) {
-      modalAuthorBar.style.display = "none";
+
+      // 🔄 重新识别 / 补全博主 按钮
+      if (refreshAuthorBtn) {
+        refreshAuthorBtn.textContent = noteAuthorName ? "🔄 重新识别博主" : "🔄 补全博主信息";
+        refreshAuthorBtn.onclick = async () => {
+          if (!note.sourceUrl) {
+            showToast("❌ 该笔记未记录原始采集链接，无法自动补全博主", { isError: true });
+            return;
+          }
+          refreshAuthorBtn.disabled = true;
+          refreshAuthorBtn.textContent = "⏳ 正在识别...";
+          showToast("⏳ 正在从小红书重新获取博主信息...");
+          try {
+            const r = await fetch(`/api/notes/${encodeURIComponent(note.id)}/refresh-author`, {
+              method: "POST",
+              headers: { "x-auth-pin": state.pin }
+            });
+            const d = await r.json();
+            if (d.success) {
+              note.authorName = d.authorName;
+              note.authorId = d.authorId;
+              note.authorProfileUrl = d.authorProfileUrl;
+              showToast(`✅ 成功获取博主信息：${d.authorName || '已补全'}`);
+              openNoteDetail(note.id);
+              loadAuthors();
+              loadNotes();
+            } else {
+              showToast(`❌ 补全失败: ${d.message || "未能识别"}`, { isError: true });
+            }
+          } catch (e) {
+            showToast(`❌ 请求异常: ${e.message}`, { isError: true });
+          } finally {
+            refreshAuthorBtn.disabled = false;
+          }
+        };
+      }
     }
 
     // 渲染分类标签交互 Chips
@@ -4153,6 +4327,149 @@ document.addEventListener("DOMContentLoaded", () => {
       loadNotes(e.target.value);
     }, 300);
   });
+
+  // 分类模式切换：🏷️ 标签分类 vs 👤 博主分类
+  document.getElementById("btn-mode-tags")?.addEventListener("click", () => setFilterMode("tags"));
+  document.getElementById("btn-mode-authors")?.addEventListener("click", () => setFilterMode("authors"));
+  document.getElementById("btn-clear-active-filter")?.addEventListener("click", () => {
+    if (state.filterMode === "authors") {
+      state.currentCategory = "__all__";
+    } else {
+      state.currentAuthor = "__all__";
+    }
+    updateActiveFilterIndicator();
+    loadNotes(document.getElementById("kb-search-input")?.value || "");
+  });
+
+  // 批量补全历史已收藏笔记博主信息
+  const btnBackfill = document.getElementById("btn-backfill-authors");
+  const modalBackfill = document.getElementById("modal-backfill-authors");
+  const btnCloseBackfill = document.getElementById("btn-close-backfill-modal");
+  const btnCancelBackfill = document.getElementById("btn-cancel-backfill");
+  const btnStartBackfill = document.getElementById("btn-start-backfill");
+  const backfillIntro = document.getElementById("backfill-intro-text");
+  const progressWrap = document.getElementById("backfill-progress-wrap");
+  const progressFill = document.getElementById("backfill-progress-fill");
+  const statusDesc = document.getElementById("backfill-status-desc");
+  const statusNum = document.getElementById("backfill-status-num");
+  const resultList = document.getElementById("backfill-result-list");
+
+  let pendingBackfillNotes = [];
+
+  if (btnBackfill) {
+    btnBackfill.addEventListener("click", async () => {
+      btnBackfill.disabled = true;
+      showToast("🔍 正在扫描未识别博主的笔记...");
+      try {
+        const res = await fetch("/api/notes-missing-authors", {
+          headers: { "x-auth-pin": state.pin }
+        });
+        const data = await res.json();
+        if (!data.success) {
+          showToast(`❌ 查询失败: ${data.message || "未知错误"}`, { isError: true });
+          return;
+        }
+
+        pendingBackfillNotes = data.items || [];
+        if (pendingBackfillNotes.length === 0) {
+          showToast("🎉 所有已收藏笔记均已补全博主信息，无需补充！");
+          return;
+        }
+
+        if (backfillIntro) {
+          backfillIntro.innerHTML = `共检测到 <strong>${pendingBackfillNotes.length} 篇</strong> 未识别博主的历史笔记。<br>点击下方按钮将自动通过原始采集链接逐篇从小红书重新识别博主昵称与主页。`;
+        }
+        if (progressWrap) progressWrap.style.display = "none";
+        if (resultList) {
+          resultList.style.display = "none";
+          resultList.innerHTML = "";
+        }
+        if (btnStartBackfill) {
+          btnStartBackfill.disabled = false;
+          btnStartBackfill.style.display = "inline-flex";
+          btnStartBackfill.textContent = "开始自动补全";
+        }
+        modalBackfill?.classList.add("active");
+      } catch (err) {
+        showToast(`❌ 查询失败: ${err.message}`, { isError: true });
+      } finally {
+        btnBackfill.disabled = false;
+      }
+    });
+  }
+
+  const closeBackfillModal = () => {
+    modalBackfill?.classList.remove("active");
+  };
+  btnCloseBackfill?.addEventListener("click", closeBackfillModal);
+  btnCancelBackfill?.addEventListener("click", closeBackfillModal);
+  modalBackfill?.addEventListener("click", (e) => {
+    if (e.target === modalBackfill) closeBackfillModal();
+  });
+
+  if (btnStartBackfill) {
+    btnStartBackfill.addEventListener("click", async () => {
+      if (!pendingBackfillNotes.length) return;
+      btnStartBackfill.disabled = true;
+      if (progressWrap) progressWrap.style.display = "block";
+      if (resultList) {
+        resultList.style.display = "block";
+        resultList.innerHTML = "";
+      }
+
+      let successCount = 0;
+      let failCount = 0;
+      const total = pendingBackfillNotes.length;
+
+      for (let i = 0; i < total; i++) {
+        const item = pendingBackfillNotes[i];
+        const pct = Math.round(((i + 1) / total) * 100);
+        if (progressFill) progressFill.style.width = `${pct}%`;
+        if (statusNum) statusNum.textContent = `${pct}% (${i + 1}/${total})`;
+        if (statusDesc) statusDesc.textContent = `正在识别: ${item.title?.slice(0, 16) || item.id}...`;
+
+        try {
+          const r = await fetch(`/api/notes/${encodeURIComponent(item.id)}/refresh-author`, {
+            method: "POST",
+            headers: { "x-auth-pin": state.pin }
+          });
+          const d = await r.json();
+          const logItem = document.createElement("div");
+          if (d.success) {
+            successCount++;
+            logItem.style.color = "#166534";
+            logItem.textContent = `✅ [${item.title?.slice(0, 14) || item.id}] 识别成功: ${d.authorName || '博主已补齐'}`;
+          } else {
+            failCount++;
+            logItem.style.color = "#b91c1c";
+            logItem.textContent = `⚠️ [${item.title?.slice(0, 14) || item.id}] 未能识别: ${d.message || '网络或状态限制'}`;
+          }
+          if (resultList) {
+            resultList.appendChild(logItem);
+            resultList.scrollTop = resultList.scrollHeight;
+          }
+        } catch (e) {
+          failCount++;
+          const logItem = document.createElement("div");
+          logItem.style.color = "#b91c1c";
+          logItem.textContent = `❌ [${item.title?.slice(0, 14) || item.id}] 请求异常: ${e.message}`;
+          if (resultList) {
+            resultList.appendChild(logItem);
+          }
+        }
+
+        // 短暂缓冲 350ms
+        await new Promise(r => setTimeout(r, 350));
+      }
+
+      if (statusDesc) statusDesc.textContent = `完成！成功 ${successCount} 篇，失败 ${failCount} 篇`;
+      btnStartBackfill.textContent = "已完成补全";
+      showToast(`🎉 批量补全完成！成功补齐 ${successCount} 篇博主信息`);
+      loadTags();
+      loadAuthors();
+      loadNotes();
+    });
+  }
 
   // 标签管理弹窗
   const manageTagsModal = document.getElementById("modal-manage-tags");
