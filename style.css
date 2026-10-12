@@ -1987,6 +1987,45 @@ input:checked + .slider:before {
   transform: scale(1.06);
 }
 
+/* 视频/语音实时播放同步跟随 (滚动字幕模式) */
+.transcript-para.para-playing {
+  background: #f0f9ff !important;
+  border-color: #0284c7 !important;
+  box-shadow: 0 0 0 1.5px #0284c7, 0 4px 14px rgba(2, 132, 199, 0.16) !important;
+  transform: translateX(4px);
+  transition: all 0.25s ease;
+}
+
+.transcript-para.para-playing .para-num {
+  color: #0284c7 !important;
+  font-weight: 700 !important;
+}
+
+.transcript-para.para-playing .para-time-badge {
+  background: #0284c7 !important;
+  color: #ffffff !important;
+  border-color: #0284c7 !important;
+  box-shadow: 0 1px 4px rgba(2, 132, 199, 0.35) !important;
+  animation: pulse-badge 1.8s infinite alternate ease-in-out;
+}
+
+@keyframes pulse-badge {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.08); }
+}
+
+.transcript-para.para-playing .para-content {
+  color: #0f172a !important;
+  font-weight: 600 !important;
+}
+
+.transcript-btn.btn-toggle-autoscroll.active {
+  background: #e0f2fe;
+  color: #0369a1;
+  border-color: #bae6fd;
+  font-weight: 600;
+}
+
 .btn-para-star {
   background: transparent;
   border: none;

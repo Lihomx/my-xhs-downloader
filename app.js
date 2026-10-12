@@ -2043,6 +2043,9 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
         <button type="button" class="transcript-btn btn-toggle-filter" title="只显示标记了重点的段落和文字">
           <span class="btn-star-mark">⭐</span> 仅看重点
         </button>
+        <button type="button" class="transcript-btn btn-toggle-autoscroll active" title="播放视频/音频时，文案像滚动字幕/歌词一样跟随滚动">
+          🔄 滚动跟随
+        </button>
         <button type="button" class="transcript-btn btn-append-thoughts" title="将高亮重点或全文追加到下方感想批注">
           📌 追加重点到感想
         </button>
@@ -2211,6 +2214,118 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
 
   // 初始化重点统计徽章
   updateTranscriptStatsBadge(container);
+
+  // 绑定滚动字幕跟随控制器
+  setupTranscriptPlaybackSync(container);
+}
+
+// 全局播放字幕跟随控制器 (滚动字幕模式)
+let _userScrollTimeout = null;
+let _isUserScrolling = false;
+let _isAutoScrollEnabled = true;
+
+function setupTranscriptPlaybackSync(container) {
+  if (!container) return;
+  const wrap = container.querySelector(".transcript-paragraphs-wrap");
+  if (!wrap) return;
+
+  // 用户手动滚动时暂停自动居中 3.5 秒，避免打乱用户自由阅读
+  wrap.addEventListener("wheel", () => {
+    _isUserScrolling = true;
+    clearTimeout(_userScrollTimeout);
+    _userScrollTimeout = setTimeout(() => { _isUserScrolling = false; }, 3500);
+  }, { passive: true });
+
+  wrap.addEventListener("touchmove", () => {
+    _isUserScrolling = true;
+    clearTimeout(_userScrollTimeout);
+    _userScrollTimeout = setTimeout(() => { _isUserScrolling = false; }, 3500);
+  }, { passive: true });
+
+  const autoScrollBtn = container.querySelector(".btn-toggle-autoscroll");
+  if (autoScrollBtn) {
+    autoScrollBtn.addEventListener("click", () => {
+      _isAutoScrollEnabled = !_isAutoScrollEnabled;
+      autoScrollBtn.classList.toggle("active", _isAutoScrollEnabled);
+      autoScrollBtn.innerHTML = _isAutoScrollEnabled
+        ? `🔄 滚动跟随`
+        : `⏸️ 暂停跟随`;
+      showToast(_isAutoScrollEnabled ? "🔄 已开启播放文案滚动跟随" : "⏸️ 已暂停播放文案自动跟随");
+    });
+  }
+
+  attachMediaSyncListeners();
+}
+
+// 视频/音频播放时间更新时，同步高亮并滚动到对应文案卡片
+function syncTranscriptWithCurrentTime(currentTime) {
+  if (typeof currentTime !== "number" || isNaN(currentTime) || currentTime < 0) return;
+
+  const containers = [
+    document.getElementById("modal-transcript-panel"),
+    document.getElementById("transcript-panel")
+  ].filter(c => c && c.style.display !== "none" && c.offsetHeight > 0);
+
+  for (const container of containers) {
+    const wrap = container.querySelector(".transcript-paragraphs-wrap");
+    if (!wrap) continue;
+
+    const paras = Array.from(wrap.querySelectorAll(".transcript-para"));
+    if (paras.length === 0) continue;
+
+    let activePara = null;
+    for (let i = 0; i < paras.length; i++) {
+      const pTime = parseFloat(paras[i].dataset.time || "0");
+      if (pTime <= currentTime) {
+        activePara = paras[i];
+      } else {
+        break;
+      }
+    }
+
+    if (!activePara && paras.length > 0) {
+      activePara = paras[0];
+    }
+
+    const prevPlaying = wrap.querySelector(".transcript-para.para-playing");
+    if (prevPlaying !== activePara) {
+      if (prevPlaying) prevPlaying.classList.remove("para-playing");
+      if (activePara) {
+        activePara.classList.add("para-playing");
+
+        // 像歌词一样平滑滚动居中 (如果不处于用户手动干预状态且启用了自动跟随)
+        if (_isAutoScrollEnabled && !_isUserScrolling) {
+          activePara.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }
+    }
+  }
+}
+
+// 挂载媒体元素的时间更新监听
+function attachMediaSyncListeners() {
+  const mediaIds = [
+    "modal-video-player",
+    "modal-audio-player",
+    "video-player",
+    "audio-player",
+    "shuffle-audio-element"
+  ];
+  mediaIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && !el.dataset.hasTranscriptSync) {
+      el.dataset.hasTranscriptSync = "true";
+      el.addEventListener("timeupdate", () => {
+        syncTranscriptWithCurrentTime(el.currentTime);
+      });
+      el.addEventListener("seeked", () => {
+        syncTranscriptWithCurrentTime(el.currentTime);
+      });
+      el.addEventListener("play", () => {
+        syncTranscriptWithCurrentTime(el.currentTime);
+      });
+    }
+  });
 }
 
 // 发送单个音频切片至后端 Whisper 接口，安全兼容 JSON 与异常响应
@@ -2244,7 +2359,11 @@ async function sendAudioChunkForTranscription(blob) {
   }
 
   if (!res.ok || !data.success) {
-    throw new Error(data.message || `识别失败 (HTTP ${res.status})`);
+    const errMsg = data?.message || `识别失败 (HTTP ${res.status})`;
+    const err = new Error(errMsg);
+    err.status = res.status;
+    err.isRateLimit = res.status === 429 || errMsg.includes("429") || errMsg.includes("Rate limit");
+    throw err;
   }
 
   return {
@@ -2317,8 +2436,8 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
 
   try {
     const isGroq = state.whisperProvider === "groq" || Boolean(document.getElementById("settings-whisper-key")?.value);
-    // Whisper 原生核心感受野严格为 30 秒。切片控制在 25 秒，杜绝跨窗口自回归滚雪球幻觉复读
-    const chunkDuration = 25;
+    // 切片时长优化为 45 秒：切片总数减半，彻底远离 API 频率限制 (429)，且每段上下文更丰富
+    const chunkDuration = 45;
 
     const { duration, chunks } = await extractAudioChunksFromMedia(mediaUrl, (msg) => {
       if (statusText) statusText.textContent = msg;
@@ -2353,10 +2472,10 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
           : "正在通过 AI (Whisper) 深度识别文本，请稍候...";
       }
 
-      // 携带重试机制 (单段失败最多重试 1 次)
+      // 携带多轮指数退避重试机制 (最多 4 次，绝不静默丢失任何切片)
       let chunkResult = null;
       let lastErr = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {
         try {
           chunkResult = await sendAudioChunkForTranscription(chunk.blob);
           if (chunkResult?.provider) {
@@ -2366,14 +2485,21 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
           break;
         } catch (e) {
           lastErr = e;
-          if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 1000));
+          const isRateLimit = e.isRateLimit || String(e.message).includes("429") || String(e.message).includes("Rate limit");
+          const waitMs = isRateLimit ? (3000 * (attempt + 1)) : (1500 * (attempt + 1));
+          console.warn(`Chunk ${chunkIndex} attempt ${attempt + 1} error: ${e.message}, retrying in ${waitMs}ms...`);
+          if (statusText) {
+            statusText.textContent = `分段 [${chunkIndex}/${totalChunks}] 遇到${isRateLimit ? '频率限制' : '网络波动'}，正在等待重试 (第 ${attempt + 1}/4 次)...`;
           }
+          await new Promise((r) => setTimeout(r, waitMs));
         }
       }
 
+      // 请求之间保留轻量缓冲延迟 (400ms)，避免突发并发打满 API 频率
+      await new Promise((r) => setTimeout(r, 400));
+
       if (lastErr && !chunkResult?.text) {
-        console.warn(`Chunk ${chunkIndex} error:`, lastErr);
+        console.warn(`Chunk ${chunkIndex} all attempts failed:`, lastErr);
       }
 
       if (chunkResult) {
@@ -2383,15 +2509,21 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
             segText = cleanWhisperHallucinationsClient(segText);
             if (!segText) continue;
 
-            const absStart = Math.max(0, Math.floor(chunk.startTime + (typeof seg.start === "number" ? seg.start : 0)));
-            // 防止连续复读幻觉
-            if (collectedItems.length > 0 && collectedItems[collectedItems.length - 1].text === segText) {
-              continue;
-            }
-            collectedItems.push({
-              timeSec: absStart,
-              timeStr: formatTimestamp(absStart),
-              text: segText
+            const segStart = typeof seg.start === "number" ? seg.start : 0;
+            const segEnd = typeof seg.end === "number" ? seg.end : segStart + 2;
+            const segDuration = Math.max(1, segEnd - segStart);
+
+            // 拆分为单句并进行时间戳内插，避免多个独立句子共享完全相同的时间戳
+            const subSents = formatBySentences(segText);
+            subSents.forEach((sent, sIdx) => {
+              const absStart = Math.max(0, Math.floor(chunk.startTime + segStart + (sIdx / Math.max(1, subSents.length)) * segDuration));
+              if (collectedItems.length === 0 || collectedItems[collectedItems.length - 1].text !== sent) {
+                collectedItems.push({
+                  timeSec: absStart,
+                  timeStr: formatTimestamp(absStart),
+                  text: sent
+                });
+              }
             });
           }
         } else {
@@ -2434,14 +2566,8 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
       statusText.textContent = "✨ 语音提取完成，正在组织带时间戳的段落排版...";
     }
 
-    // 组织为带时间戳的完整文本：每一个完整单句独立成一个自然段卡片
-    const finalLines = [];
-    for (const item of collectedItems) {
-      const subSents = formatBySentences(item.text);
-      for (const sent of subSents) {
-        finalLines.push(`[${item.timeStr}] ${sent}`);
-      }
-    }
+    // 每一个独立完整单句为一个自然段卡片
+    const finalLines = collectedItems.map(item => `[${item.timeStr}] ${item.text}`);
     const finalTranscript = finalLines.join("\n");
     const targetNoteId = noteId || (state.activeDetailNote?.id);
 

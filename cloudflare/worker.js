@@ -283,20 +283,24 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 });
               } else {
                 const errText = await aiRes.text();
-                console.warn("Third-party Whisper API response not ok:", errText);
-                let parsedErr = errText;
-                try { parsedErr = JSON.parse(errText).error?.message || errText; } catch {}
-                return json({
-                  success: false,
-                  message: `${isGroq ? 'Groq' : '第三方'} 语音识别失败 (HTTP ${aiRes.status}): ${parsedErr}`
-                }, 502);
+                console.warn("Third-party Whisper API response not ok (will fallback if env.AI exists):", errText);
+                if (!env.AI) {
+                  let parsedErr = errText;
+                  try { parsedErr = JSON.parse(errText).error?.message || errText; } catch {}
+                  return json({
+                    success: false,
+                    message: `${isGroq ? 'Groq' : '第三方'} 语音识别失败 (HTTP ${aiRes.status}): ${parsedErr}`
+                  }, 502);
+                }
               }
             } catch (err) {
-              console.warn("Third-party Whisper API call error:", err);
-              return json({
-                success: false,
-                message: `${effectiveProvider === 'groq' ? 'Groq' : '第三方'} 服务连接出错: ${err.message}`
-              }, 502);
+              console.warn("Third-party Whisper API call error (will fallback if env.AI exists):", err);
+              if (!env.AI) {
+                return json({
+                  success: false,
+                  message: `${effectiveProvider === 'groq' ? 'Groq' : '第三方'} 服务连接出错: ${err.message}`
+                }, 502);
+              }
             }
           }
 
