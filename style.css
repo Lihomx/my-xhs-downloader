@@ -27,6 +27,11 @@
   padding: 0;
 }
 
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
 body {
   font-family: var(--font);
   background-color: var(--bg);
@@ -3274,11 +3279,16 @@ mark.transcript-hl:hover {
   display: grid;
   grid-template-columns: minmax(320px, 480px) 1fr;
   gap: 20px;
+  min-width: 0;
 }
 
 @media (max-width: 860px) {
   .shuffle-layout {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 100%;
+    min-width: 0;
   }
 }
 
@@ -3293,6 +3303,9 @@ mark.transcript-hl:hover {
   flex-direction: column;
   align-items: center;
   text-align: center;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .shuffle-cover-container {
@@ -3896,5 +3909,181 @@ mark.transcript-hl:hover {
     min-width: 0;
     word-break: break-all;
     white-space: normal;
+  }
+
+  /* ========================================================
+     移动端随身听电台专属响应式（解决卡片溢出与右侧元素被裁切）
+     ======================================================== */
+  .shuffle-page-wrapper {
+    padding: 10px 10px 40px;
+    width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  .shuffle-header-bar {
+    padding: 12px 12px;
+    margin-bottom: 12px;
+    gap: 10px;
+  }
+
+  .shuffle-main-title {
+    font-size: 16px;
+  }
+
+  .shuffle-sub-title {
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  /* 随身听操作按钮栏：一键离线缓存整行居中，刷新和清空在下方等宽双列平铺 */
+  .shuffle-header-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    width: 100%;
+    margin-top: 6px;
+  }
+
+  #btn-shuffle-cache-all {
+    grid-column: span 2;
+    width: 100%;
+    justify-content: center;
+    font-size: 12px;
+    padding: 7px 10px;
+  }
+
+  #btn-shuffle-reload,
+  #btn-shuffle-clear-all {
+    width: 100%;
+    justify-content: center;
+    font-size: 11.5px;
+    padding: 6px 8px;
+    white-space: nowrap;
+  }
+
+  .shuffle-deck-card {
+    padding: 16px 12px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  /* 旋转黑胶唱片：按视口宽度弹性缩放，居中自适应，绝不撑大卡片 */
+  .shuffle-cover-container {
+    width: clamp(120px, 42vw, 160px);
+    height: clamp(120px, 42vw, 160px);
+    margin: 4px auto 12px;
+  }
+
+  .shuffle-track-title {
+    font-size: 14.5px;
+    line-height: 1.35;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    margin-bottom: 4px;
+    padding: 0 4px;
+  }
+
+  .shuffle-offline-pill {
+    font-size: 10px;
+    padding: 2px 8px;
+  }
+
+  .shuffle-scrubber-area {
+    width: 100%;
+    margin-bottom: 12px;
+    padding: 0 2px;
+    box-sizing: border-box;
+  }
+
+  .shuffle-time-labels {
+    font-size: 11px;
+  }
+
+  /* 播放控制按钮栏：弹性收拢间距，避免任何按钮被挤出屏幕边缘 */
+  .shuffle-controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    width: 100%;
+    max-width: 320px;
+    margin: 0 auto 16px;
+    padding: 0 4px;
+    box-sizing: border-box;
+  }
+
+  .btn-shuffle-ctrl {
+    padding: 6px 6px;
+    font-size: 11px;
+  }
+
+  .btn-ctrl-round {
+    width: 36px;
+    height: 36px;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .btn-shuffle-play-hero {
+    width: 48px;
+    height: 48px;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  #btn-shuffle-mode-toggle,
+  #btn-shuffle-speed-toggle {
+    font-size: 11px;
+    padding: 6px 6px;
+    min-width: 42px;
+    text-align: center;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* 同步文案精读卡片 */
+  .shuffle-lyrics-card {
+    padding: 10px 8px;
+    width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  .shuffle-lyrics-header {
+    font-size: 11px;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .shuffle-lyrics-scroll-wrap {
+    max-height: 180px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+
+  /* 播放列表面板 */
+  .shuffle-playlist-panel {
+    padding: 14px 10px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .shuffle-item-card {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+
+  .shuffle-item-cover {
+    width: 38px;
+    height: 38px;
+  }
+
+  .shuffle-item-title {
+    font-size: 12.5px;
   }
 }
