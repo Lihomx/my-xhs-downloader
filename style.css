@@ -3397,4 +3397,54 @@ mark.transcript-hl:hover {
   font-weight: 600;
 }
 
+/* 后台慢速字幕提取常驻浮动指示胶囊 */
+.bg-subtitle-pill {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: rgba(15, 23, 42, 0.94);
+  color: #ffffff;
+  padding: 10px 18px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.35), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  z-index: 9999;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  animation: pillSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
 
+.bg-subtitle-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: bgSpin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes bgSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pillSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 640px) {
+  .bg-subtitle-pill {
+    bottom: 16px;
+    right: 16px;
+    left: 16px;
+    justify-content: center;
+    font-size: 12px;
+    padding: 8px 14px;
+  }
+}

@@ -186,6 +186,7 @@
                 <button id="btn-toggle-audio-mode" class="btn btn-secondary" type="button" title="收起视频画面，仅播放纯音频磨耳朵">🎧 纯听音频</button>
                 <button id="btn-transcribe-video" class="btn btn-secondary" type="button" title="优先扫描视频字幕，无字幕则自动启用 AI 语音转写">🎙️ 提取字幕与文案</button>
                 <button id="btn-ocr-video" class="btn btn-secondary" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">🔍 画面字幕提取</button>
+                <button id="btn-slow-ocr-video" class="btn btn-secondary" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">🐢 慢速精细提取</button>
                 <select id="video-quality-select" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px;"></select>
                 <button id="btn-download-video" class="btn btn-primary" type="button">下载视频</button>
               </div>
@@ -513,6 +514,9 @@
                 <button id="btn-modal-ocr-subtitles" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; display: none;" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">
                   🔍 画面字幕提取
                 </button>
+                <button id="btn-modal-slow-ocr" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; display: none;" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">
+                  🐢 慢速精细提取
+                </button>
                 <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
                   📻 加入随身听
                 </button>
@@ -775,6 +779,16 @@
             </div>
           </div>
 
+          <div style="margin: 12px 0 16px 0; padding: 10px 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #1e293b; cursor: pointer; margin-bottom: 0;">
+              <input type="checkbox" id="settings-auto-bg-ocr" checked style="cursor: pointer; width: 15px; height: 15px; accent-color: var(--primary);" />
+              🐢 新采集视频笔记自动在后台进行慢速精细画面字幕提取
+            </label>
+            <p style="font-size: 11px; color: var(--text-muted); margin: 4px 0 0 23px; line-height: 1.4;">
+              开启后，新采集的视频笔记将自动由后台以从容节奏精细提取字幕（密集抽帧 + 频率重试），100% 完整收录所有文案，无需人工守候。
+            </p>
+          </div>
+
           <h4 style="font-size: 14px; margin-bottom: 6px;">🔒 修改个人管理 PIN 码</h4>
           <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
             保护你的私有 Cloudflare 知识库与设置配置（初始 PIN 码：1987）。
@@ -974,6 +988,12 @@
       <button type="button" id="btn-pill-copy" class="btn-pill-action" title="复制选中的文字">
         📋 复制
       </button>
+    </div>
+
+    <!-- 后台慢速字幕提取常驻浮动指示胶囊 -->
+    <div id="bg-subtitle-pill" class="bg-subtitle-pill" style="display: none;">
+      <div class="bg-subtitle-spinner"></div>
+      <span id="bg-subtitle-text">🐢 后台慢速字幕提取中...</span>
     </div>
 
     <!-- 底部轻提示 Toast -->
