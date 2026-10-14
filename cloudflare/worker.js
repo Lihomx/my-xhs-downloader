@@ -589,6 +589,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                   const errText = await groqRes.text().catch(() => '');
                   lastOcrError = `Groq ${model} (${groqRes.status}): ${errText.slice(0, 100)}`;
                   console.warn(lastOcrError);
+                  if (groqRes.status === 429) {
+                    // 遇到 429 频率限制时，跳过 Groq 后续模型，立刻尝试 Cloudflare Workers AI 降级
+                    break;
+                  }
                 }
               } catch (err) {
                 lastOcrError = `Groq ${model} network error: ${err.message}`;
@@ -632,10 +636,12 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             }
           }
 
+          const isRateLimit = lastOcrError.includes("429") || lastOcrError.includes("Rate limit");
           return json({
             success: false,
+            isRateLimit,
             message: lastOcrError || "未配置可用视觉模型"
-          }, 500);
+          }, isRateLimit ? 429 : 500);
         }
 
         // 兼容旧接口：修改 PIN 码

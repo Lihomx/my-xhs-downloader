@@ -2961,19 +2961,48 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
         compCtx.fillText(`[${tStr}]`, 18, destY + 32);
       }
 
-      // 将合成图转为 DataURL 并发送至服务端 OCR 视觉模型
+      // 将合成图转为 DataURL 并发送至服务端 OCR 视觉模型 (支持指数退避重试，绝不静默丢弃任何批次)
       const base64Data = compCanvas.toDataURL("image/jpeg", 0.85);
-      const ocrResp = await fetch("/api/ocr-subtitle", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-auth-pin": state.pin
-        },
-        body: JSON.stringify({ image: base64Data })
-      });
+      let ocrData = null;
+      let lastErr = null;
 
-      if (ocrResp.ok) {
-        const ocrData = await ocrResp.json();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          const ocrResp = await fetch("/api/ocr-subtitle", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({ image: base64Data })
+          });
+
+          if (ocrResp.ok) {
+            ocrData = await ocrResp.json();
+            lastErr = null;
+            break;
+          } else {
+            const errJson = await ocrResp.json().catch(() => ({}));
+            const isRateLimit = ocrResp.status === 429 || String(errJson.message).includes("429") || String(errJson.message).includes("Rate limit");
+            const waitMs = isRateLimit ? Math.min(22000, 4000 * Math.pow(1.5, attempt)) : (2500 * (attempt + 1));
+            console.warn(`第 ${b + 1} 批 OCR 尝试 ${attempt + 1} (${ocrResp.status}):`, errJson.message, `等待 ${waitMs}ms 后重试...`);
+            if (statusText) {
+              statusText.textContent = `第 ${b + 1}/${totalBatches} 批${isRateLimit ? '遇到频率窗口限制' : '识别波动'}，正在等待重试 (第 ${attempt + 1}/5 次)...`;
+            }
+            lastErr = new Error(errJson.message || `HTTP ${ocrResp.status}`);
+            await new Promise(r => setTimeout(r, waitMs));
+          }
+        } catch (netErr) {
+          lastErr = netErr;
+          console.warn(`第 ${b + 1} 批网络请求异常，重试中:`, netErr);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+
+      // 请求之间缓冲 500ms，平滑流量，防止突发打满 API TPM
+      await new Promise(r => setTimeout(r, 500));
+
+      if (ocrData && ocrData.success) {
         if (ocrData.provider) providerUsed = ocrData.provider;
         const ocrText = (ocrData.text || "").trim();
 
@@ -3010,11 +3039,10 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
             livePreview.scrollTop = livePreview.scrollHeight;
           }
         }
-      } else {
-        const errJson = await ocrResp.json().catch(() => ({}));
-        console.warn(`第 ${b + 1} 批 OCR 接口调用异常:`, errJson);
+      } else if (lastErr) {
+        console.warn(`第 ${b + 1} 批多次重试后仍然未成功:`, lastErr.message);
         if (b === 0 && !fallbackToSpeech) {
-          throw new Error(errJson.message || `视觉大模型接口错误 (${ocrResp.status})`);
+          throw new Error(lastErr.message || "视觉大模型服务未响应");
         }
       }
 
