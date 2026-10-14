@@ -459,12 +459,14 @@
             <div class="author-row">
               <span class="author-label">👤 笔记博主：</span>
               <span id="modal-author-name" class="author-name-text"></span>
-              <button id="btn-modal-filter-by-author" class="btn btn-ghost btn-sm" type="button" style="font-size: 11px; padding: 2px 8px; margin-left: 6px; display: none;" title="在知识库中筛选该博主的全部笔记">
-                🔍 查看TA的笔记
-              </button>
-              <button id="btn-modal-refresh-author" class="btn btn-secondary btn-sm" type="button" style="font-size: 11px; padding: 2px 8px; margin-left: auto;" title="从原采集链接重新获取博主和主页">
-                🔄 重新识别博主
-              </button>
+              <div class="author-row-actions">
+                <button id="btn-modal-filter-by-author" class="btn btn-ghost btn-sm" type="button" style="display: none;" title="在知识库中筛选该博主的全部笔记">
+                  🔍 查看TA的笔记
+                </button>
+                <button id="btn-modal-refresh-author" class="btn btn-secondary btn-sm" type="button" title="从原采集链接重新获取博主和主页">
+                  🔄 重新识别博主
+                </button>
+              </div>
             </div>
             <div id="modal-author-link-row" class="author-row" style="margin-top: 4px;">
               <span class="author-label">🏠 博主主页：</span>
@@ -503,28 +505,28 @@
             </div>
 
             <!-- 媒体操作按钮栏 -->
-            <div id="modal-media-actions" style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
-              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <button id="btn-modal-toggle-audio" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
+            <div id="modal-media-actions" class="modal-media-actions-bar">
+              <div class="modal-media-btn-group">
+                <button id="btn-modal-toggle-audio" class="btn btn-secondary" type="button">
                   🎧 纯听音频
                 </button>
-                <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button" title="智能识别：优先提取视频字幕，无字幕则自动启用 AI 语音转写">
+                <button id="btn-modal-transcribe" class="btn btn-secondary" type="button" title="智能识别：优先提取视频字幕，无字幕则自动启用 AI 语音转写">
                   🎙️ 提取字幕与文案
                 </button>
-                <button id="btn-modal-ocr-subtitles" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; display: none;" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">
+                <button id="btn-modal-ocr-subtitles" class="btn btn-secondary" style="display: none;" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">
                   🔍 画面字幕提取
                 </button>
-                <button id="btn-modal-slow-ocr" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; display: none;" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">
+                <button id="btn-modal-slow-ocr" class="btn btn-secondary" style="display: none;" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">
                   🐢 慢速精细提取
                 </button>
-                <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
+                <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
                   📻 加入随身听
                 </button>
-                <button id="btn-modal-cleanup-media" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; color: #b45309; border-color: #fde68a; background: #fffbeb;" type="button" title="选择性删除视频或语音以腾出 Cloudflare 空间，文案与笔记完整保留">
+                <button id="btn-modal-cleanup-media" class="btn btn-secondary btn-cleanup-pill" type="button" title="选择性删除视频或语音以腾出 Cloudflare 空间，文案与笔记完整保留">
                   ⚡ 释放媒体空间
                 </button>
               </div>
-              <button id="btn-modal-download-video" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
+              <button id="btn-modal-download-video" class="btn btn-secondary" type="button">
                 🎬 下载视频 (按标题拼音命名)
               </button>
             </div>

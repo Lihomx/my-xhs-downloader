@@ -1481,7 +1481,7 @@ function formatBySentences(rawText) {
     .replace(/¶\s*\d+[:：\s]*/g, "")
     .replace(/\r\n/g, "\n")
     .replace(/[，,、]\s*\n/g, "，")
-    .replace(/([^\n。！？!?])\n+/g, "$1。\n")
+    .replace(/([^\n。！？!?”’"')\]）】])\n+/g, "$1。\n")
     .replace(/\n+/g, " ")
     .replace(/\s+/g, " ")
     .replace(/,/g, "，")
@@ -1494,19 +1494,20 @@ function formatBySentences(rawText) {
   // 2. 启发式补全标点与语义断句标志
   s = autoPunctuateChinese(s);
 
-  // 3. 核心分段逻辑：一个句号（以及？、！）为一个段落！
+  // 3. 核心分段逻辑：一个句号（以及？、！）为一个段落，同时严密保护后双引号与括号不被分离错位
   const sentences = [];
-  const tokens = s.split(/([。！？!?\n]+)/);
+  const tokens = s.split(/([。！？!?]+[”’"')\]）】]*|\n+)/);
   for (let i = 0; i < tokens.length; i += 2) {
     const textPart = tokens[i]?.trim();
     const puncPart = tokens[i + 1]?.trim() || "";
     if (textPart) {
       let line = textPart;
-      const punc = (puncPart.match(/[。！？!?]/) ? puncPart.replace(/\s+/g, "") : "") || "。";
+      const matchedPunc = puncPart.match(/[。！？!?][”’"')\]）】]*/);
+      const punc = matchedPunc ? matchedPunc[0].replace(/\s+/g, "") : "。";
       line += punc;
       // 清理句首多余逗号与句末异常标点
       line = line.replace(/^[，\s]+/, "").replace(/，([。！？])/g, "$1").replace(/([。！？])\s*，/g, "$1");
-      if (line.replace(/[，。！？\s]/g, "").length > 0) {
+      if (line.replace(/[，。！？\s”’"')\]）】]/g, "").length > 0) {
         sentences.push(line);
       }
     }
@@ -1616,10 +1617,8 @@ function parseTranscriptParagraphs(raw) {
         }
 
         if (html) {
-          const subSentences = splitHtmlIntoSentences(html);
-          for (let sub of subSentences) {
-            results.push({ isStarred, html: sub, timeStr, timeSec });
-          }
+          // 已保存的段落直接完整保留，避免重复拆词导致标点和引号错位
+          results.push({ isStarred, html, timeStr, timeSec });
         }
       });
       if (results.length > 0) return results;
@@ -1645,14 +1644,24 @@ function parseTranscriptParagraphs(raw) {
     cleanLine = cleanLine.replace(/^¶\s*\d+[:：\s]*/, "").trim();
     if (!cleanLine) continue;
 
-    const sentences = formatBySentences(cleanLine);
-    for (const sent of sentences) {
+    // 若原输入已分好行或带时间戳，直接作为单条字幕完整保留，绝不胡乱拆碎标点和丢失引号
+    if (lines.length > 1 || timeStr) {
       results.push({
         isStarred: false,
         timeStr,
         timeSec,
-        html: escapeHtml(sent)
+        html: escapeHtml(cleanLine)
       });
+    } else {
+      const sentences = formatBySentences(cleanLine);
+      for (const sent of sentences) {
+        results.push({
+          isStarred: false,
+          timeStr,
+          timeSec,
+          html: escapeHtml(sent)
+        });
+      }
     }
   }
 
@@ -2090,13 +2099,15 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
     return `
       <div class="${paraClass}" data-idx="${idx}" data-time="${p.timeSec ?? ''}" data-timestr="${p.timeStr || ''}">
         <div class="para-sidebar">
-          <span class="para-num">¶ ${num}</span>
           ${timeBadgeHtml}
-          <button type="button" class="btn-para-star ${starClass}" title="${p.isStarred ? '取消重点段落' : '标记为重点段落'}">
-            <svg class="star-icon" viewBox="0 0 24 24">
-              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-            </svg>
-          </button>
+          <div class="para-sidebar-sub">
+            <span class="para-num">#${num}</span>
+            <button type="button" class="btn-para-star ${starClass}" title="${p.isStarred ? '取消重点段落' : '标记为重点段落'}">
+              <svg class="star-icon" viewBox="0 0 24 24">
+                <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="para-content">${p.html}</div>
       </div>
