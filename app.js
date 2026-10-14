@@ -4231,15 +4231,21 @@ function renderDetailTags(note) {
 export const ShufflePlayer = {
   playlist: [],
   currentIndex: -1,
-  mode: "shuffle", // "shuffle" | "loop" | "single"
+  mode: localStorage.getItem("shuffle_play_mode") || "order", // "order" | "loop" | "shuffle" | "single"
   playbackRate: 1.0,
   audioEl: null,
   isScrubbing: false,
   cachedUrls: new Set(),
+  _dragSourceIndex: null,
+  _touchDragSourceIndex: null,
+  _touchOverIndex: null,
+  _touchIsBottom: false,
 
   init() {
     this.audioEl = document.getElementById("shuffle-audio-element");
     if (!this.audioEl) return;
+
+    this.updateModeBtnUI();
 
     // 播放/暂停
     const playPauseBtn = document.getElementById("btn-shuffle-play-pause");
@@ -4249,25 +4255,24 @@ export const ShufflePlayer = {
     document.getElementById("btn-shuffle-prev-track")?.addEventListener("click", () => this.playPrev());
     document.getElementById("btn-shuffle-next-track")?.addEventListener("click", () => this.playNext());
 
-    // 播放模式切换 (随机播放 / 列表循环 / 单曲循环)
+    // 播放模式切换 (顺序播放 / 列表循环 / 随机播放 / 单曲循环)
     const modeBtn = document.getElementById("btn-shuffle-mode-toggle");
     modeBtn?.addEventListener("click", () => {
-      if (this.mode === "shuffle") {
+      if (this.mode === "order") {
         this.mode = "loop";
-        modeBtn.innerHTML = "🔁 循环";
-        modeBtn.title = "列表循环模式";
         showToast("已切换为：列表循环");
       } else if (this.mode === "loop") {
+        this.mode = "shuffle";
+        showToast("已切换为：随机播放");
+      } else if (this.mode === "shuffle") {
         this.mode = "single";
-        modeBtn.innerHTML = "🔂 单曲";
-        modeBtn.title = "单曲循环模式";
         showToast("已切换为：单曲循环");
       } else {
-        this.mode = "shuffle";
-        modeBtn.innerHTML = "🔀 随机";
-        modeBtn.title = "随机播放模式";
-        showToast("已切换为：随机播放");
+        this.mode = "order";
+        showToast("已切换为：顺序播放");
       }
+      localStorage.setItem("shuffle_play_mode", this.mode);
+      this.updateModeBtnUI();
     });
 
     // 倍速切换 (1.0x -> 1.25x -> 1.5x -> 2.0x -> 0.75x)
@@ -4332,6 +4337,13 @@ export const ShufflePlayer = {
       if (this.mode === "single") {
         this.audioEl.currentTime = 0;
         this.audioEl.play().catch(() => {});
+      } else if (this.mode === "order") {
+        if (this.currentIndex < this.playlist.length - 1) {
+          this.playNext();
+        } else {
+          this.stop();
+          showToast("已播放完列表全部音频");
+        }
       } else {
         this.playNext();
       }
@@ -4366,6 +4378,8 @@ export const ShufflePlayer = {
           )
         );
         this.stop();
+        this.playlist = [];
+        this.saveCustomOrder();
         await this.loadPlaylist();
         showToast("已清空随身听播放库");
         loadNotes(document.getElementById("kb-search-input")?.value || "");
@@ -4373,6 +4387,105 @@ export const ShufflePlayer = {
         showToast(`清空失败: ${err.message}`);
       }
     });
+  },
+
+  updateModeBtnUI() {
+    const modeBtn = document.getElementById("btn-shuffle-mode-toggle");
+    if (!modeBtn) return;
+    if (this.mode === "order") {
+      modeBtn.innerHTML = "➡️ 顺序";
+      modeBtn.title = "顺序播放模式 (播完列表停止)";
+    } else if (this.mode === "loop") {
+      modeBtn.innerHTML = "🔁 循环";
+      modeBtn.title = "列表循环模式";
+    } else if (this.mode === "shuffle") {
+      modeBtn.innerHTML = "🔀 随机";
+      modeBtn.title = "随机播放模式";
+    } else if (this.mode === "single") {
+      modeBtn.innerHTML = "🔂 单曲";
+      modeBtn.title = "单曲循环模式";
+    }
+  },
+
+  getSavedCustomOrder() {
+    try {
+      const raw = localStorage.getItem("shuffle_playlist_order");
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
+  saveCustomOrder() {
+    try {
+      const ids = this.playlist.map((t) => t.id);
+      localStorage.setItem("shuffle_playlist_order", JSON.stringify(ids));
+    } catch (e) {
+      console.warn("Failed to save shuffle order:", e);
+    }
+  },
+
+  applyCustomOrder(items) {
+    if (!Array.isArray(items) || items.length === 0) return items;
+    const savedIds = this.getSavedCustomOrder();
+    if (!Array.isArray(savedIds) || savedIds.length === 0) return items;
+
+    const idMap = new Map();
+    items.forEach((item) => idMap.set(String(item.id), item));
+
+    const ordered = [];
+    savedIds.forEach((id) => {
+      const strId = String(id);
+      if (idMap.has(strId)) {
+        ordered.push(idMap.get(strId));
+        idMap.delete(strId);
+      }
+    });
+
+    // 未在缓存序列中的新增音频，追加到末尾
+    idMap.forEach((item) => ordered.push(item));
+    return ordered;
+  },
+
+  calculateInsertIndex(fromIdx, overIdx, isBottomHalf) {
+    if (isBottomHalf) {
+      return fromIdx <= overIdx ? overIdx : overIdx + 1;
+    } else {
+      return fromIdx < overIdx ? overIdx - 1 : overIdx;
+    }
+  },
+
+  clearDragIndicators() {
+    const cards = document.querySelectorAll(".shuffle-item-card");
+    cards.forEach((c) => c.classList.remove("drag-over-top", "drag-over-bottom"));
+  },
+
+  reorderTracks(fromIndex, toIndex) {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= this.playlist.length ||
+      toIndex >= this.playlist.length
+    ) {
+      return;
+    }
+
+    const currentTrackId =
+      this.currentIndex >= 0 && this.playlist[this.currentIndex]
+        ? this.playlist[this.currentIndex].id
+        : null;
+
+    const [movedTrack] = this.playlist.splice(fromIndex, 1);
+    this.playlist.splice(toIndex, 0, movedTrack);
+
+    if (currentTrackId) {
+      this.currentIndex = this.playlist.findIndex((t) => t.id === currentTrackId);
+    }
+
+    this.saveCustomOrder();
+    this.renderPlaylist();
+    showToast(`已调整播放顺序至 #${toIndex + 1}`);
   },
 
   formatTimeSec(seconds) {
@@ -4412,7 +4525,8 @@ export const ShufflePlayer = {
         items = await OfflineMediaManager.getAllCachedTracks();
       }
 
-      this.playlist = items;
+      // 应用自定义排序
+      this.playlist = this.applyCustomOrder(items);
       this.updateBadgeCounts();
       this.renderPlaylist();
 
@@ -4476,6 +4590,8 @@ export const ShufflePlayer = {
     if (emptyGuide) emptyGuide.style.display = "none";
     listWrap.innerHTML = "";
 
+    let isDraggingDesktop = false;
+
     this.playlist.forEach((track, index) => {
       const isCached = this.cachedUrls.has(track.mediaUrl);
       const isActive = index === this.currentIndex;
@@ -4483,13 +4599,25 @@ export const ShufflePlayer = {
       const card = document.createElement("div");
       card.className = `shuffle-item-card ${isActive ? "active" : ""}`;
       card.dataset.index = index;
+      card.setAttribute("draggable", "true");
 
       const tagsHtml = (track.tags || []).slice(0, 2).map((t) => `<span class="kb-chip-small">${t}</span>`).join("");
 
       card.innerHTML = `
+        <div class="shuffle-drag-handle" title="按住拖拽调整顺序" data-index="${index}">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="8" cy="5" r="2"/>
+            <circle cx="16" cy="5" r="2"/>
+            <circle cx="8" cy="12" r="2"/>
+            <circle cx="16" cy="12" r="2"/>
+            <circle cx="8" cy="19" r="2"/>
+            <circle cx="16" cy="19" r="2"/>
+          </svg>
+        </div>
+        <span class="shuffle-item-index">#${index + 1}</span>
         <img src="${track.coverUrl || '/favicon.svg'}" class="shuffle-item-cover" alt="封面" loading="lazy" />
         <div class="shuffle-item-content">
-          <div class="shuffle-item-title">${track.title || "无标题音频"}</div>
+          <div class="shuffle-item-title">${escapeHtml(track.title || "无标题音频")}</div>
           <div class="shuffle-item-meta">
             ${isCached ? '<span class="shuffle-item-cached-pill">💾 已离线</span>' : '<span style="color:#94a3b8;">☁️ 在线</span>'}
             ${tagsHtml}
@@ -4500,8 +4628,128 @@ export const ShufflePlayer = {
         </div>
       `;
 
+      // 桌面鼠标拖拽排序 (HTML5 Drag & Drop)
+      card.addEventListener("dragstart", (e) => {
+        isDraggingDesktop = true;
+        this._dragSourceIndex = index;
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", String(index));
+        card.classList.add("dragging");
+      });
+
+      card.addEventListener("dragend", () => {
+        card.classList.remove("dragging");
+        this.clearDragIndicators();
+        setTimeout(() => {
+          isDraggingDesktop = false;
+        }, 50);
+      });
+
+      card.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const rect = card.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+        card.classList.remove("drag-over-top", "drag-over-bottom");
+        if (e.clientY < midY) {
+          card.classList.add("drag-over-top");
+        } else {
+          card.classList.add("drag-over-bottom");
+        }
+      });
+
+      card.addEventListener("dragleave", (e) => {
+        if (!card.contains(e.relatedTarget)) {
+          card.classList.remove("drag-over-top", "drag-over-bottom");
+        }
+      });
+
+      card.addEventListener("drop", (e) => {
+        e.preventDefault();
+        card.classList.remove("drag-over-top", "drag-over-bottom");
+        const fromIdx =
+          this._dragSourceIndex !== null && this._dragSourceIndex !== undefined
+            ? this._dragSourceIndex
+            : parseInt(e.dataTransfer.getData("text/plain"), 10);
+        if (isNaN(fromIdx) || fromIdx === index) return;
+
+        const rect = card.getBoundingClientRect();
+        const isBottom = e.clientY >= rect.top + rect.height / 2;
+        const toIdx = this.calculateInsertIndex(fromIdx, index, isBottom);
+        if (toIdx !== fromIdx) {
+          this.reorderTracks(fromIdx, toIdx);
+        }
+      });
+
+      // 手机触摸手柄拖拽排序 (Touch Events)
+      const handle = card.querySelector(".shuffle-drag-handle");
+      handle?.addEventListener(
+        "touchstart",
+        (e) => {
+          if (e.touches.length !== 1) return;
+          this._touchDragSourceIndex = index;
+          this._touchOverIndex = null;
+          this._touchIsBottom = false;
+          card.classList.add("touch-dragging");
+        },
+        { passive: true }
+      );
+
+      handle?.addEventListener(
+        "touchmove",
+        (e) => {
+          if (this._touchDragSourceIndex === null || this._touchDragSourceIndex === undefined) return;
+          if (e.cancelable) e.preventDefault();
+
+          const touch = e.touches[0];
+          const elem = document.elementFromPoint(touch.clientX, touch.clientY);
+          const targetCard = elem?.closest(".shuffle-item-card");
+
+          this.clearDragIndicators();
+
+          if (targetCard && targetCard !== card && targetCard.dataset.index !== undefined) {
+            const targetIdx = parseInt(targetCard.dataset.index, 10);
+            const rect = targetCard.getBoundingClientRect();
+            const isBottom = touch.clientY >= rect.top + rect.height / 2;
+            if (isBottom) {
+              targetCard.classList.add("drag-over-bottom");
+            } else {
+              targetCard.classList.add("drag-over-top");
+            }
+            this._touchOverIndex = targetIdx;
+            this._touchIsBottom = isBottom;
+          } else {
+            this._touchOverIndex = null;
+          }
+        },
+        { passive: false }
+      );
+
+      const handleTouchEnd = () => {
+        if (this._touchDragSourceIndex === null || this._touchDragSourceIndex === undefined) return;
+        card.classList.remove("touch-dragging");
+        this.clearDragIndicators();
+
+        if (this._touchOverIndex !== null && this._touchOverIndex !== undefined) {
+          const fromIdx = this._touchDragSourceIndex;
+          const toIdx = this.calculateInsertIndex(fromIdx, this._touchOverIndex, this._touchIsBottom);
+          if (toIdx !== fromIdx) {
+            this.reorderTracks(fromIdx, toIdx);
+          }
+        }
+
+        this._touchDragSourceIndex = null;
+        this._touchOverIndex = null;
+      };
+
+      handle?.addEventListener("touchend", handleTouchEnd);
+      handle?.addEventListener("touchcancel", handleTouchEnd);
+
+      // 点击播放 (拖拽手柄及删除按钮不触发切歌)
       card.addEventListener("click", (e) => {
+        if (isDraggingDesktop) return;
         if (e.target.closest(".btn-item-remove-shuffle")) return;
+        if (e.target.closest(".shuffle-drag-handle")) return;
         this.playIndex(index);
       });
 
@@ -4525,6 +4773,7 @@ export const ShufflePlayer = {
         showToast("已从随身听播放库移出");
         const wasActive = index === this.currentIndex;
         this.playlist.splice(index, 1);
+        this.saveCustomOrder();
         if (wasActive) {
           if (this.playlist.length > 0) {
             this.currentIndex = Math.min(index, this.playlist.length - 1);
@@ -4706,8 +4955,15 @@ export const ShufflePlayer = {
       do {
         nextIndex = Math.floor(Math.random() * this.playlist.length);
       } while (nextIndex === this.currentIndex && this.playlist.length > 1);
+    } else if (this.mode === "order") {
+      // 顺序播放：到达末尾时停止并提示
+      if (this.currentIndex >= this.playlist.length - 1) {
+        showToast("已是列表最后一首");
+        return;
+      }
+      nextIndex = this.currentIndex + 1;
     } else {
-      // 顺序下一个
+      // 列表循环模式 (loop) 或其他
       nextIndex = (this.currentIndex + 1) % this.playlist.length;
     }
 
@@ -4728,7 +4984,16 @@ export const ShufflePlayer = {
       do {
         prevIndex = Math.floor(Math.random() * this.playlist.length);
       } while (prevIndex === this.currentIndex && this.playlist.length > 1);
+    } else if (this.mode === "order") {
+      // 顺序播放：到达第一首时回退到开头并提示
+      if (this.currentIndex <= 0) {
+        if (this.audioEl) this.audioEl.currentTime = 0;
+        showToast("已是列表第一首");
+        return;
+      }
+      prevIndex = this.currentIndex - 1;
     } else {
+      // 列表循环模式
       prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
     }
 

@@ -3608,13 +3608,15 @@ mark.transcript-hl:hover {
 .shuffle-item-card {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s, background-color 0.15s;
+  position: relative;
+  user-select: none;
 }
 
 .shuffle-item-card:hover {
@@ -3625,6 +3627,68 @@ mark.transcript-hl:hover {
 .shuffle-item-card.active {
   background: #fff1f2;
   border-color: #fda4af;
+}
+
+/* 拖拽手柄 */
+.shuffle-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  cursor: grab;
+  padding: 6px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  touch-action: none;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.shuffle-drag-handle:hover,
+.shuffle-drag-handle:active {
+  color: var(--primary);
+  background: rgba(234, 44, 67, 0.08);
+  cursor: grabbing;
+}
+
+/* 播放顺序序号 */
+.shuffle-item-index {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  min-width: 18px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  flex-shrink: 0;
+}
+
+.shuffle-item-card.active .shuffle-item-index {
+  color: var(--primary);
+}
+
+/* 拖拽交互视觉状态 */
+.shuffle-item-card.dragging {
+  opacity: 0.35;
+  background: #f1f5f9;
+  border: 1px dashed var(--primary);
+}
+
+.shuffle-item-card.touch-dragging {
+  opacity: 0.95;
+  background: #ffffff;
+  border-color: var(--primary);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.18);
+  transform: scale(1.02);
+  z-index: 100;
+}
+
+.shuffle-item-card.drag-over-top {
+  border-top: 3px solid var(--primary) !important;
+  transform: translateY(2px);
+}
+
+.shuffle-item-card.drag-over-bottom {
+  border-bottom: 3px solid var(--primary) !important;
+  transform: translateY(-2px);
 }
 
 .shuffle-item-cover {
