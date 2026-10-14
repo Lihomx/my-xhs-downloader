@@ -535,78 +535,106 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           let thirdPartyKey = '';
           if (env.DB) thirdPartyKey = await getSetting(env.DB, 'whisper_api_key', '');
 
-          // 策略 1: 优先使用 Groq 视觉大模型 (llama-3.2-11b-vision-preview)
-          if (thirdPartyKey) {
-            try {
-              const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${thirdPartyKey.trim()}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  model: 'llama-3.2-11b-vision-preview',
-                  messages: [
-                    {
-                      role: 'user',
-                      content: [
-                        {
-                          type: 'text',
-                          text: '请仔细识别图片中从视频底部截取的字幕条文字。如果图片包含带时间戳标签如 [00:10] 的条目，请按行输出：[时间戳] 字幕文字。如果画面中没有制作字幕或只有背景，跳过该条或回复 NONE。严禁输出任何多余废话或解释说明。'
-                        },
-                        {
-                          type: 'image_url',
-                          image_url: { url: imageDataUrl }
-                        }
-                      ]
-                    }
-                  ],
-                  temperature: 0.1,
-                  max_tokens: 1024
-                })
-              });
+          let lastOcrError = '';
 
-              if (groqRes.ok) {
-                const groqData = await groqRes.json();
-                const text = (groqData.choices?.[0]?.message?.content || '').trim();
-                const cleaned = text.includes('NONE') && text.length < 10 ? '' : text;
-                return json({
-                  success: true,
-                  text: cleaned,
-                  provider: 'groq-vision'
+          // 策略 1: 优先使用 Groq 多模态视觉模型 (优先 qwen/qwen3.8-27b，次级回退 llama-3.2 系列)
+          if (thirdPartyKey) {
+            const groqVisionModels = [
+              'qwen/qwen3.8-27b',
+              'llama-3.2-90b-vision-preview',
+              'meta-llama/llama-3.2-11b-vision-instruct',
+              'llama-3.2-11b-vision-preview'
+            ];
+
+            for (const model of groqVisionModels) {
+              try {
+                const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${thirdPartyKey.trim()}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    model,
+                    messages: [
+                      {
+                        role: 'user',
+                        content: [
+                          {
+                            type: 'text',
+                            text: '请仔细识别图片中显示的视频中文字幕。如果图片包含带时间戳标签如 [00:10] 的条目，请按行输出：[时间戳] 字幕文字。如果画面中没有制作字幕或只有背景，跳过该条或回复 NONE。严禁输出任何多余废话或解释说明。'
+                          },
+                          {
+                            type: 'image_url',
+                            image_url: { url: imageDataUrl }
+                          }
+                        ]
+                      }
+                    ],
+                    temperature: 0.1,
+                    max_tokens: 1024
+                  })
                 });
+
+                if (groqRes.ok) {
+                  const groqData = await groqRes.json();
+                  const text = (groqData.choices?.[0]?.message?.content || '').trim();
+                  const cleaned = (text.includes('NONE') || text.includes('无字幕')) && text.length < 15 ? '' : text;
+                  return json({
+                    success: true,
+                    text: cleaned,
+                    provider: `groq-vision (${model})`
+                  });
+                } else {
+                  const errText = await groqRes.text().catch(() => '');
+                  lastOcrError = `Groq ${model} (${groqRes.status}): ${errText.slice(0, 100)}`;
+                  console.warn(lastOcrError);
+                }
+              } catch (err) {
+                lastOcrError = `Groq ${model} network error: ${err.message}`;
+                console.warn(lastOcrError);
               }
-            } catch (err) {
-              console.warn("Groq vision OCR error:", err);
             }
           }
 
           // 策略 2: 降级使用 Cloudflare Workers AI 视觉模型
           if (env.AI) {
-            try {
-              const pureBase64 = imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
-              const binary = atob(pureBase64);
-              const uint8 = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) uint8[i] = binary.charCodeAt(i);
+            const cfVisionModels = [
+              '@cf/meta/llama-3.2-11b-vision-instruct',
+              '@cf/moondream/moondream3.1-9B-A2B',
+              '@cf/mistralai/mistral-small-3.1-24b-instruct',
+              '@cf/llava-hf/llava-1.5-7b-hf'
+            ];
 
-              const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-                image: Array.from(uint8),
-                prompt: '识别图片中的中文字幕。按行输出，如果没有字幕直接回复无。不要输出多余解释。'
-              });
-              const text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
-              return json({
-                success: true,
-                text: text === '无' ? '' : text,
-                provider: 'cloudflare-vision'
-              });
-            } catch (e) {
-              console.warn("Cloudflare vision error:", e);
+            const pureBase64 = imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
+            const binary = atob(pureBase64);
+            const uint8 = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) uint8[i] = binary.charCodeAt(i);
+            const imageBytes = Array.from(uint8);
+
+            for (const cfModel of cfVisionModels) {
+              try {
+                const aiRes = await env.AI.run(cfModel, {
+                  image: imageBytes,
+                  prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
+                });
+                const text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
+                const cleaned = (text.includes('NONE') || text === '无' || text.includes('无字幕')) && text.length < 15 ? '' : text;
+                return json({
+                  success: true,
+                  text: cleaned,
+                  provider: `cloudflare-vision (${cfModel.split('/').pop()})`
+                });
+              } catch (e) {
+                lastOcrError = `CF Vision ${cfModel}: ${e.message}`;
+                console.warn(lastOcrError);
+              }
             }
           }
 
           return json({
             success: false,
-            message: "未配置可用视觉模型"
+            message: lastOcrError || "未配置可用视觉模型"
           }, 500);
         }
 

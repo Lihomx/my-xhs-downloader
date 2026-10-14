@@ -2895,7 +2895,7 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
 
     if (progressTrack) progressTrack.style.display = "block";
 
-    // 抽帧策略：每隔 2.5 秒抽样一次底部字幕区域，每 5 个切条垂直拼接为一张合成图送入视觉模型识别
+    // 抽帧策略：每隔 2.5 秒抽样一次，每 3 个切条垂直拼接为一张合成图送入视觉模型识别
     const stepSec = 2.5;
     const sampleTimes = [];
     for (let t = 0.5; t < duration; t += stepSec) {
@@ -2903,21 +2903,21 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
     }
     if (sampleTimes.length === 0) sampleTimes.push(0.5);
 
-    const batchSize = 5;
+    const batchSize = 3;
     const totalBatches = Math.ceil(sampleTimes.length / batchSize);
     const collectedSubs = [];
     let providerUsed = "vision-ocr";
 
     const vw = tempVideo.videoWidth || 720;
     const vh = tempVideo.videoHeight || 1280;
-    // 字幕区域：通常位于画面底部 70% ~ 94% 高度区间
+    // 字幕热区：全面覆盖中下部 48% ~ 92% 高度范围，彻底包含人物胸部、腹部及底部的各种字幕摆放位置
     const cropX = 0;
-    const cropY = Math.floor(vh * 0.70);
+    const cropY = Math.floor(vh * 0.48);
     const cropW = vw;
-    const cropH = Math.max(60, Math.floor(vh * 0.24));
+    const cropH = Math.floor(vh * 0.44);
 
-    // 目标每个切条绘制规格：缩放到 720 宽，高度按比例
-    const targetW = 720;
+    // 目标每个切条绘制规格：宽度 640，高度按比例
+    const targetW = 640;
     const targetH = Math.round((cropH / cropW) * targetW);
 
     for (let b = 0; b < totalBatches; b++) {
@@ -2936,12 +2936,17 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
         const timeSec = batchTimes[sIdx];
         tempVideo.currentTime = timeSec;
         await new Promise(res => {
+          let tId;
           const onSeeked = () => {
+            clearTimeout(tId);
             tempVideo.removeEventListener("seeked", onSeeked);
             res();
           };
-          tempVideo.addEventListener("seeked", onSeeked);
-          setTimeout(onSeeked, 400);
+          tempVideo.addEventListener("seeked", onSeeked, { once: true });
+          tId = setTimeout(() => {
+            tempVideo.removeEventListener("seeked", onSeeked);
+            res();
+          }, 800);
         });
 
         const destY = sIdx * targetH;
@@ -2949,15 +2954,15 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
 
         // 在左上角绘制明显的时间戳标签，供视觉大模型直接识别与锚定时间
         const tStr = formatTimestamp(Math.floor(timeSec));
-        compCtx.fillStyle = "rgba(0, 0, 0, 0.8)";
-        compCtx.fillRect(10, destY + 8, 120, 32);
+        compCtx.fillStyle = "rgba(0, 0, 0, 0.85)";
+        compCtx.fillRect(10, destY + 8, 120, 34);
         compCtx.fillStyle = "#ffffff";
         compCtx.font = "bold 20px sans-serif";
-        compCtx.fillText(`[${tStr}]`, 18, destY + 31);
+        compCtx.fillText(`[${tStr}]`, 18, destY + 32);
       }
 
       // 将合成图转为 DataURL 并发送至服务端 OCR 视觉模型
-      const base64Data = compCanvas.toDataURL("image/jpeg", 0.82);
+      const base64Data = compCanvas.toDataURL("image/jpeg", 0.85);
       const ocrResp = await fetch("/api/ocr-subtitle", {
         method: "POST",
         headers: {
@@ -2976,7 +2981,7 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
           const lines = ocrText.split(/\r?\n+/).map(l => l.trim()).filter(Boolean);
           for (const line of lines) {
             // 解析出 [00:10] 字幕文本
-            const m = line.match(/^\[(\d{1,2}:\d{2})\]\s*(.*)$/);
+            const m = line.match(/^(?:\[|⏱️\s*)(\d{1,2}:\d{2})(?:\]|\s+)(.*)$/);
             if (m) {
               const tStr = m[1];
               const tText = m[2].trim();
@@ -2987,7 +2992,7 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
                   text: tText
                 });
               }
-            } else if (line.length > 1) {
+            } else if (line.length > 1 && !line.includes("NONE")) {
               const approxTime = Math.floor(batchTimes[0]);
               if (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== line) {
                 collectedSubs.push({
@@ -3005,11 +3010,17 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
             livePreview.scrollTop = livePreview.scrollHeight;
           }
         }
+      } else {
+        const errJson = await ocrResp.json().catch(() => ({}));
+        console.warn(`第 ${b + 1} 批 OCR 接口调用异常:`, errJson);
+        if (b === 0 && !fallbackToSpeech) {
+          throw new Error(errJson.message || `视觉大模型接口错误 (${ocrResp.status})`);
+        }
       }
 
-      // 若在第 1 批采样完毕后完全未识别出任何字幕，说明该视频画面极可能没有烧录文字字幕
-      if (b === 0 && collectedSubs.length === 0 && fallbackToSpeech) {
-        if (statusText) statusText.textContent = "画面未检测到硬字幕，自动启用 AI 语音转写引擎...";
+      // 探针策略：如果在前 2 批 (约前 15 秒) 采样完毕后完全未识别出任何字幕，才平滑自动启用语音转写
+      if (b === 1 && collectedSubs.length === 0 && fallbackToSpeech) {
+        if (statusText) statusText.textContent = "前 15 秒画面未检测到硬字幕，自动启用 AI 语音转写引擎...";
         await new Promise(r => setTimeout(r, 600));
         return false;
       }
@@ -3021,7 +3032,7 @@ async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { 
       if (fallbackToSpeech) {
         return false;
       }
-      throw new Error("视频画面底部未检测到清晰文字字幕");
+      throw new Error("视频画面未检测到清晰文字字幕");
     }
 
     const finalLines = collectedSubs.map(s => `[${s.timeStr}] ${s.text}`);
