@@ -572,7 +572,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                       }
                     ],
                     temperature: 0.1,
-                    max_tokens: 1024
+                    max_tokens: 180
                   })
                 });
 

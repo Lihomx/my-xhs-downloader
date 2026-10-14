@@ -1152,8 +1152,8 @@ function renderParseResult(note) {
       slowOcrBtn.onclick = () => {
         extractVideoHardSubtitles(activeUrl, "#transcript-panel", note.noteId || note.id, {
           isSlowMode: true,
-          stepSec: 1.8,
-          batchDelayMs: 2200
+          stepSec: 1.2,
+          batchDelayMs: 3000
         });
       };
     }
@@ -2938,9 +2938,9 @@ async function extractVideoHardSubtitles(
 
     if (progressTrack) progressTrack.style.display = "block";
 
-    // 抽帧策略与延时步长：慢速模式下步长 1.8 秒（密集抽样），普通模式 2.5 秒
-    const effectiveStepSec = stepSec || (isSlowMode ? 1.8 : 2.5);
-    const effectiveBatchDelay = batchDelayMs !== null && batchDelayMs !== undefined ? batchDelayMs : (isSlowMode ? 2200 : 500);
+    // 抽帧策略与延时步长：慢速模式下步长 1.2 秒（高密无遗漏抽样），普通模式 2.5 秒
+    const effectiveStepSec = stepSec || (isSlowMode ? 1.2 : 2.5);
+    const effectiveBatchDelay = batchDelayMs !== null && batchDelayMs !== undefined ? batchDelayMs : (isSlowMode ? 3000 : 500);
 
     const sampleTimes = [];
     for (let t = 0.5; t < duration; t += effectiveStepSec) {
@@ -3248,8 +3248,8 @@ const BackgroundSubtitleQueue = {
 
       const ok = await extractVideoHardSubtitles(videoUrl, null, noteId, {
         isSlowMode: true,
-        stepSec: 1.8,
-        batchDelayMs: 2200,
+        stepSec: 1.2,
+        batchDelayMs: 3000,
         onProgress: ({ percent, currentBatch, totalBatches }) => {
           this.updatePillUI(`🐢 后台精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
         }
@@ -4042,8 +4042,8 @@ async function openNoteDetail(noteId) {
         modalSlowOcrBtn.onclick = () => {
           extractVideoHardSubtitles(activeVideoUrl, "#modal-transcript-panel", note.id, {
             isSlowMode: true,
-            stepSec: 1.8,
-            batchDelayMs: 2200
+            stepSec: 1.2,
+            batchDelayMs: 3000
           });
         };
       }
