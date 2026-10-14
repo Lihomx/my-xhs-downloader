@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.20" />
+    <link rel="stylesheet" href="/style.css?v=2.0.21" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -20,16 +20,16 @@
         <nav class="nav-tabs" aria-label="页面切换">
           <button id="tab-nav-download" class="tab-item active" type="button">
             <span class="tab-icon">📥</span>
-            <span class="tab-text">采集下载</span>
+            <span class="tab-text"><span class="tab-text-long">采集下载</span><span class="tab-text-short">采集</span></span>
           </button>
           <button id="tab-nav-kb" class="tab-item" type="button">
             <span class="tab-icon">📚</span>
-            <span class="tab-text">收藏知识库</span>
+            <span class="tab-text"><span class="tab-text-long">收藏知识库</span><span class="tab-text-short">知识库</span></span>
             <span id="notes-badge" class="tab-badge" style="display: none;">0</span>
           </button>
           <button id="tab-nav-shuffle" class="tab-item" type="button" title="从笔记勾选的音频随机播客，支持断网离线畅听">
             <span class="tab-icon">📻</span>
-            <span class="tab-text">随身听电台</span>
+            <span class="tab-text"><span class="tab-text-long">随身听电台</span><span class="tab-text-short">随身听</span></span>
             <span id="shuffle-badge" class="tab-badge" style="display: none;">0</span>
           </button>
         </nav>
@@ -37,7 +37,8 @@
         <div class="nav-actions">
           <!-- 剪贴板自动解析开关 -->
           <label class="clipboard-toggle" title="打开或切回网页时，自动读取小红书链接并解析">
-            <span>⚡ 自动解析剪贴板</span>
+            <span class="clipboard-label-long">⚡ 自动解析剪贴板</span>
+            <span class="clipboard-label-short">⚡ 自动</span>
             <div class="switch">
               <input type="checkbox" id="clipboard-switch" checked />
               <span class="slider"></span>
@@ -246,7 +247,7 @@
                   ☁️ <span id="kb-usage-text">硬盘: 计算中...</span>
                 </button>
                 <button id="btn-backfill-authors" class="btn btn-secondary" type="button" title="从原链接重新识别补齐历史已收藏笔记博主与主页">
-                  🔄 补全博主信息
+                  🔄 <span class="btn-text-long">补全博主信息</span><span class="btn-text-short">补全博主</span>
                 </button>
                 <button id="btn-add-tag-quick" class="btn btn-secondary" type="button">
                   ➕ 新建分类
