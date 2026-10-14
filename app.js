@@ -1130,11 +1130,19 @@ function renderParseResult(note) {
       };
     }
 
-    // 提取语音文案
+    // 智能提取字幕与语音文案 (优先软字幕 -> 探测硬字幕 -> 自动启用语音转写)
     const transcribeBtn = document.getElementById("btn-transcribe-video");
     if (transcribeBtn) {
       transcribeBtn.onclick = () => {
-        transcribeAudio(activeUrl, "#transcript-panel", note.noteId || note.id);
+        extractVideoSubtitlesOrAudio(activeUrl, "#transcript-panel", note.noteId || note.id, videoPlayer);
+      };
+    }
+
+    // 独立画面硬字幕视觉提取按钮
+    const ocrBtn = document.getElementById("btn-ocr-video");
+    if (ocrBtn) {
+      ocrBtn.onclick = () => {
+        extractVideoHardSubtitles(activeUrl, "#transcript-panel", note.noteId || note.id);
       };
     }
   } else {
@@ -2039,7 +2047,11 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
   const effectiveProvider = container.dataset.aiProvider || state.whisperProvider || (document.getElementById("settings-whisper-key")?.value ? "groq" : "cloudflare");
   const engineBadgeHtml = effectiveProvider === "groq"
     ? `<span class="badge-engine badge-groq" title="由 Groq LPU 极速芯片 Whisper Large-v3 驱动">⚡ Groq Large-v3</span>`
-    : `<span class="badge-engine badge-cf" title="由 Cloudflare Workers AI 驱动">☁️ Cloudflare AI</span>`;
+    : (effectiveProvider === "soft-subtitles"
+      ? `<span class="badge-engine" style="background: rgba(16, 185, 129, 0.15); color: #059669; border-color: rgba(16, 185, 129, 0.3);" title="由视频原生外挂软字幕直接提取">🎬 原生字幕轨</span>`
+      : (String(effectiveProvider).includes("vision")
+        ? `<span class="badge-engine" style="background: rgba(139, 92, 246, 0.15); color: #7c3aed; border-color: rgba(139, 92, 246, 0.3);" title="由 AI 视觉模型直接从视频画面底部的硬字幕识别提取">👁️ 画面硬字幕</span>`
+        : `<span class="badge-engine badge-cf" title="由 Cloudflare Workers AI 驱动">☁️ Cloudflare AI</span>`));
 
   const paragraphs = parseTranscriptParagraphs(rawText);
   if (paragraphs.length === 0) {
@@ -2081,8 +2093,8 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
         <span class="transcript-hl-badge" style="display: none;">⭐ 0 处重点</span>
       </div>
       <div class="transcript-header-actions">
-        <button type="button" class="transcript-btn btn-ai-punctuate" title="智能补齐逗号、句号并精准分段">
-          ✨ 智能标点断句
+        <button type="button" class="transcript-btn btn-ai-punctuate" title="通过 AI 深度纠正同音错别字、恢复标点并精准按句分段">
+          🪄 AI 智能纠错
         </button>
         <button type="button" class="transcript-btn btn-toggle-filter" title="只显示标记了重点的段落和文字">
           <span class="btn-star-mark">⭐</span> 仅看重点
@@ -2203,45 +2215,82 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
     });
   }
 
-  // 6. 「✨ 智能标点断句」
+  // 6. 「🪄 AI 智能纠错」
   const punctuateBtn = container.querySelector(".btn-ai-punctuate");
   if (punctuateBtn) {
     punctuateBtn.addEventListener("click", async () => {
       punctuateBtn.disabled = true;
       const originalText = punctuateBtn.innerHTML;
-      punctuateBtn.innerHTML = `⏳ 优化中...`;
+      punctuateBtn.innerHTML = `⏳ AI 纠错中...`;
 
       try {
         const paras = parseTranscriptParagraphs(container.innerHTML);
         if (paras.length === 0) return;
 
-        // 保持每段时间戳，并按一个句号/问号/感叹号为一个独立段落分段
-        const formattedParas = [];
-        for (const p of paras) {
-          const rawSentText = p.html.replace(/<[^>]+>/g, "").trim();
-          if (!rawSentText) continue;
-          const subSents = formatBySentences(rawSentText);
-          for (const s of subSents) {
-            formattedParas.push({
-              isStarred: p.isStarred,
-              timeStr: p.timeStr || "",
-              timeSec: p.timeSec ?? null,
-              html: escapeHtml(s)
-            });
+        // 构建带时间戳前缀的单行文本传递给大模型纠错 (如: [00:10] 文本)
+        const rawLines = paras.map(p => {
+          const tPrefix = p.timeStr ? `[${p.timeStr}] ` : '';
+          const plain = p.html.replace(/<[^>]+>/g, '').trim();
+          return `${tPrefix}${plain}`;
+        }).filter(Boolean);
+        const textToFix = rawLines.join('\n');
+
+        let fixedText = '';
+        try {
+          const res = await fetch('/api/punctuate', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-auth-pin': state.pin
+            },
+            body: JSON.stringify({
+              text: textToFix,
+              noteId: noteId || (state.activeDetailNote?.id)
+            })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.text) {
+              fixedText = data.text;
+            }
           }
+        } catch (netErr) {
+          console.warn('API punctuate network error, fallback to local punctuation:', netErr);
         }
 
-        const serialized = formattedParas.map(p => {
-          const timeAttr = (p.timeSec !== null && p.timeStr) ? ` data-time="${p.timeSec}" data-timestr="${p.timeStr}"` : '';
-          const starAttr = p.isStarred ? ' class="para-starred"' : '';
-          return `<p${starAttr}${timeAttr}>${p.html}</p>`;
-        }).join("\n");
+        if (fixedText) {
+          renderTranscriptBox(container, fixedText, noteId, detectedProvider);
+          triggerTranscriptAutoSave(container, noteId);
+          showToast('🪄 AI 智能纠错已完成：已精准修复同音错别字并按句分段！');
+        } else {
+          // 本地智能分段回退
+          const formattedParas = [];
+          for (const p of paras) {
+            const rawSentText = p.html.replace(/<[^>]+>/g, '').trim();
+            if (!rawSentText) continue;
+            const subSents = formatBySentences(rawSentText);
+            for (const s of subSents) {
+              formattedParas.push({
+                isStarred: p.isStarred,
+                timeStr: p.timeStr || '',
+                timeSec: p.timeSec ?? null,
+                html: escapeHtml(s)
+              });
+            }
+          }
 
-        renderTranscriptBox(container, serialized, noteId);
-        triggerTranscriptAutoSave(container, noteId);
-        showToast("🎉 已完成智能标点断句，并保留每段时间戳！");
+          const serialized = formattedParas.map(p => {
+            const timeAttr = (p.timeSec !== null && p.timeStr) ? ` data-time="${p.timeSec}" data-timestr="${p.timeStr}"` : '';
+            const starAttr = p.isStarred ? ' class="para-starred"' : '';
+            return `<p${starAttr}${timeAttr}>${p.html}</p>`;
+          }).join('\n');
+
+          renderTranscriptBox(container, serialized, noteId, detectedProvider);
+          triggerTranscriptAutoSave(container, noteId);
+          showToast('🎉 已完成智能标点断句，并保留每段时间戳！');
+        }
       } catch (err) {
-        showToast(`标点优化失败: ${err.message}`);
+        showToast(`标点纠错失败: ${err.message}`);
       } finally {
         if (punctuateBtn) {
           punctuateBtn.disabled = false;
@@ -2740,6 +2789,316 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
     `;
     showToast(`❌ 语音转写失败: ${err.message}`, { isError: true });
   }
+}
+
+// 视频原生外挂软字幕轨探测 (TextTracks / cues)
+function detectVideoSoftSubtitles(videoEl) {
+  if (!videoEl) return null;
+  const tracks = videoEl.textTracks;
+  if (!tracks || tracks.length === 0) return null;
+
+  for (let i = 0; i < tracks.length; i++) {
+    const track = tracks[i];
+    try {
+      if (track.mode === "disabled") track.mode = "hidden";
+    } catch {}
+    if (track.cues && track.cues.length > 0) {
+      const items = [];
+      for (let j = 0; j < track.cues.length; j++) {
+        const cue = track.cues[j];
+        const text = (cue.text || "").replace(/<[^>]+>/g, "").trim();
+        if (text) {
+          const timeSec = Math.floor(cue.startTime || 0);
+          items.push({
+            timeSec,
+            timeStr: formatTimestamp(timeSec),
+            text
+          });
+        }
+      }
+      if (items.length > 0) return items;
+    }
+  }
+  return null;
+}
+
+// 视频画面底部硬字幕视觉提取 (Vision OCR)
+async function extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { fallbackToSpeech = false } = {}) {
+  const container = document.querySelector(containerSelector);
+  if (!container) return false;
+  container.style.display = "block";
+  container.innerHTML = `
+    <div class="transcript-loading">
+      <div class="spinner"></div>
+      <div style="flex: 1; min-width: 0;">
+        <div id="ocr-status-text" style="font-weight: 500; font-size: 13px; color: #334155; margin-bottom: 6px;">
+          🔍 正在准备视频画面字幕区域识别 (AI 视觉模型)...
+        </div>
+        <div id="ocr-progress-track" class="transcribe-progress-track" style="display: none;">
+          <div id="ocr-progress-bar" class="transcribe-progress-bar" style="width: 0%;"></div>
+        </div>
+      </div>
+    </div>
+    <div id="ocr-live-preview" class="transcribe-live-preview" style="display: none;"></div>
+  `;
+
+  const statusText = container.querySelector("#ocr-status-text");
+  const progressTrack = container.querySelector("#ocr-progress-track");
+  const progressBar = container.querySelector("#ocr-progress-bar");
+  const livePreview = container.querySelector("#ocr-live-preview");
+
+  let tempVideo = null;
+  let createdBlobUrl = null;
+
+  try {
+    if (statusText) statusText.textContent = "正在获取视频画面资源...";
+
+    let safeVideoUrl = mediaUrl;
+    try {
+      const cached = await OfflineMediaManager.getPlayableSource(mediaUrl);
+      if (cached?.src) safeVideoUrl = cached.src;
+    } catch {}
+
+    if (!safeVideoUrl.startsWith("blob:") && !safeVideoUrl.startsWith("data:")) {
+      try {
+        const res = await fetch(safeVideoUrl);
+        if (res.ok) {
+          const blob = await res.blob();
+          createdBlobUrl = URL.createObjectURL(blob);
+          safeVideoUrl = createdBlobUrl;
+        }
+      } catch (e) {
+        console.warn("Direct blob fetch for OCR video failed:", e);
+      }
+    }
+
+    tempVideo = document.createElement("video");
+    tempVideo.muted = true;
+    tempVideo.playsInline = true;
+    tempVideo.crossOrigin = "anonymous";
+    tempVideo.src = safeVideoUrl;
+
+    await new Promise((resolve, reject) => {
+      const onLoaded = () => {
+        tempVideo.removeEventListener("loadedmetadata", onLoaded);
+        resolve();
+      };
+      tempVideo.addEventListener("loadedmetadata", onLoaded);
+      tempVideo.addEventListener("error", () => reject(new Error("视频画面加载失败")));
+      setTimeout(onLoaded, 6000);
+    });
+
+    const duration = tempVideo.duration;
+    if (!duration || isNaN(duration) || duration <= 0) {
+      throw new Error("无法读取视频长度");
+    }
+
+    if (progressTrack) progressTrack.style.display = "block";
+
+    // 抽帧策略：每隔 2.5 秒抽样一次底部字幕区域，每 5 个切条垂直拼接为一张合成图送入视觉模型识别
+    const stepSec = 2.5;
+    const sampleTimes = [];
+    for (let t = 0.5; t < duration; t += stepSec) {
+      sampleTimes.push(Math.round(t * 10) / 10);
+    }
+    if (sampleTimes.length === 0) sampleTimes.push(0.5);
+
+    const batchSize = 5;
+    const totalBatches = Math.ceil(sampleTimes.length / batchSize);
+    const collectedSubs = [];
+    let providerUsed = "vision-ocr";
+
+    const vw = tempVideo.videoWidth || 720;
+    const vh = tempVideo.videoHeight || 1280;
+    // 字幕区域：通常位于画面底部 70% ~ 94% 高度区间
+    const cropX = 0;
+    const cropY = Math.floor(vh * 0.70);
+    const cropW = vw;
+    const cropH = Math.max(60, Math.floor(vh * 0.24));
+
+    // 目标每个切条绘制规格：缩放到 720 宽，高度按比例
+    const targetW = 720;
+    const targetH = Math.round((cropH / cropW) * targetW);
+
+    for (let b = 0; b < totalBatches; b++) {
+      const batchTimes = sampleTimes.slice(b * batchSize, (b + 1) * batchSize);
+      const percent = Math.round((b / totalBatches) * 100);
+      if (progressBar) progressBar.style.width = `${percent}%`;
+      if (statusText) statusText.textContent = `正在识别视频画面字幕 (${percent}%，第 ${b + 1}/${totalBatches} 批)...`;
+
+      // 创建合成 Canvas
+      const compCanvas = document.createElement("canvas");
+      compCanvas.width = targetW;
+      compCanvas.height = targetH * batchTimes.length;
+      const compCtx = compCanvas.getContext("2d");
+
+      for (let sIdx = 0; sIdx < batchTimes.length; sIdx++) {
+        const timeSec = batchTimes[sIdx];
+        tempVideo.currentTime = timeSec;
+        await new Promise(res => {
+          const onSeeked = () => {
+            tempVideo.removeEventListener("seeked", onSeeked);
+            res();
+          };
+          tempVideo.addEventListener("seeked", onSeeked);
+          setTimeout(onSeeked, 400);
+        });
+
+        const destY = sIdx * targetH;
+        compCtx.drawImage(tempVideo, cropX, cropY, cropW, cropH, 0, destY, targetW, targetH);
+
+        // 在左上角绘制明显的时间戳标签，供视觉大模型直接识别与锚定时间
+        const tStr = formatTimestamp(Math.floor(timeSec));
+        compCtx.fillStyle = "rgba(0, 0, 0, 0.8)";
+        compCtx.fillRect(10, destY + 8, 120, 32);
+        compCtx.fillStyle = "#ffffff";
+        compCtx.font = "bold 20px sans-serif";
+        compCtx.fillText(`[${tStr}]`, 18, destY + 31);
+      }
+
+      // 将合成图转为 DataURL 并发送至服务端 OCR 视觉模型
+      const base64Data = compCanvas.toDataURL("image/jpeg", 0.82);
+      const ocrResp = await fetch("/api/ocr-subtitle", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({ image: base64Data })
+      });
+
+      if (ocrResp.ok) {
+        const ocrData = await ocrResp.json();
+        if (ocrData.provider) providerUsed = ocrData.provider;
+        const ocrText = (ocrData.text || "").trim();
+
+        if (ocrText && !ocrText.includes("NONE") && !ocrText.includes("无字幕")) {
+          const lines = ocrText.split(/\r?\n+/).map(l => l.trim()).filter(Boolean);
+          for (const line of lines) {
+            // 解析出 [00:10] 字幕文本
+            const m = line.match(/^\[(\d{1,2}:\d{2})\]\s*(.*)$/);
+            if (m) {
+              const tStr = m[1];
+              const tText = m[2].trim();
+              if (tText && (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== tText)) {
+                collectedSubs.push({
+                  timeStr: tStr,
+                  timeSec: parseTimestampToSeconds(tStr),
+                  text: tText
+                });
+              }
+            } else if (line.length > 1) {
+              const approxTime = Math.floor(batchTimes[0]);
+              if (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== line) {
+                collectedSubs.push({
+                  timeStr: formatTimestamp(approxTime),
+                  timeSec: approxTime,
+                  text: line
+                });
+              }
+            }
+          }
+
+          if (livePreview && collectedSubs.length > 0) {
+            livePreview.style.display = "block";
+            livePreview.textContent = collectedSubs.map(s => `[${s.timeStr}] ${s.text}`).join("\n");
+            livePreview.scrollTop = livePreview.scrollHeight;
+          }
+        }
+      }
+
+      // 若在第 1 批采样完毕后完全未识别出任何字幕，说明该视频画面极可能没有烧录文字字幕
+      if (b === 0 && collectedSubs.length === 0 && fallbackToSpeech) {
+        if (statusText) statusText.textContent = "画面未检测到硬字幕，自动启用 AI 语音转写引擎...";
+        await new Promise(r => setTimeout(r, 600));
+        return false;
+      }
+    }
+
+    if (progressBar) progressBar.style.width = "100%";
+
+    if (collectedSubs.length === 0) {
+      if (fallbackToSpeech) {
+        return false;
+      }
+      throw new Error("视频画面底部未检测到清晰文字字幕");
+    }
+
+    const finalLines = collectedSubs.map(s => `[${s.timeStr}] ${s.text}`);
+    const finalTranscript = finalLines.join("\n");
+    const targetNoteId = noteId || (state.activeDetailNote?.id);
+
+    renderTranscriptBox(container, finalTranscript, noteId, providerUsed);
+    showToast(`👁️ 已直接从视频画面提取硬字幕 (共 ${collectedSubs.length} 条)！`);
+
+    if (targetNoteId) {
+      try {
+        await fetch(`/api/notes/${targetNoteId}/transcript`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ transcript: finalTranscript })
+        });
+        if (state.activeDetailNote && state.activeDetailNote.id === targetNoteId) {
+          state.activeDetailNote.transcript = finalTranscript;
+        }
+      } catch (err) {
+        console.warn("保存字幕到数据库失败:", err);
+      }
+    }
+
+    return true;
+  } catch (err) {
+    if (fallbackToSpeech) {
+      console.warn("画面字幕提取未果，自动切换至语音识别:", err.message);
+      return false;
+    }
+    console.error("Hard subtitle OCR error:", err);
+    container.innerHTML = `
+      <div style="color: var(--primary); font-size: 13px; padding: 12px; background: rgba(234, 44, 67, 0.05); border-radius: 8px;">
+        ⚠️ 画面字幕提取未成功 (${escapeHtml(err.message)})，可点击「🎙️ 提取字幕与文案」使用 AI 语音转写。
+      </div>
+    `;
+    showToast(`画面字幕提取未果: ${err.message}`, { isError: true });
+    return false;
+  } finally {
+    if (createdBlobUrl) {
+      URL.revokeObjectURL(createdBlobUrl);
+    }
+    if (tempVideo) {
+      tempVideo.src = "";
+      tempVideo.remove();
+    }
+  }
+}
+
+// 智能字幕与文案提取总入口：原生软字幕 -> 画面硬字幕 OCR -> AI 语音转写 (Whisper)
+async function extractVideoSubtitlesOrAudio(mediaUrl, containerSelector, noteId, videoEl) {
+  const container = document.querySelector(containerSelector);
+  if (!container) return;
+  container.style.display = "block";
+
+  // 1. 优先探测视频原生软字幕轨 (TextTracks / cues)
+  const softSubs = detectVideoSoftSubtitles(videoEl);
+  if (softSubs && softSubs.length > 0) {
+    const lines = softSubs.map(s => `[${s.timeStr}] ${s.text}`);
+    const text = lines.join("\n");
+    renderTranscriptBox(container, text, noteId, "soft-subtitles");
+    triggerTranscriptAutoSave(container, noteId);
+    showToast(`🎉 已直接从视频原生字幕轨提取 ${lines.length} 条字幕！`);
+    return;
+  }
+
+  // 2. 尝试探测并提取画面硬字幕 (Vision OCR)
+  const ocrSuccess = await extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { fallbackToSpeech: true });
+  if (ocrSuccess) {
+    return;
+  }
+
+  // 3. 画面无字幕时，平滑自动启用 AI 语音转写引擎 (Whisper Large-v3 / Cloudflare)
+  await transcribeAudio(mediaUrl, containerSelector, noteId);
 }
 
 // 3. 抽屉与收藏知识库管理
@@ -3355,6 +3714,7 @@ async function openNoteDetail(noteId) {
     const mediaFreedBanner = document.getElementById("modal-media-freed-banner");
     const toggleAudioBtn = document.getElementById("btn-modal-toggle-audio");
     const transcribeBtn = document.getElementById("btn-modal-transcribe");
+    const modalOcrBtn = document.getElementById("btn-modal-ocr-subtitles");
     const downloadVideoBtn = document.getElementById("btn-modal-download-video");
     const cleanupMediaBtn = document.getElementById("btn-modal-cleanup-media");
     const transcriptPanel = document.getElementById("modal-transcript-panel");
@@ -3470,7 +3830,13 @@ async function openNoteDetail(noteId) {
       if (transcribeBtn) {
         transcribeBtn.style.display = "inline-flex";
         transcribeBtn.onclick = () => {
-          transcribeAudio(activeVideoUrl, "#modal-transcript-panel", note.id);
+          extractVideoSubtitlesOrAudio(activeVideoUrl, "#modal-transcript-panel", note.id, vidPlayer);
+        };
+      }
+      if (modalOcrBtn) {
+        modalOcrBtn.style.display = "inline-flex";
+        modalOcrBtn.onclick = () => {
+          extractVideoHardSubtitles(activeVideoUrl, "#modal-transcript-panel", note.id);
         };
       }
     } else if (hasAudio) {
@@ -3498,6 +3864,7 @@ async function openNoteDetail(noteId) {
       if (downloadVideoBtn) downloadVideoBtn.style.display = "none";
       if (toggleAudioBtn) toggleAudioBtn.style.display = "none";
       if (cleanupMediaBtn) cleanupMediaBtn.style.display = "inline-flex";
+      if (modalOcrBtn) modalOcrBtn.style.display = "none";
 
       if (transcribeBtn) {
         transcribeBtn.style.display = "inline-flex";
@@ -3507,6 +3874,7 @@ async function openNoteDetail(noteId) {
       }
     } else if (hasTranscript) {
       // 视频与音频均已删除，但提取的语音文案完整保留
+      if (modalOcrBtn) modalOcrBtn.style.display = "none";
       if (vidWrap) vidWrap.style.display = "block";
       if (vidContainer) vidContainer.style.display = "none";
       if (audioWrap) audioWrap.style.display = "none";

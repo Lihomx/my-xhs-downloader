@@ -418,7 +418,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
         }
 
 
-        // 智能标点符号恢复与排版接口: POST /api/punctuate
+        // 智能标点符号恢复与 AI 错别字校对接口: POST /api/punctuate
         if (path === '/api/punctuate' && request.method === 'POST') {
           const pin = request.headers.get('x-auth-pin');
           const isAuthed = await verifyPin(env.DB, pin);
@@ -429,50 +429,62 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (!rawText) return json({ success: false, message: "文本不能为空" }, 400);
 
           let punctuatedText = '';
-          const systemPrompt = "你是一个专业的中文口语整理、对话听写断句与语音识别（ASR）错别字纠错大师。你将接收一段由语音识别生成的口语文本，其中可能缺少标点符号、断句混乱（或多句话连续堆砌在一起），并且可能包含发音相近的同音错别字、口误以及背景音乐诱发的重复复读词句。\n\n你的核心任务：\n1. 【对话与短句精细断句】：遇到人物对话、陈述或一句话说完，必须准确添加全角中文句号「。」；遇到疑问或反问语气（如多少钱、能优惠不、行不、好不、为啥、怎么）必须使用全角问号「？」；遇到强烈感叹或应答（如好嘞、行、太厉害了、错）使用感叹号「！」；\n2. 【逗号自然停顿】：句子内部较长或有语意短暂停顿时，合理补充中文逗号「，」，使阅读节奏极其舒适；\n3. 【核心排版：一个完整句子独立成一段】：每一个以句号「。」、问号「？」或感叹号「！」结尾的完整句子，必须单独换行独立成一个自然段！严禁将两句或多句话堆在同一段中；\n4. 【消除异常复读死循环】：如果输入中包含连续重复的无意义复读片段（如同一句话重复出现多次），请自动将其去重过滤，只保留合理语义内容；\n5. 【纠正同音字与口语错别字】：结合上下文语境（如生活对话、商业买卖、职场管理等），智能将口语误识别词纠正为标准字词或规范成语；\n6. 【严禁多余废话】：严禁输出任何开场白、解释说明、前言、总结或 markdown 标记，直接输出分段整理后的纯文本：";
+          const systemPrompt = `你是一个专业的中文口语整理、短视频字幕精修与语音识别（ASR）深度纠错大师。
+你将接收一段由短视频语音识别生成的口语文本，其中可能包含发音相近的同音错别字（如将“狗狗雨衣”误识别为“狗狗羽衣”、“第一个品”误识别为“第一、的”）、语序口语化混乱、缺少标点或多余口语填充词（如“呀/但是”）。
 
-          // 优先策略 1: 如果配置了 Groq API Key，使用 Groq 极速大模型 (llama-3.1-8b-instant，0.2 秒神速响应)
+核心规则与任务：
+1. 【严格保留时间戳标记】：若输入的每一行开头带有形如 [00:50] 或 [⏱ 00:50] 的时间戳标记，你必须原原本本地为该行保留原时间戳前缀，严禁篡改、错位、重排或删除任何时间戳！
+2. 【强力纠正同音错别字与行业词】：结合上下文商业、生活、电商卖货、创业、宠物、职场、知识等语境，智能将口语同音字误识（例如“羽衣”->“雨衣”、“气权”->“弃权”、“打薄”->“赌博”）自动纠正为准确的标准中文词汇。
+3. 【精细标点与自然断句】：疑问句务必补充全角问号「？」，陈述句补充全角句号「。」，短暂停顿补充逗号「，」，使语句通顺、阅读节奏极佳。
+4. 【消除口吃复读与死循环】：自动清理无意义的卡顿复读词，理顺倒装口语。
+5. 【核心排版】：每一个带时间戳的完整句子单独成一行。
+6. 【严禁多余废话】：严禁输出任何前言、解释说明、自我介绍或 markdown 标记，直接输出整理纠正后的纯文本：`;
+
+          // 优先策略 1: 如果配置了 Groq API Key，使用 Groq 极速大模型 (优先 70B 大模型 llama-3.3-70b-versatile，兜底 llama-3.1-8b-instant)
           let thirdPartyKey = '';
           if (env.DB) {
             thirdPartyKey = await getSetting(env.DB, 'whisper_api_key', '');
           }
 
           if (thirdPartyKey) {
-            try {
-              const groqChatRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${thirdPartyKey.trim()}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  model: 'llama-3.1-8b-instant',
-                  messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: rawText }
-                  ],
-                  temperature: 0.1,
-                  max_tokens: 8192
-                })
-              });
-              if (groqChatRes.ok) {
-                const groqData = await groqChatRes.json();
-                const reply = groqData.choices?.[0]?.message?.content?.trim();
-                // 严格校验完整度：长度不得低于 85%，防止长文本被截断截尾
-                if (reply && reply.length >= rawText.length * 0.85) {
-                  punctuatedText = reply;
+            const modelsToTry = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+            for (const model of modelsToTry) {
+              try {
+                const groqChatRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${thirdPartyKey.trim()}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    model,
+                    messages: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: rawText }
+                    ],
+                    temperature: 0.1,
+                    max_tokens: 8192
+                  })
+                });
+                if (groqChatRes.ok) {
+                  const groqData = await groqChatRes.json();
+                  const reply = groqData.choices?.[0]?.message?.content?.trim();
+                  if (reply && reply.length >= rawText.length * 0.7) {
+                    punctuatedText = reply;
+                    break;
+                  }
                 }
+              } catch (err) {
+                console.warn(`Groq LLM model ${model} error:`, err);
               }
-            } catch (err) {
-              console.warn("Groq LLM punctuate call error:", err);
             }
           }
 
           // 策略 2: 降级使用 Cloudflare Workers AI 原生大语言模型
           if (!punctuatedText && env.AI) {
             const candidateModels = [
+              '@cf/meta/llama-3.3-70b-instruct',
               '@cf/meta/llama-3.2-3b-instruct',
-              '@cf/meta/llama-3.2-1b-instruct',
               '@cf/qwen/qwen3-30b-a3b-fp8'
             ];
             for (const model of candidateModels) {
@@ -482,7 +494,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: rawText }
                   ],
-                  max_tokens: 2500,
+                  max_tokens: 4096,
                   temperature: 0.1
                 });
                 const reply = (aiRes && (aiRes.response || aiRes.text || ''))?.trim();
@@ -508,6 +520,94 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             success: true,
             text: punctuatedText || rawText
           });
+        }
+
+        // 4.3 视频画面硬字幕视觉识别接口: POST /api/ocr-subtitle
+        if (path === '/api/ocr-subtitle' && request.method === 'POST') {
+          const pin = request.headers.get('x-auth-pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const body = await request.json().catch(() => ({}));
+          const imageDataUrl = body.image || ''; // data:image/jpeg;base64,...
+          if (!imageDataUrl) return json({ success: false, message: "缺少图像数据" }, 400);
+
+          let thirdPartyKey = '';
+          if (env.DB) thirdPartyKey = await getSetting(env.DB, 'whisper_api_key', '');
+
+          // 策略 1: 优先使用 Groq 视觉大模型 (llama-3.2-11b-vision-preview)
+          if (thirdPartyKey) {
+            try {
+              const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${thirdPartyKey.trim()}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'llama-3.2-11b-vision-preview',
+                  messages: [
+                    {
+                      role: 'user',
+                      content: [
+                        {
+                          type: 'text',
+                          text: '请仔细识别图片中从视频底部截取的字幕条文字。如果图片包含带时间戳标签如 [00:10] 的条目，请按行输出：[时间戳] 字幕文字。如果画面中没有制作字幕或只有背景，跳过该条或回复 NONE。严禁输出任何多余废话或解释说明。'
+                        },
+                        {
+                          type: 'image_url',
+                          image_url: { url: imageDataUrl }
+                        }
+                      ]
+                    }
+                  ],
+                  temperature: 0.1,
+                  max_tokens: 1024
+                })
+              });
+
+              if (groqRes.ok) {
+                const groqData = await groqRes.json();
+                const text = (groqData.choices?.[0]?.message?.content || '').trim();
+                const cleaned = text.includes('NONE') && text.length < 10 ? '' : text;
+                return json({
+                  success: true,
+                  text: cleaned,
+                  provider: 'groq-vision'
+                });
+              }
+            } catch (err) {
+              console.warn("Groq vision OCR error:", err);
+            }
+          }
+
+          // 策略 2: 降级使用 Cloudflare Workers AI 视觉模型
+          if (env.AI) {
+            try {
+              const pureBase64 = imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
+              const binary = atob(pureBase64);
+              const uint8 = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) uint8[i] = binary.charCodeAt(i);
+
+              const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+                image: Array.from(uint8),
+                prompt: '识别图片中的中文字幕。按行输出，如果没有字幕直接回复无。不要输出多余解释。'
+              });
+              const text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
+              return json({
+                success: true,
+                text: text === '无' ? '' : text,
+                provider: 'cloudflare-vision'
+              });
+            } catch (e) {
+              console.warn("Cloudflare vision error:", e);
+            }
+          }
+
+          return json({
+            success: false,
+            message: "未配置可用视觉模型"
+          }, 500);
         }
 
         // 兼容旧接口：修改 PIN 码

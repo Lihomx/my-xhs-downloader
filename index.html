@@ -184,7 +184,8 @@
               <span class="media-count">🎬 视频播放与下载</span>
               <div class="media-btn-group">
                 <button id="btn-toggle-audio-mode" class="btn btn-secondary" type="button" title="收起视频画面，仅播放纯音频磨耳朵">🎧 纯听音频</button>
-                <button id="btn-transcribe-video" class="btn btn-secondary" type="button" title="提取视频中人声语音并生成文本">🎙️ 提取语音文案</button>
+                <button id="btn-transcribe-video" class="btn btn-secondary" type="button" title="优先扫描视频字幕，无字幕则自动启用 AI 语音转写">🎙️ 提取字幕与文案</button>
+                <button id="btn-ocr-video" class="btn btn-secondary" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">🔍 画面字幕提取</button>
                 <select id="video-quality-select" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px;"></select>
                 <button id="btn-download-video" class="btn btn-primary" type="button">下载视频</button>
               </div>
@@ -506,8 +507,11 @@
                 <button id="btn-modal-toggle-audio" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
                   🎧 纯听音频
                 </button>
-                <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button">
-                  🎙️ 提取语音文案
+                <button id="btn-modal-transcribe" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button" title="智能识别：优先提取视频字幕，无字幕则自动启用 AI 语音转写">
+                  🎙️ 提取字幕与文案
+                </button>
+                <button id="btn-modal-ocr-subtitles" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; display: none;" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">
+                  🔍 画面字幕提取
                 </button>
                 <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px;" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
                   📻 加入随身听
