@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.23" />
+    <link rel="stylesheet" href="/style.css?v=2.0.24" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -783,12 +783,17 @@
           </div>
 
           <div style="margin: 12px 0 16px 0; padding: 10px 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #1e293b; cursor: pointer; margin-bottom: 0;">
-              <input type="checkbox" id="settings-auto-bg-ocr" checked style="cursor: pointer; width: 15px; height: 15px; accent-color: var(--primary);" />
-              🐢 新采集视频笔记自动在后台进行慢速精细画面字幕提取
-            </label>
-            <p style="font-size: 11px; color: var(--text-muted); margin: 4px 0 0 23px; line-height: 1.4;">
-              开启后，新采集的视频笔记将自动由后台以从容节奏精细提取字幕（密集抽帧 + 频率重试），100% 完整收录所有文案，无需人工守候。
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #1e293b; cursor: pointer; margin-bottom: 0;">
+                <input type="checkbox" id="settings-auto-bg-ocr" checked style="cursor: pointer; width: 15px; height: 15px; accent-color: var(--primary);" />
+                🐢 新采集视频自动后台慢速精细字幕提取 (多端断点接力)
+              </label>
+              <button id="btn-trigger-resume-ocr" type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; height: 26px; border-radius: 4px;" title="立即检查云端并接力提取未完成字幕的视频">
+                🔄 立即接力检查
+              </button>
+            </div>
+            <p style="font-size: 11px; color: var(--text-muted); margin: 6px 0 0 23px; line-height: 1.4;">
+              开启后，手机上采集后关掉浏览器也会安全留存；电脑或其他设备下次打开时将自动静默接力跑完待处理视频的慢速字幕提取，零漏字零丢帧。
             </p>
           </div>
 
@@ -1003,6 +1008,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.20"></script>
+    <script type="module" src="/app.js?v=2.0.24"></script>
   </body>
 </html>

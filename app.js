@@ -3195,19 +3195,23 @@ async function extractVideoHardSubtitles(
   }
 }
 
-// 全局后台慢速精细画面字幕提取任务队列
+// 全局后台慢速精细画面字幕提取任务队列 (支持多端自动断点接力)
 const BackgroundSubtitleQueue = {
   queue: [],
   isProcessing: false,
   currentNote: null,
+  failedNoteIds: new Set(),
+  isCheckingPending: false,
+  lastCheckTime: 0,
 
   enqueue(note) {
     if (!note) return;
     const noteId = note.id || note.noteId;
     if (!noteId) return;
 
-    // 已有文案或已在处理中或已在队列中，跳过
+    // 已有文案或已在处理中或已在队列中或已知失败，跳过
     if (note.transcript && String(note.transcript).trim()) return;
+    if (this.failedNoteIds.has(noteId)) return;
     if (this.currentNote && (this.currentNote.id === noteId || this.currentNote.noteId === noteId)) return;
     if (this.queue.some(n => (n.id || n.noteId) === noteId)) return;
 
@@ -3218,6 +3222,53 @@ const BackgroundSubtitleQueue = {
     this.queue.push(note);
     this.updatePillUI();
     this.processNext();
+  },
+
+  // 🔍 核心：多端断点接力检测器 (从 Cloudflare D1 拉取待提取的视频)
+  async checkAndResumePending(showNotify = false) {
+    const autoBgOcr = localStorage.getItem("xhs_auto_bg_ocr") !== "false";
+    if (!autoBgOcr) return 0;
+    if (this.isCheckingPending) return 0;
+
+    this.isCheckingPending = true;
+    this.lastCheckTime = Date.now();
+
+    try {
+      const res = await fetch("/api/notes-pending-subtitles?limit=30", {
+        headers: { "x-auth-pin": state.pin }
+      });
+      if (!res.ok) return 0;
+
+      const data = await res.json();
+      const items = data.items || [];
+      if (!Array.isArray(items) || items.length === 0) return 0;
+
+      let addedCount = 0;
+      items.forEach((note) => {
+        const noteId = note.id;
+        if (!noteId) return;
+        if (this.failedNoteIds.has(noteId)) return;
+        if (this.currentNote && (this.currentNote.id === noteId || this.currentNote.noteId === noteId)) return;
+        if (this.queue.some((n) => (n.id || n.noteId) === noteId)) return;
+
+        this.queue.push(note);
+        addedCount++;
+      });
+
+      if (addedCount > 0) {
+        this.updatePillUI();
+        if (showNotify || !this.isProcessing) {
+          showToast(`🐢 检测到 ${addedCount} 篇待处理视频，后台正在自动接力慢速精细提取字幕...`);
+        }
+        this.processNext();
+      }
+      return addedCount;
+    } catch (err) {
+      console.warn("checkAndResumePending error:", err);
+      return 0;
+    } finally {
+      this.isCheckingPending = false;
+    }
   },
 
   updatePillUI(customText = null) {
@@ -3236,7 +3287,7 @@ const BackgroundSubtitleQueue = {
       textEl.textContent = customText;
     } else {
       const title = (this.currentNote?.title || "视频笔记").substring(0, 10);
-      textEl.textContent = `🐢 后台慢速提取字幕中: 「${title}...」(队列剩 ${this.queue.length} 个)`;
+      textEl.textContent = `🐢 后台慢速提取字幕中: 「${title}...」(待接力 ${this.queue.length} 个)`;
     }
   },
 
@@ -3268,15 +3319,29 @@ const BackgroundSubtitleQueue = {
 
       if (ok) {
         showToast(`✅ 后台已完成「${noteTitle.substring(0, 12)}」慢速精细字幕提取！`);
+        // 同步通知随身听播放引擎更新
+        if (typeof ShufflePlayer !== "undefined" && typeof ShufflePlayer.loadPlaylist === "function") {
+          ShufflePlayer.loadPlaylist();
+        }
+      } else {
+        this.failedNoteIds.add(noteId);
       }
     } catch (err) {
       console.warn("Background subtitle extraction error for note:", noteId, err);
+      this.failedNoteIds.add(noteId);
     } finally {
       this.isProcessing = false;
       this.currentNote = null;
       this.updatePillUI();
+
       if (this.queue.length > 0) {
-        setTimeout(() => this.processNext(), 1200);
+        setTimeout(() => this.processNext(), 2000);
+      } else {
+        // 如果知识库当前在展示，自动无感局部刷新
+        const kbContainer = document.getElementById("kb-cards-container");
+        if (kbContainer && kbContainer.children.length > 0) {
+          loadNotes(document.getElementById("kb-search-input")?.value || "");
+        }
       }
     }
   }
@@ -6070,6 +6135,15 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // 绑定手动触发断点接力检查按钮
+  document.getElementById("btn-trigger-resume-ocr")?.addEventListener("click", async () => {
+    showToast("🔍 正在检查待接力提取字幕的视频...");
+    const count = await BackgroundSubtitleQueue.checkAndResumePending(true);
+    if (count === 0 && !BackgroundSubtitleQueue.isProcessing) {
+      showToast("🎉 云端视频笔记均已提取完字幕，暂无待接力任务！");
+    }
+  });
+
   // 初始获取一次徽标计数与存储用量
   refreshNotesBadge();
   loadStorageUsage();
@@ -6077,4 +6151,25 @@ document.addEventListener("DOMContentLoaded", () => {
   // 初始化随身听播放引擎与播放库
   ShufflePlayer.init();
   ShufflePlayer.loadPlaylist();
+
+  // 初始化多端自动断点接力检查 (延迟 2.5 秒，避开首屏高并发)
+  setTimeout(() => {
+    BackgroundSubtitleQueue.checkAndResumePending();
+  }, 2500);
+
+  // 页面切回可见时智能检查 (距离上次检查超过 30 秒)
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      if (Date.now() - BackgroundSubtitleQueue.lastCheckTime > 30000) {
+        BackgroundSubtitleQueue.checkAndResumePending();
+      }
+    }
+  });
+
+  // 挂起周期轮询检查 (每 75 秒检查一次是否有手机端新采集的待提取视频)
+  setInterval(() => {
+    if (!BackgroundSubtitleQueue.isProcessing && BackgroundSubtitleQueue.queue.length === 0) {
+      BackgroundSubtitleQueue.checkAndResumePending();
+    }
+  }, 75000);
 });

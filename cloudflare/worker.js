@@ -28,6 +28,7 @@ import {
   saveNoteAudio,
   toggleNoteShuffle,
   getShuffleNotes,
+  getPendingSubtitleNotes,
   updateNoteAuthor,
   getAuthorsWithCounts,
   getStorageUsage
@@ -745,6 +746,17 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           `).all();
 
           return json({ success: true, count: rows.results?.length || 0, items: rows.results || [] });
+        }
+
+        // 5.4 获取待提取字幕的视频笔记列表 (多端自动断点接力): GET /api/notes-pending-subtitles
+        if (path === '/api/notes-pending-subtitles' && request.method === 'GET') {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '30', 10), 1), 100);
+          const items = await getPendingSubtitleNotes(env.DB, limit);
+          return json({ success: true, count: items.length, items });
         }
 
         // 6. 单篇笔记操作 (GET, DELETE, 更新感想, 更新标签)
