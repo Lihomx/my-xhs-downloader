@@ -1142,7 +1142,7 @@ function renderParseResult(note) {
     const ocrBtn = document.getElementById("btn-ocr-video");
     if (ocrBtn) {
       ocrBtn.onclick = () => {
-        extractVideoHardSubtitles(activeUrl, "#transcript-panel", note.noteId || note.id);
+        extractVideoHardSubtitles(activeUrl, "#transcript-panel", note.noteId || note.id, { fallbackToSpeech: true });
       };
     }
 
@@ -1152,8 +1152,9 @@ function renderParseResult(note) {
       slowOcrBtn.onclick = () => {
         extractVideoHardSubtitles(activeUrl, "#transcript-panel", note.noteId || note.id, {
           isSlowMode: true,
-          stepSec: 1.2,
-          batchDelayMs: 3000
+          stepSec: 1.6,
+          batchDelayMs: 2500,
+          fallbackToSpeech: true
         });
       };
     }
@@ -3173,18 +3174,38 @@ async function extractVideoHardSubtitles(
 
     return true;
   } catch (err) {
+    if (fallbackToSpeech && container) {
+      console.warn("画面字幕提取遇到限制或未果，自动切换至 AI 语音识别:", err.message);
+      showToast("🐢 画面视觉接口繁忙，已自动为您平滑切换至 AI 语音极速转写！");
+      try {
+        await transcribeAudio(mediaUrl, containerSelector, noteId);
+        return true;
+      } catch (audioErr) {
+        console.error("Fallback speech transcription error:", audioErr);
+      }
+    }
     if (fallbackToSpeech) {
-      console.warn("画面字幕提取未果，自动切换至语音识别:", err.message);
       return false;
     }
     console.error("Hard subtitle OCR error:", err);
     if (container) {
-      container.innerHTML = `
-        <div style="color: var(--primary); font-size: 13px; padding: 12px; background: rgba(234, 44, 67, 0.05); border-radius: 8px;">
-          ⚠️ 画面字幕提取未成功 (${escapeHtml(err.message)})，可点击「🎙️ 提取字幕与文案」使用 AI 语音转写。
-        </div>
-      `;
-      showToast(`画面字幕提取未果: ${err.message}`, { isError: true });
+      // 遇到视觉限制时，直接自动平滑转为语音识别兜底
+      showToast("🐢 画面字幕识别受限，正在平滑切换至 AI 语音极速转写...");
+      try {
+        await transcribeAudio(mediaUrl, containerSelector, noteId);
+        return true;
+      } catch (audioErr) {
+        const cleanMsg = String(err.message || "").includes("5016")
+          ? "视觉模型接口繁忙，已尝试切换语音识别"
+          : escapeHtml(err.message);
+        container.innerHTML = `
+          <div style="color: var(--primary); font-size: 13px; padding: 12px; background: rgba(234, 44, 67, 0.05); border-radius: 8px;">
+            ⚠️ 字幕与文案提取未成功 (${cleanMsg})，请检查网络或在系统设置中确认 API Key。
+          </div>
+        `;
+        showToast(`提取未果: ${cleanMsg}`, { isError: true });
+        return false;
+      }
     }
     return false;
   } finally {
@@ -4160,7 +4181,7 @@ async function openNoteDetail(noteId) {
       if (modalOcrBtn) {
         modalOcrBtn.style.display = "inline-flex";
         modalOcrBtn.onclick = () => {
-          extractVideoHardSubtitles(activeVideoUrl, "#modal-transcript-panel", note.id);
+          extractVideoHardSubtitles(activeVideoUrl, "#modal-transcript-panel", note.id, { fallbackToSpeech: true });
         };
       }
       if (modalSlowOcrBtn) {
@@ -4168,8 +4189,9 @@ async function openNoteDetail(noteId) {
         modalSlowOcrBtn.onclick = () => {
           extractVideoHardSubtitles(activeVideoUrl, "#modal-transcript-panel", note.id, {
             isSlowMode: true,
-            stepSec: 1.2,
-            batchDelayMs: 3000
+            stepSec: 1.6,
+            batchDelayMs: 2500,
+            fallbackToSpeech: true
           });
         };
       }

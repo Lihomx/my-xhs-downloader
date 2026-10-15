@@ -623,10 +623,26 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
             for (const cfModel of cfVisionModels) {
               try {
-                const aiRes = await env.AI.run(cfModel, {
-                  image: imageBytes,
-                  prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
-                });
+                let aiRes;
+                try {
+                  aiRes = await env.AI.run(cfModel, {
+                    image: imageBytes,
+                    prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
+                  });
+                } catch (firstErr) {
+                  // 针对 Meta Llama 3.2 首次调用需授权 'agree' 握手的错误码 5016 自动处理
+                  if (String(firstErr.message).includes('5016') || String(firstErr.message).includes('agree')) {
+                    console.log(`Submitting license agree prompt for ${cfModel}...`);
+                    await env.AI.run(cfModel, { prompt: 'agree' }).catch(() => {});
+                    aiRes = await env.AI.run(cfModel, {
+                      image: imageBytes,
+                      prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
+                    });
+                  } else {
+                    throw firstErr;
+                  }
+                }
+
                 const text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
                 if (!text) continue;
                 // 过滤画面描述类幻觉（如“女性在台上发言”、“握手的女孩”、“红色礼服”等非字幕内容）
@@ -648,10 +664,14 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           }
 
           const isRateLimit = lastOcrError.includes("429") || lastOcrError.includes("Rate limit");
+          const friendlyMessage = isRateLimit
+            ? "视觉模型接口已达单日调用上限 (Rate Limit)，建议使用语音识别"
+            : (lastOcrError.includes("5016") ? "视觉模型授权中，建议使用语音识别" : (lastOcrError ? lastOcrError.slice(0, 120) : "未配置可用视觉模型"));
+
           return json({
             success: false,
             isRateLimit,
-            message: lastOcrError || "未配置可用视觉模型"
+            message: friendlyMessage
           }, isRateLimit ? 429 : 500);
         }
 
