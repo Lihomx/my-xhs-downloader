@@ -92,6 +92,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             const whisperProvider = await getSetting(env.DB, 'whisper_provider', '');
             const whisperApiKey = await getSetting(env.DB, 'whisper_api_key', '');
             const whisperApiEndpoint = await getSetting(env.DB, 'whisper_api_endpoint', '');
+            const autoBgOcr = await getSetting(env.DB, 'auto_bg_ocr', 'true');
             const effectiveProvider = whisperProvider || (whisperApiKey ? 'groq' : 'cloudflare');
             return json({
               success: true,
@@ -100,6 +101,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               whisperProvider: effectiveProvider,
               whisperApiKey,
               whisperApiEndpoint,
+              autoBgOcr: autoBgOcr !== 'false',
               hasCloudflareAi: Boolean(env.AI)
             });
           }
@@ -125,6 +127,9 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             }
             if (typeof body.whisperApiEndpoint === 'string') {
               await setSetting(env.DB, 'whisper_api_endpoint', body.whisperApiEndpoint.trim());
+            }
+            if (typeof body.autoBgOcr === 'boolean' || typeof body.autoBgOcr === 'string') {
+              await setSetting(env.DB, 'auto_bg_ocr', String(body.autoBgOcr) === 'false' ? 'false' : 'true');
             }
             return json({ success: true, message: "设置已保存成功" });
           }
@@ -754,9 +759,9 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           const isAuthed = await verifyPin(env.DB, pin);
           if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
 
-          const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '30', 10), 1), 100);
-          const items = await getPendingSubtitleNotes(env.DB, limit);
-          return json({ success: true, count: items.length, items });
+          const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10), 1), 200);
+          const result = await getPendingSubtitleNotes(env.DB, limit);
+          return json({ success: true, count: result.items.length, total: result.total, items: result.items });
         }
 
         // 6. 单篇笔记操作 (GET, DELETE, 更新感想, 更新标签)

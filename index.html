@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.25" />
+    <link rel="stylesheet" href="/style.css?v=2.0.26" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -243,6 +243,9 @@
                 <input type="text" id="kb-search-input" class="search-input" placeholder="🔍 检索标题、正文、博主、随笔批注或标签..." />
               </div>
               <div class="kb-actions-group">
+                <button id="btn-kb-pending-subtitles" class="btn btn-secondary" type="button" style="display: none; background: rgba(245, 158, 11, 0.1); color: #d97706; border-color: rgba(245, 158, 11, 0.3);" title="点击一键在后台为所有未提取文案的视频慢速精细提取">
+                  🐢 <span id="kb-pending-subtitles-text">待提取字幕 (0)</span>
+                </button>
                 <button id="btn-kb-usage-pill" class="btn btn-secondary kb-usage-pill-btn" type="button" title="点击查看 Cloudflare 免费配额与存储用量">
                   ☁️ <span id="kb-usage-text">硬盘: 计算中...</span>
                 </button>
@@ -782,18 +785,21 @@
             </div>
           </div>
 
-          <div style="margin: 12px 0 16px 0; padding: 10px 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+          <div style="margin: 12px 0 16px 0; padding: 12px 14px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
             <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
               <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #1e293b; cursor: pointer; margin-bottom: 0;">
-                <input type="checkbox" id="settings-auto-bg-ocr" checked style="cursor: pointer; width: 15px; height: 15px; accent-color: var(--primary);" />
-                🐢 新采集视频自动后台慢速精细字幕提取 (多端断点接力)
+                <input type="checkbox" id="settings-auto-bg-ocr" checked style="cursor: pointer; width: 16px; height: 16px; accent-color: var(--primary);" />
+                🐢 只要未提取文案的笔记均自动加入后台慢速精细字幕提取 (多端断点接力)
               </label>
-              <button id="btn-trigger-resume-ocr" type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; height: 26px; border-radius: 4px;" title="立即检查云端并接力提取未完成字幕的视频">
-                🔄 立即接力检查
-              </button>
+              <div style="display: flex; gap: 6px; align-items: center;">
+                <span id="pending-ocr-badge" class="badge-engine" style="background: rgba(245, 158, 11, 0.15); color: #d97706; border-color: rgba(245, 158, 11, 0.3); font-size: 11px; padding: 2px 6px; display: none;">待提取 0 篇</span>
+                <button id="btn-trigger-resume-ocr" type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; height: 26px; border-radius: 4px;" title="立即扫描云端未提取文案的视频并全量接力提取">
+                  🔄 立即全量接力
+                </button>
+              </div>
             </div>
-            <p style="font-size: 11px; color: var(--text-muted); margin: 6px 0 0 23px; line-height: 1.4;">
-              开启后，手机上采集后关掉浏览器也会安全留存；电脑或其他设备下次打开时将自动静默接力跑完待处理视频的慢速字幕提取，零漏字零丢帧。
+            <p style="font-size: 11px; color: var(--text-muted); margin: 6px 0 0 24px; line-height: 1.45;">
+              开启后，不论是<strong>新采集下载</strong>还是<strong>历史已存入知识库</strong>的视频笔记，只要没有提取文案，系统均会自动加入后台慢速精细字幕提取队列；零漏字、零丢帧、静默自动补齐；无论手机或电脑端均可无缝断点接力。
             </p>
           </div>
 
@@ -1008,6 +1014,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.25"></script>
+    <script type="module" src="/app.js?v=2.0.26"></script>
   </body>
 </html>

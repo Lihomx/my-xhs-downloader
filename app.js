@@ -3225,23 +3225,47 @@ const BackgroundSubtitleQueue = {
     this.processNext();
   },
 
-  // 🔍 核心：多端断点接力检测器 (从 Cloudflare D1 拉取待提取的视频)
+  // 🔍 核心：多端断点接力检测器 (从 Cloudflare D1 拉取所有未提取文案的视频笔记)
   async checkAndResumePending(showNotify = false) {
     const autoBgOcr = localStorage.getItem("xhs_auto_bg_ocr") !== "false";
-    if (!autoBgOcr) return 0;
+    if (!autoBgOcr && !showNotify) return 0;
     if (this.isCheckingPending) return 0;
 
     this.isCheckingPending = true;
     this.lastCheckTime = Date.now();
 
     try {
-      const res = await fetch("/api/notes-pending-subtitles?limit=30", {
+      const res = await fetch("/api/notes-pending-subtitles?limit=60", {
         headers: { "x-auth-pin": state.pin }
       });
       if (!res.ok) return 0;
 
       const data = await res.json();
       const items = data.items || [];
+      const totalPending = typeof data.total === "number" ? data.total : items.length;
+
+      // 同步更新系统设置与知识库待提取字幕徽标与快捷按钮
+      const badge = document.getElementById("pending-ocr-badge");
+      if (badge) {
+        if (totalPending > 0) {
+          badge.textContent = `待提取 ${totalPending} 篇`;
+          badge.style.display = "inline-flex";
+        } else {
+          badge.style.display = "none";
+        }
+      }
+      const kbBtn = document.getElementById("btn-kb-pending-subtitles");
+      const kbText = document.getElementById("kb-pending-subtitles-text");
+      if (kbBtn && kbText) {
+        if (totalPending > 0) {
+          kbText.textContent = `待提取字幕 (${totalPending})`;
+          kbBtn.style.display = "inline-flex";
+        } else {
+          kbBtn.style.display = "none";
+        }
+      }
+
+      if (!autoBgOcr && !showNotify) return 0;
       if (!Array.isArray(items) || items.length === 0) return 0;
 
       let addedCount = 0;
@@ -3259,7 +3283,7 @@ const BackgroundSubtitleQueue = {
       if (addedCount > 0) {
         this.updatePillUI();
         if (showNotify || !this.isProcessing) {
-          showToast(`🐢 检测到 ${addedCount} 篇待处理视频，后台正在自动接力慢速精细提取字幕...`);
+          showToast(`🐢 检测到 ${addedCount} 篇未提取文案的视频，已加入后台慢速精细提取队列...`);
         }
         this.processNext();
       }
@@ -3288,7 +3312,7 @@ const BackgroundSubtitleQueue = {
       textEl.textContent = customText;
     } else {
       const title = (this.currentNote?.title || "视频笔记").substring(0, 10);
-      textEl.textContent = `🐢 后台慢速提取字幕中: 「${title}...」(待接力 ${this.queue.length} 个)`;
+      textEl.textContent = `🐢 后台慢速提取字幕: 「${title}...」(队列待处理 ${this.queue.length} 个)`;
     }
   },
 
@@ -3311,8 +3335,8 @@ const BackgroundSubtitleQueue = {
 
       const ok = await extractVideoHardSubtitles(videoUrl, null, noteId, {
         isSlowMode: true,
-        stepSec: 1.2,
-        batchDelayMs: 3000,
+        stepSec: 1.6,
+        batchDelayMs: 2500,
         onProgress: ({ percent, currentBatch, totalBatches }) => {
           this.updatePillUI(`🐢 后台精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
         }
@@ -3338,10 +3362,23 @@ const BackgroundSubtitleQueue = {
       if (this.queue.length > 0) {
         setTimeout(() => this.processNext(), 2000);
       } else {
-        // 如果知识库当前在展示，自动无感局部刷新
-        const kbContainer = document.getElementById("kb-cards-container");
-        if (kbContainer && kbContainer.children.length > 0) {
-          loadNotes(document.getElementById("kb-search-input")?.value || "");
+        // 当前队列已跑完，检查云端是否还有下一批未提取文案的视频（全自动连续接力）
+        const autoBgOcr = localStorage.getItem("xhs_auto_bg_ocr") !== "false";
+        if (autoBgOcr) {
+          setTimeout(async () => {
+            const added = await this.checkAndResumePending(false);
+            if (added === 0) {
+              const kbContainer = document.getElementById("kb-cards-container");
+              if (kbContainer && kbContainer.children.length > 0) {
+                loadNotes(document.getElementById("kb-search-input")?.value || "");
+              }
+            }
+          }, 2500);
+        } else {
+          const kbContainer = document.getElementById("kb-cards-container");
+          if (kbContainer && kbContainer.children.length > 0) {
+            loadNotes(document.getElementById("kb-search-input")?.value || "");
+          }
         }
       }
     }
@@ -3811,6 +3848,9 @@ async function loadNotes(search = "") {
       card.addEventListener("click", () => openNoteDetail(item.id));
       gridContainer.appendChild(card);
     });
+
+    // 检查并同步待提取字幕状态徽标
+    BackgroundSubtitleQueue.checkAndResumePending(false);
   } catch (err) {
     gridContainer.innerHTML = `<div style="grid-column: 1/-1; color:var(--primary); padding:20px; text-align:center;">加载失败: ${err.message}</div>`;
   }
@@ -6018,6 +6058,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const whisperProvider = data.whisperProvider || (data.whisperApiKey ? "groq" : "cloudflare");
         state.whisperProvider = whisperProvider;
         syncAiEngineSettingsUi(whisperProvider, data.whisperApiKey || "");
+
+        if (typeof data.autoBgOcr === "boolean") {
+          if (autoBgOcrEl) autoBgOcrEl.checked = data.autoBgOcr;
+          localStorage.setItem("xhs_auto_bg_ocr", data.autoBgOcr ? "true" : "false");
+        }
+        BackgroundSubtitleQueue.checkAndResumePending(false);
       }
     } catch {}
   });
@@ -6061,7 +6107,8 @@ document.addEventListener("DOMContentLoaded", () => {
           xhsCookie: cookieVal,
           whisperProvider,
           whisperApiKey,
-          whisperApiEndpoint
+          whisperApiEndpoint,
+          autoBgOcr: document.getElementById("settings-auto-bg-ocr")?.checked !== false
         })
       });
       const data = await res.json();
@@ -6130,18 +6177,40 @@ document.addEventListener("DOMContentLoaded", () => {
   const autoBgOcrToggle = document.getElementById("settings-auto-bg-ocr");
   if (autoBgOcrToggle) {
     autoBgOcrToggle.checked = localStorage.getItem("xhs_auto_bg_ocr") !== "false";
-    autoBgOcrToggle.addEventListener("change", () => {
-      localStorage.setItem("xhs_auto_bg_ocr", autoBgOcrToggle.checked ? "true" : "false");
-      showToast(autoBgOcrToggle.checked ? "🐢 已开启新视频自动后台慢速精细字幕提取" : "已关闭自动后台字幕提取");
+    autoBgOcrToggle.addEventListener("change", async () => {
+      const isEnabled = autoBgOcrToggle.checked;
+      localStorage.setItem("xhs_auto_bg_ocr", isEnabled ? "true" : "false");
+      showToast(isEnabled ? "🐢 已开启：未提取文案的视频将自动加入后台慢速精细提取" : "已关闭自动后台字幕提取");
+      if (isEnabled) {
+        BackgroundSubtitleQueue.checkAndResumePending(true);
+      }
+      // 静默同步保存至 Cloudflare D1
+      fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pin: state.pin,
+          autoBgOcr: isEnabled
+        })
+      }).catch(() => {});
     });
   }
 
-  // 绑定手动触发断点接力检查按钮
+  // 绑定手动触发断点接力检查按钮 (设置弹窗中)
   document.getElementById("btn-trigger-resume-ocr")?.addEventListener("click", async () => {
-    showToast("🔍 正在检查待接力提取字幕的视频...");
+    showToast("🔍 正在扫描云端所有缺少文案的视频笔记...");
     const count = await BackgroundSubtitleQueue.checkAndResumePending(true);
     if (count === 0 && !BackgroundSubtitleQueue.isProcessing) {
-      showToast("🎉 云端视频笔记均已提取完字幕，暂无待接力任务！");
+      showToast("🎉 云端所有视频笔记均已成功提取文案，暂无待接力任务！");
+    }
+  });
+
+  // 绑定知识库工具栏中的待提取字幕快捷触发按钮
+  document.getElementById("btn-kb-pending-subtitles")?.addEventListener("click", async () => {
+    showToast("🐢 正在将未提取字幕的视频加入后台精细提取队列...");
+    const count = await BackgroundSubtitleQueue.checkAndResumePending(true);
+    if (count === 0 && !BackgroundSubtitleQueue.isProcessing) {
+      showToast("🎉 云端所有视频笔记均已拥有字幕文案！");
     }
   });
 

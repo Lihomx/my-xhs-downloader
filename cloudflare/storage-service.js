@@ -921,9 +921,19 @@ export async function getShuffleNotes(db) {
 /**
  * 获取待提取画面字幕的视频笔记 (用于多端自动断点接力)
  */
-export async function getPendingSubtitleNotes(db, limit = 30) {
-  if (!db) return [];
+export async function getPendingSubtitleNotes(db, limit = 50) {
+  if (!db) return { items: [], total: 0 };
   await initDb(db);
+  const countRow = await db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM notes
+    WHERE (transcript IS NULL OR TRIM(transcript) = '')
+      AND videos_json IS NOT NULL
+      AND videos_json != '[]'
+      AND videos_json != ''
+  `).first();
+  const total = countRow?.total || 0;
+
   const rows = await db.prepare(`
     SELECT id, title, cover_url, videos_json, audio_url, transcript, tags_json, created_at
     FROM notes
@@ -935,7 +945,7 @@ export async function getPendingSubtitleNotes(db, limit = 30) {
     LIMIT ?
   `).bind(limit).all();
 
-  return (rows.results || []).map(r => {
+  const items = (rows.results || []).map(r => {
     let videos = [];
     try { videos = JSON.parse(r.videos_json || '[]'); } catch {}
     let tags = [];
@@ -949,6 +959,8 @@ export async function getPendingSubtitleNotes(db, limit = 30) {
       createdAt: r.created_at
     };
   }).filter(n => Array.isArray(n.videos) && n.videos.length > 0 && Boolean(n.videos[0]?.url || n.videos[0]));
+
+  return { items, total };
 }
 
 
