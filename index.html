@@ -236,70 +236,175 @@
 
         <!-- 知识库主体布局 (解锁后展示) -->
         <div id="kb-sidebar-content" class="kb-content-layout">
-          <!-- 顶部工具控制区：搜索、标签操作与横向分类条 -->
-          <div class="kb-controls-bar">
-            <!-- 搜索与操作按钮行 -->
-            <div class="kb-search-row">
-              <div class="kb-search-box">
-                <input type="text" id="kb-search-input" class="search-input" placeholder="🔍 检索标题、正文、博主、随笔批注或标签..." />
+          <!-- 知识库顶部分段切换：📚 笔记知识库 vs 🐢 字幕提取看板 -->
+          <div class="kb-view-segmented-wrap">
+            <div class="kb-view-segmented" role="tablist" aria-label="知识库视图切换">
+              <button id="btn-kb-view-notes" class="kb-segmented-btn active" type="button" role="tab" aria-selected="true">
+                <span class="segmented-icon">📚</span>
+                <span>笔记知识库</span>
+                <span id="kb-notes-count-pill" class="kb-segmented-badge">0</span>
+              </button>
+              <button id="btn-kb-view-tasks" class="kb-segmented-btn" type="button" role="tab" aria-selected="false">
+                <span class="segmented-icon">🐢</span>
+                <span>字幕提取看板</span>
+                <span id="kb-tasks-pending-pill" class="kb-segmented-badge highlight" style="display: none;">待处理 0</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 子视图 1: 笔记卡片浏览模式 -->
+          <div id="kb-view-notes-content" class="kb-view-subcontent">
+            <!-- 顶部工具控制区：搜索、标签操作与横向分类条 -->
+            <div class="kb-controls-bar">
+              <!-- 搜索与操作按钮行 -->
+              <div class="kb-search-row">
+                <div class="kb-search-box">
+                  <input type="text" id="kb-search-input" class="search-input" placeholder="🔍 检索标题、正文、博主、随笔批注或标签..." />
+                </div>
+                <div class="kb-actions-group">
+                  <button id="btn-kb-pending-subtitles" class="btn btn-secondary" type="button" style="display: none; background: rgba(245, 158, 11, 0.1); color: #d97706; border-color: rgba(245, 158, 11, 0.3);" title="点击切换至字幕提取看板">
+                    🐢 <span id="kb-pending-subtitles-text">待提取字幕 (0)</span>
+                  </button>
+                  <button id="btn-kb-usage-pill" class="btn btn-secondary kb-usage-pill-btn" type="button" title="点击查看 Cloudflare 免费配额与存储用量">
+                    ☁️ <span id="kb-usage-text">硬盘: 计算中...</span>
+                  </button>
+                  <button id="btn-backfill-authors" class="btn btn-secondary" type="button" title="从原链接重新识别补齐历史已收藏笔记博主与主页">
+                    🔄 <span class="btn-text-long">补全博主信息</span><span class="btn-text-short">补全博主</span>
+                  </button>
+                  <button id="btn-add-tag-quick" class="btn btn-secondary" type="button">
+                    ➕ 新建分类
+                  </button>
+                  <button id="btn-open-manage-tags" class="btn btn-ghost" type="button">
+                    🏷️ 管理标签
+                  </button>
+                  <span id="kb-total-badge" class="kb-total-pill">0 篇</span>
+                </div>
               </div>
-              <div class="kb-actions-group">
-                <button id="btn-kb-pending-subtitles" class="btn btn-secondary" type="button" style="display: none; background: rgba(245, 158, 11, 0.1); color: #d97706; border-color: rgba(245, 158, 11, 0.3);" title="点击一键在后台为所有未提取文案的视频慢速精细提取">
-                  🐢 <span id="kb-pending-subtitles-text">待提取字幕 (0)</span>
-                </button>
-                <button id="btn-kb-usage-pill" class="btn btn-secondary kb-usage-pill-btn" type="button" title="点击查看 Cloudflare 免费配额与存储用量">
-                  ☁️ <span id="kb-usage-text">硬盘: 计算中...</span>
-                </button>
-                <button id="btn-backfill-authors" class="btn btn-secondary" type="button" title="从原链接重新识别补齐历史已收藏笔记博主与主页">
-                  🔄 <span class="btn-text-long">补全博主信息</span><span class="btn-text-short">补全博主</span>
-                </button>
-                <button id="btn-add-tag-quick" class="btn btn-secondary" type="button">
-                  ➕ 新建分类
-                </button>
-                <button id="btn-open-manage-tags" class="btn btn-ghost" type="button">
-                  🏷️ 管理标签
-                </button>
-                <span id="kb-total-badge" class="kb-total-pill">0 篇</span>
+
+              <!-- 分类模式切换条：🏷️ 标签分类 vs 👤 博主分类 -->
+              <div class="kb-filter-nav">
+                <div class="filter-mode-tabs">
+                  <button id="btn-mode-tags" class="filter-mode-tab active" type="button">
+                    🏷️ 标签分类
+                  </button>
+                  <button id="btn-mode-authors" class="filter-mode-tab" type="button">
+                    👤 博主分类 <span id="kb-authors-count-badge" class="filter-mode-badge">0</span>
+                  </button>
+                </div>
+                <div id="kb-active-filter-indicator" class="active-filter-indicator" style="display: none;">
+                  <span id="kb-active-filter-text">当前筛选: ...</span>
+                  <button id="btn-clear-active-filter" class="btn-clear-filter" type="button" title="清除此筛选">✕</button>
+                </div>
+              </div>
+
+              <!-- 分类标签与博主胶囊筛选栏 (横向平滑滚动) -->
+              <div class="kb-tags-bar">
+                <div id="kb-tag-list" class="kb-tags-scroll-wrap">
+                  <!-- 动态插入分类标签胶囊 或 博主胶囊 -->
+                </div>
               </div>
             </div>
 
-            <!-- 分类模式切换条：🏷️ 标签分类 vs 👤 博主分类 -->
-            <div class="kb-filter-nav">
-              <div class="filter-mode-tabs">
-                <button id="btn-mode-tags" class="filter-mode-tab active" type="button">
-                  🏷️ 标签分类
-                </button>
-                <button id="btn-mode-authors" class="filter-mode-tab" type="button">
-                  👤 博主分类 <span id="kb-authors-count-badge" class="filter-mode-badge">0</span>
-                </button>
+            <!-- 笔记卡片响应式网格 -->
+            <div class="kb-cards-area">
+              <div id="kb-notes-grid" class="kb-notes-grid">
+                <!-- 动态笔记卡片 -->
               </div>
-              <div id="kb-active-filter-indicator" class="active-filter-indicator" style="display: none;">
-                <span id="kb-active-filter-text">当前筛选: ...</span>
-                <button id="btn-clear-active-filter" class="btn-clear-filter" type="button" title="清除此筛选">✕</button>
-              </div>
-            </div>
 
-            <!-- 分类标签与博主胶囊筛选栏 (横向平滑滚动) -->
-            <div class="kb-tags-bar">
-              <div id="kb-tag-list" class="kb-tags-scroll-wrap">
-                <!-- 动态插入分类标签胶囊 或 博主胶囊 -->
+              <div id="kb-empty-hint" class="kb-empty-state" style="display: none;">
+                <div style="font-size: 48px; margin-bottom: 12px;">📂</div>
+                <h3 style="font-size: 17px; margin-bottom: 6px;">当前分类暂无笔记</h3>
+                <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">解析小红书笔记后将自动永久归档至此</p>
+                <button id="btn-empty-go-download" class="btn btn-primary" type="button">
+                  📥 立即去采集解析
+                </button>
               </div>
             </div>
           </div>
 
-          <!-- 笔记卡片响应式网格 -->
-          <div class="kb-cards-area">
-            <div id="kb-notes-grid" class="kb-notes-grid">
-              <!-- 动态笔记卡片 -->
+          <!-- 子视图 2: 🐢 后台慢速精细字幕提取任务看板 (多端断点接力与耗时记录) -->
+          <div id="kb-view-tasks-content" class="kb-tasks-board-layout" style="display: none;">
+            <!-- 看板核心统计指标卡片 -->
+            <div class="kb-tasks-stats-grid">
+              <div class="kb-tasks-stat-card">
+                <div class="stat-card-icon">⏳</div>
+                <div class="stat-card-body">
+                  <div class="stat-card-val" id="kb-stat-pending-count">0</div>
+                  <div class="stat-card-lbl">待接力提取</div>
+                </div>
+              </div>
+              <div class="kb-tasks-stat-card">
+                <div class="stat-card-icon">✅</div>
+                <div class="stat-card-body">
+                  <div class="stat-card-val" id="kb-stat-completed-count">0</div>
+                  <div class="stat-card-lbl">已提取文案</div>
+                </div>
+              </div>
+              <div class="kb-tasks-stat-card">
+                <div class="stat-card-icon">⏱️</div>
+                <div class="stat-card-body">
+                  <div class="stat-card-val" id="kb-stat-avg-duration">0s</div>
+                  <div class="stat-card-lbl">平均提取耗时</div>
+                </div>
+              </div>
+              <div class="kb-tasks-stat-card stat-card-action">
+                <div class="stat-card-status">
+                  <span id="kb-task-relay-dot" class="relay-status-dot running"></span>
+                  <span id="kb-task-relay-status-text">自动接力运行中</span>
+                </div>
+                <div class="stat-card-btns">
+                  <button id="btn-kb-toggle-relay" class="btn btn-secondary btn-sm" type="button">⏸️ 暂停接力</button>
+                  <button id="btn-kb-rescan-tasks" class="btn btn-primary btn-sm" type="button">🔄 立即扫描</button>
+                </div>
+              </div>
             </div>
 
-            <div id="kb-empty-hint" class="kb-empty-state" style="display: none;">
-              <div style="font-size: 48px; margin-bottom: 12px;">📂</div>
-              <h3 style="font-size: 17px; margin-bottom: 6px;">当前分类暂无笔记</h3>
-              <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">解析小红书笔记后将自动永久归档至此</p>
-              <button id="btn-empty-go-download" class="btn btn-primary" type="button">
-                📥 立即去采集解析
-              </button>
+            <!-- 看板分类切换标签栏 -->
+            <div class="kb-tasks-filter-bar">
+              <div class="kb-tasks-filter-tabs">
+                <button class="kb-task-tab active" data-filter="all" type="button">
+                  全部记录 (<span id="kb-tab-all-count">0</span>)
+                </button>
+                <button class="kb-task-tab" data-filter="active" type="button">
+                  处理与排队 (<span id="kb-tab-active-count">0</span>)
+                </button>
+                <button class="kb-task-tab" data-filter="completed" type="button">
+                  已完成提取 (<span id="kb-tab-completed-count">0</span>)
+                </button>
+                <button class="kb-task-tab" data-filter="failed" type="button">
+                  提取异常/需重试 (<span id="kb-tab-failed-count">0</span>)
+                </button>
+              </div>
+              <div class="kb-tasks-search-box">
+                <input type="text" id="kb-tasks-search-input" class="search-input" placeholder="🔍 筛选任务记录标题..." />
+              </div>
+            </div>
+
+            <!-- 实时提取任务状态横幅 (如果有正在处理的任务) -->
+            <div id="kb-task-active-banner" class="kb-task-active-banner" style="display: none;">
+              <div class="active-banner-spinner"></div>
+              <div class="active-banner-info">
+                <div class="active-banner-title-row">
+                  <span class="active-banner-tag">正在提取中</span>
+                  <span id="kb-active-task-title" class="active-banner-title clickable">加载中...</span>
+                  <span id="kb-active-task-timer" class="active-banner-timer">⏱️ 已耗时 0s</span>
+                </div>
+                <div class="active-banner-status" id="kb-active-task-status">正在逐帧精细扫描字幕...</div>
+                <div class="active-banner-progress-track">
+                  <div id="kb-active-task-bar" class="active-banner-progress-bar" style="width: 0%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 任务记录明细列表 -->
+            <div id="kb-tasks-list" class="kb-tasks-list">
+              <!-- 动态插入任务记录卡片 -->
+            </div>
+
+            <div id="kb-tasks-empty" class="kb-empty-state" style="display: none; padding: 40px 16px;">
+              <div style="font-size: 40px; margin-bottom: 10px;">📋</div>
+              <h4 style="font-size: 15px; margin-bottom: 6px;">暂无该分类的提取记录</h4>
+              <p style="font-size: 13px; color: var(--text-muted);">新采集的视频笔记将自动加入后台多端接力提取</p>
             </div>
           </div>
         </div>
@@ -342,7 +447,7 @@
 
             <!-- 当前播放信息 -->
             <div class="shuffle-track-info">
-              <div id="shuffle-track-title" class="shuffle-track-title">暂无播放音频</div>
+              <div id="shuffle-track-title" class="shuffle-track-title clickable" title="点击查看该笔记详情与文案">暂无播放音频</div>
               <div id="shuffle-track-tags" class="shuffle-track-tags"></div>
               <div class="shuffle-offline-indicator-wrap">
                 <span id="shuffle-offline-pill" class="shuffle-offline-pill online">☁️ 在线流式播放</span>
@@ -1009,7 +1114,7 @@
     </div>
 
     <!-- 后台慢速字幕提取常驻浮动指示胶囊 -->
-    <div id="bg-subtitle-pill" class="bg-subtitle-pill" style="display: none;">
+    <div id="bg-subtitle-pill" class="bg-subtitle-pill" style="display: none;" title="点击直达字幕提取看板与接力中心">
       <div class="bg-subtitle-spinner"></div>
       <span id="bg-subtitle-text">🐢 后台慢速字幕提取中...</span>
     </div>
@@ -1018,6 +1123,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.29"></script>
+    <script type="module" src="/app.js?v=2.0.30"></script>
   </body>
 </html>

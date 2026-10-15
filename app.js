@@ -316,6 +316,19 @@ function formatTime(timestamp) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
+// 格式化相对时间 (用于提取看板与活动记录)
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return "";
+  const now = Date.now();
+  const diffSec = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (diffSec < 60) return "刚刚";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}分钟前`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}小时前`;
+  if (diffSec < 2592000) return `${Math.floor(diffSec / 86400)}天前`;
+  const d = new Date(timestamp);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
 // 1. 剪贴板自动读取与解析
 async function checkAndAutoPasteClipboard() {
   if (!state.autoClipboard) return;
@@ -2566,6 +2579,7 @@ async function transcribeAudio(
     onPartialResult = null
   } = {}
 ) {
+  const extractionStartTime = Date.now();
   const container = containerSelector ? document.querySelector(containerSelector) : null;
   if (renderBox && !container) return;
 
@@ -2839,13 +2853,19 @@ async function transcribeAudio(
     if (autoSave && targetNoteId) {
       try {
         const savedTranscript = (renderBox && container) ? (serializeTranscriptParagraphs(container) || fullTranscript) : fullTranscript;
+        const durationMs = Date.now() - extractionStartTime;
         await fetch(`/api/notes/${targetNoteId}/transcript`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
             "x-auth-pin": state.pin
           },
-          body: JSON.stringify({ transcript: savedTranscript })
+          body: JSON.stringify({
+            transcript: savedTranscript,
+            durationMs,
+            method: detectedProvider === "groq" ? "speech_groq" : "speech_whisper",
+            extractedAt: Date.now()
+          })
         });
         if (state.activeDetailNote && state.activeDetailNote.id === targetNoteId) {
           state.activeDetailNote.transcript = savedTranscript;
@@ -2929,6 +2949,7 @@ async function extractVideoHardSubtitles(
     onPartialResult = null
   } = {}
 ) {
+  const extractionStartTime = Date.now();
   const container = containerSelector ? document.querySelector(containerSelector) : null;
   if (renderBox && containerSelector && !container) return false;
 
@@ -3216,13 +3237,19 @@ async function extractVideoHardSubtitles(
     // 存储字幕至云端 D1，并实时更新当前活跃展示的视图
     if (autoSave && targetNoteId) {
       try {
+        const durationMs = Date.now() - extractionStartTime;
         await fetch(`/api/notes/${targetNoteId}/transcript`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
             "x-auth-pin": state.pin
           },
-          body: JSON.stringify({ transcript: finalTranscript })
+          body: JSON.stringify({
+            transcript: finalTranscript,
+            durationMs,
+            method: isSlowMode ? "vision_slow" : "vision_fast",
+            extractedAt: Date.now()
+          })
         });
 
         if (state.activeDetailNote && state.activeDetailNote.id === targetNoteId) {
@@ -3303,7 +3330,7 @@ async function extractVideoHardSubtitles(
   }
 }
 
-// 全局后台慢速精细画面字幕提取任务队列 (支持多端自动断点接力)
+// 全局后台慢速精细画面字幕提取任务队列 (支持多端自动断点接力与实时耗时看板监控)
 const BackgroundSubtitleQueue = {
   queue: [],
   isProcessing: false,
@@ -3311,6 +3338,9 @@ const BackgroundSubtitleQueue = {
   failedNoteIds: new Set(),
   isCheckingPending: false,
   lastCheckTime: 0,
+  taskStartTime: 0,
+  tickerTimer: null,
+  isPaused: localStorage.getItem("xhs_relay_paused") === "true",
 
   enqueue(note) {
     if (!note) return;
@@ -3329,7 +3359,74 @@ const BackgroundSubtitleQueue = {
 
     this.queue.push(note);
     this.updatePillUI();
+    if (typeof ExtractionDashboardManager !== "undefined") {
+      ExtractionDashboardManager.renderStats();
+      if (ExtractionDashboardManager.activeView === "tasks") {
+        ExtractionDashboardManager.renderList();
+      }
+    }
     this.processNext();
+  },
+
+  togglePause() {
+    this.isPaused = !this.isPaused;
+    localStorage.setItem("xhs_relay_paused", String(this.isPaused));
+    this.updatePillUI();
+    if (typeof ExtractionDashboardManager !== "undefined") {
+      ExtractionDashboardManager.updateRelayStatusUI();
+    }
+    if (!this.isPaused && !this.isProcessing) {
+      showToast("▶️ 已继续后台自动接力字幕提取");
+      this.processNext();
+    } else if (this.isPaused) {
+      showToast("⏸️ 已暂停后台自动接力字幕提取");
+    }
+    return this.isPaused;
+  },
+
+  startTaskTimer(noteTitle, noteId) {
+    this.taskStartTime = Date.now();
+    if (this.tickerTimer) {
+      clearInterval(this.tickerTimer);
+    }
+    const banner = document.getElementById("kb-task-active-banner");
+    const titleEl = document.getElementById("kb-active-task-title");
+    const timerEl = document.getElementById("kb-active-task-timer");
+    const barEl = document.getElementById("kb-active-task-bar");
+
+    if (banner) banner.style.display = "flex";
+    if (titleEl) {
+      titleEl.textContent = noteTitle || "视频笔记";
+      titleEl.onclick = () => {
+        if (noteId && typeof openNoteDetail === "function") openNoteDetail(noteId);
+      };
+    }
+    if (barEl) barEl.style.width = "0%";
+    if (timerEl) timerEl.textContent = "⏱️ 已耗时 0s";
+
+    this.tickerTimer = setInterval(() => {
+      if (!this.taskStartTime) return;
+      const elapsedSec = Math.round((Date.now() - this.taskStartTime) / 1000);
+      const tEl = document.getElementById("kb-active-task-timer");
+      if (tEl) tEl.textContent = `⏱️ 已耗时 ${elapsedSec}s`;
+    }, 1000);
+  },
+
+  stopTaskTimer() {
+    if (this.tickerTimer) {
+      clearInterval(this.tickerTimer);
+      this.tickerTimer = null;
+    }
+    this.taskStartTime = 0;
+    const banner = document.getElementById("kb-task-active-banner");
+    if (banner) banner.style.display = "none";
+  },
+
+  updateActiveProgress(percent) {
+    const barEl = document.getElementById("kb-active-task-bar");
+    if (barEl) {
+      barEl.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    }
   },
 
   // 🔍 核心：多端断点接力检测器 (从 Cloudflare D1 拉取所有未提取文案的视频笔记)
@@ -3372,6 +3469,10 @@ const BackgroundSubtitleQueue = {
         }
       }
 
+      if (typeof ExtractionDashboardManager !== "undefined") {
+        ExtractionDashboardManager.renderStats();
+      }
+
       if (!autoBgOcr && !showNotify) return 0;
       if (!Array.isArray(items) || items.length === 0) return 0;
 
@@ -3389,6 +3490,12 @@ const BackgroundSubtitleQueue = {
 
       if (addedCount > 0) {
         this.updatePillUI();
+        if (typeof ExtractionDashboardManager !== "undefined") {
+          ExtractionDashboardManager.renderStats();
+          if (ExtractionDashboardManager.activeView === "tasks") {
+            ExtractionDashboardManager.renderList();
+          }
+        }
         if (showNotify || !this.isProcessing) {
           showToast(`🐢 检测到 ${addedCount} 篇未提取文案的视频，已加入后台慢速精细提取队列...`);
         }
@@ -3415,6 +3522,11 @@ const BackgroundSubtitleQueue = {
     }
 
     pill.style.display = "flex";
+    if (this.isPaused) {
+      textEl.textContent = `⏸️ 后台慢速提取已暂停 (待处理 ${remaining} 个)`;
+      return;
+    }
+
     if (customText) {
       textEl.textContent = customText;
     } else {
@@ -3425,8 +3537,13 @@ const BackgroundSubtitleQueue = {
 
   async processNext() {
     if (this.isProcessing) return;
+    if (this.isPaused) {
+      this.updatePillUI();
+      return;
+    }
     if (this.queue.length === 0) {
       this.updatePillUI();
+      this.stopTaskTimer();
       return;
     }
 
@@ -3437,6 +3554,14 @@ const BackgroundSubtitleQueue = {
     const videoUrl = note.videos[0]?.url || note.videos[0];
     const noteTitle = (note.title || "视频笔记").trim();
 
+    this.startTaskTimer(noteTitle, noteId);
+    if (typeof ExtractionDashboardManager !== "undefined") {
+      ExtractionDashboardManager.renderStats();
+      if (ExtractionDashboardManager.activeView === "tasks") {
+        ExtractionDashboardManager.renderList();
+      }
+    }
+
     try {
       this.updatePillUI(`🐢 后台精细提取准备中: 「${noteTitle.substring(0, 10)}...」`);
 
@@ -3446,6 +3571,7 @@ const BackgroundSubtitleQueue = {
         batchDelayMs: 2500,
         fallbackToSpeech: true,
         onProgress: ({ percent, currentBatch, totalBatches }) => {
+          this.updateActiveProgress(percent);
           this.updatePillUI(`🐢 后台精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
         }
       });
@@ -3469,9 +3595,14 @@ const BackgroundSubtitleQueue = {
         this.failedNoteIds.add(noteId);
       }
     } finally {
+      this.stopTaskTimer();
       this.isProcessing = false;
       this.currentNote = null;
       this.updatePillUI();
+
+      if (typeof ExtractionDashboardManager !== "undefined") {
+        ExtractionDashboardManager.refresh();
+      }
 
       if (this.queue.length > 0) {
         setTimeout(() => this.processNext(), 2000);
@@ -3496,6 +3627,298 @@ const BackgroundSubtitleQueue = {
         }
       }
     }
+  }
+};
+
+// ==========================================================================
+// 🐢 慢速精细字幕提取看板管理器 (ExtractionDashboardManager)
+// 统一管理多端断点接力、耗时统计、分类记录与笔记快捷详情进入
+// ==========================================================================
+export const ExtractionDashboardManager = {
+  currentFilter: "all",
+  searchQuery: "",
+  tasksData: null,
+  activeView: "notes", // "notes" | "tasks"
+
+  init() {
+    // 绑定顶部视图分段切换 (笔记库 vs 提取看板)
+    const btnNotes = document.getElementById("btn-kb-view-notes");
+    const btnTasks = document.getElementById("btn-kb-view-tasks");
+    btnNotes?.addEventListener("click", () => this.switchView("notes"));
+    btnTasks?.addEventListener("click", () => this.switchView("tasks"));
+
+    // 绑定分类 Tab
+    const tabBtns = document.querySelectorAll(".kb-task-tab");
+    tabBtns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabBtns.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        this.currentFilter = btn.dataset.filter || "all";
+        this.renderList();
+      });
+    });
+
+    // 绑定搜索过滤
+    const searchInput = document.getElementById("kb-tasks-search-input");
+    searchInput?.addEventListener("input", (e) => {
+      this.searchQuery = e.target.value.trim().toLowerCase();
+      this.renderList();
+    });
+
+    // 绑定暂停/恢复接力按钮
+    const toggleRelayBtn = document.getElementById("btn-kb-toggle-relay");
+    toggleRelayBtn?.addEventListener("click", () => {
+      BackgroundSubtitleQueue.togglePause();
+      this.updateRelayStatusUI();
+    });
+
+    // 绑定立即扫描按钮
+    const rescanBtn = document.getElementById("btn-kb-rescan-tasks");
+    rescanBtn?.addEventListener("click", async () => {
+      showToast("🔄 正在扫描全库待提取文案的视频笔记...");
+      const count = await BackgroundSubtitleQueue.checkAndResumePending(true);
+      await this.refresh();
+      showToast(`扫描完毕，已加入 ${count} 篇待接力提取视频`);
+    });
+
+    // 绑定浮动指示胶囊点击 -> 一键直达提取看板
+    const pill = document.getElementById("bg-subtitle-pill");
+    pill?.addEventListener("click", () => {
+      const kbTabBtn = document.getElementById("tab-nav-kb");
+      kbTabBtn?.click();
+      this.switchView("tasks");
+    });
+
+    this.updateRelayStatusUI();
+  },
+
+  updateRelayStatusUI() {
+    const isPaused = BackgroundSubtitleQueue.isPaused;
+    const dot = document.getElementById("kb-task-relay-dot");
+    const text = document.getElementById("kb-task-relay-status-text");
+    const btn = document.getElementById("btn-kb-toggle-relay");
+
+    if (dot) {
+      dot.className = `relay-status-dot ${isPaused ? "paused" : "running"}`;
+    }
+    if (text) {
+      text.textContent = isPaused ? "自动接力已暂停" : "自动接力运行中";
+    }
+    if (btn) {
+      btn.innerHTML = isPaused ? "▶️ 继续接力" : "⏸️ 暂停接力";
+    }
+  },
+
+  switchView(viewName) {
+    this.activeView = viewName;
+    const notesContent = document.getElementById("kb-view-notes-content");
+    const tasksContent = document.getElementById("kb-view-tasks-content");
+    const btnNotes = document.getElementById("btn-kb-view-notes");
+    const btnTasks = document.getElementById("btn-kb-view-tasks");
+
+    if (viewName === "tasks") {
+      if (notesContent) notesContent.style.display = "none";
+      if (tasksContent) tasksContent.style.display = "block";
+      btnNotes?.classList.remove("active");
+      btnTasks?.classList.add("active");
+      this.refresh();
+    } else {
+      if (tasksContent) tasksContent.style.display = "none";
+      if (notesContent) notesContent.style.display = "block";
+      btnTasks?.classList.remove("active");
+      btnNotes?.classList.add("active");
+    }
+  },
+
+  async refresh() {
+    try {
+      const res = await fetch("/api/notes-extraction-tasks?limit=200", {
+        headers: { "x-auth-pin": state.pin }
+      });
+      if (res.ok) {
+        this.tasksData = await res.json();
+        this.renderStats();
+        this.renderList();
+      }
+    } catch (err) {
+      console.warn("Failed to refresh extraction tasks:", err);
+    }
+  },
+
+  renderStats() {
+    const pendingCount = this.tasksData?.pending !== undefined
+      ? this.tasksData.pending
+      : BackgroundSubtitleQueue.queue.length + (BackgroundSubtitleQueue.currentNote ? 1 : 0);
+    const completedCount = this.tasksData?.completed || 0;
+    const avgSec = this.tasksData?.avgDurationSec || 0;
+
+    const pendingEl = document.getElementById("kb-stat-pending-count");
+    const completedEl = document.getElementById("kb-stat-completed-count");
+    const avgEl = document.getElementById("kb-stat-avg-duration");
+    const badgeEl = document.getElementById("kb-tasks-badge");
+
+    if (pendingEl) pendingEl.textContent = pendingCount;
+    if (completedEl) completedEl.textContent = completedCount;
+    if (avgEl) avgEl.textContent = avgSec > 0 ? `${avgSec}s` : "--";
+
+    if (badgeEl) {
+      badgeEl.textContent = pendingCount;
+      badgeEl.style.display = pendingCount > 0 ? "inline-flex" : "none";
+    }
+  },
+
+  renderList() {
+    const listEl = document.getElementById("kb-tasks-list");
+    if (!listEl) return;
+
+    if (!this.tasksData || !Array.isArray(this.tasksData.items)) {
+      listEl.innerHTML = `<div class="kb-task-empty"><div class="empty-icon">⏳</div><div>正在加载提取任务记录...</div></div>`;
+      return;
+    }
+
+    let items = [...this.tasksData.items];
+    const currentNote = BackgroundSubtitleQueue.currentNote;
+    const memoryQueue = BackgroundSubtitleQueue.queue;
+    const currentId = currentNote ? (currentNote.id || currentNote.noteId) : null;
+
+    const itemMap = new Map();
+    items.forEach(it => itemMap.set(String(it.id), it));
+
+    if (currentNote && currentId) {
+      const existing = itemMap.get(String(currentId)) || {};
+      itemMap.set(String(currentId), {
+        ...existing,
+        id: currentId,
+        title: currentNote.title || existing.title || "视频笔记",
+        coverUrl: currentNote.coverUrl || existing.coverUrl || (currentNote.images && currentNote.images[0]?.url) || "",
+        status: "processing",
+        statusText: "正在提取",
+        method: "vision_slow",
+        methodName: "🐢 画面慢速精细"
+      });
+    }
+
+    memoryQueue.forEach(qNote => {
+      const qId = qNote.id || qNote.noteId;
+      if (!qId) return;
+      const existing = itemMap.get(String(qId)) || {};
+      itemMap.set(String(qId), {
+        ...existing,
+        id: qId,
+        title: qNote.title || existing.title || "视频笔记",
+        coverUrl: qNote.coverUrl || existing.coverUrl || (qNote.images && qNote.images[0]?.url) || "",
+        status: "pending",
+        statusText: "排队待提取",
+        method: existing.method || "vision_slow",
+        methodName: existing.methodName || "🐢 待接力"
+      });
+    });
+
+    items = Array.from(itemMap.values());
+
+    // 排序：处理中 > 排队中 > 已完成按时间倒序
+    items.sort((a, b) => {
+      const score = (item) => {
+        if (item.status === "processing") return 3;
+        if (item.status === "pending") return 2;
+        return 1;
+      };
+      const diff = score(b) - score(a);
+      if (diff !== 0) return diff;
+      return (b.extractedAt || b.downloadTime || 0) - (a.extractedAt || a.downloadTime || 0);
+    });
+
+    // 分类筛选
+    if (this.currentFilter === "active") {
+      items = items.filter(it => it.status === "processing" || it.status === "pending");
+    } else if (this.currentFilter === "completed") {
+      items = items.filter(it => it.status === "completed");
+    } else if (this.currentFilter === "failed") {
+      items = items.filter(it => it.status === "failed");
+    }
+
+    // 关键词搜索
+    if (this.searchQuery) {
+      items = items.filter(it => (it.title || "").toLowerCase().includes(this.searchQuery));
+    }
+
+    if (items.length === 0) {
+      listEl.innerHTML = `
+        <div class="kb-task-empty">
+          <div class="empty-icon">📭</div>
+          <div style="font-weight: 600; margin-bottom: 4px;">暂无相关提取记录</div>
+          <div style="font-size: 12px; color: var(--text-muted);">
+            ${this.currentFilter === 'active' ? '当前没有正在处理或排队的接力任务' : '暂未找到符合条件的提取任务'}
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    listEl.innerHTML = "";
+    items.forEach(task => {
+      const card = document.createElement("div");
+      card.className = `kb-task-card ${task.status}`;
+
+      const durationText = task.durationSec > 0 ? `⏱️ 耗时 ${task.durationSec}s` : "";
+      const methodLabel = task.methodName || (task.method === "vision_slow" ? "🐢 画面慢速精细" : task.method?.startsWith("speech") ? "🎙️ 语音智能转写" : "AI 提取");
+
+      let statusBadgeClass = "pending";
+      let statusBadgeLabel = "⏳ 排队待提取";
+      if (task.status === "completed") {
+        statusBadgeClass = "completed";
+        statusBadgeLabel = "✅ 已提取文案";
+      } else if (task.status === "processing") {
+        statusBadgeClass = "processing";
+        statusBadgeLabel = "🔄 正在提取中";
+      } else if (task.status === "failed") {
+        statusBadgeClass = "failed";
+        statusBadgeLabel = "⚠️ 提取异常";
+      }
+
+      card.innerHTML = `
+        <div class="kb-task-main">
+          <img src="${task.coverUrl || '/favicon.svg'}" class="kb-task-cover" alt="封面" loading="lazy" title="点击查看笔记详情与文案" />
+          <div class="kb-task-content">
+            <div class="kb-task-title" title="点击查看笔记详情与文案">${escapeHtml(task.title || "视频笔记")}</div>
+            <div class="kb-task-meta">
+              <span class="task-status-pill ${statusBadgeClass}">${statusBadgeLabel}</span>
+              ${durationText ? `<span class="task-duration-pill">${durationText}</span>` : ""}
+              <span class="task-method-badge">${methodLabel}</span>
+              <span style="font-size: 11.5px; color: var(--text-muted);">${formatRelativeTime(task.extractedAt || task.downloadTime)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="kb-task-actions">
+          <button class="btn btn-secondary btn-sm btn-task-view" type="button" title="查看笔记详情与完整提取文案">📖 查看</button>
+          ${task.status !== "processing" ? `<button class="btn btn-ghost btn-sm btn-task-retry" type="button" title="重新放入后台队列重新提取">🔄 重提</button>` : ""}
+        </div>
+      `;
+
+      // 点击标题或封面直接进入该笔记详情
+      card.querySelector(".kb-task-title")?.addEventListener("click", () => {
+        if (typeof openNoteDetail === "function") openNoteDetail(task.id);
+      });
+      card.querySelector(".kb-task-cover")?.addEventListener("click", () => {
+        if (typeof openNoteDetail === "function") openNoteDetail(task.id);
+      });
+      card.querySelector(".btn-task-view")?.addEventListener("click", () => {
+        if (typeof openNoteDetail === "function") openNoteDetail(task.id);
+      });
+      card.querySelector(".btn-task-retry")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showToast(`已将「${(task.title || "").substring(0, 8)}...」加入慢速精细提取队列`);
+        BackgroundSubtitleQueue.enqueue({
+          id: task.id,
+          title: task.title,
+          coverUrl: task.coverUrl,
+          videos: [{ url: task.videoUrl || "" }]
+        });
+        ExtractionDashboardManager.refresh();
+      });
+
+      listEl.appendChild(card);
+    });
   }
 };
 
@@ -5177,9 +5600,9 @@ export const ShufflePlayer = {
           </svg>
         </div>
         <span class="shuffle-item-index">#${index + 1}</span>
-        <img src="${track.coverUrl || '/favicon.svg'}" class="shuffle-item-cover" alt="封面" loading="lazy" />
+        <img src="${track.coverUrl || '/favicon.svg'}" class="shuffle-item-cover" alt="封面" loading="lazy" style="cursor: pointer;" title="点击查看笔记详情与文案" />
         <div class="shuffle-item-content">
-          <div class="shuffle-item-title">${escapeHtml(track.title || "无标题音频")}</div>
+          <div class="shuffle-item-title clickable" title="点击查看笔记详情与文案">${escapeHtml(track.title || "无标题音频")}</div>
           <div class="shuffle-item-meta">
             ${isCached ? '<span class="shuffle-item-cached-pill">💾 已离线</span>' : '<span style="color:#94a3b8;">☁️ 在线</span>'}
             ${tagsHtml}
@@ -5307,6 +5730,21 @@ export const ShufflePlayer = {
       handle?.addEventListener("touchend", handleTouchEnd);
       handle?.addEventListener("touchcancel", handleTouchEnd);
 
+      // 点击标题或封面直接查看该笔记详情与完整提取文案
+      card.querySelector(".shuffle-item-title")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (typeof openNoteDetail === "function" && track.id) {
+          openNoteDetail(track.id);
+        }
+      });
+
+      card.querySelector(".shuffle-item-cover")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (typeof openNoteDetail === "function" && track.id) {
+          openNoteDetail(track.id);
+        }
+      });
+
       // 点击播放 (拖拽手柄及删除按钮不触发切歌)
       card.addEventListener("click", (e) => {
         if (isDraggingDesktop) return;
@@ -5431,11 +5869,20 @@ export const ShufflePlayer = {
   renderCurrentTrackInfo(track) {
     const titleEl = document.getElementById("shuffle-track-title");
     const coverEl = document.getElementById("shuffle-cover-img");
+    const coverWrap = document.getElementById("shuffle-cover-wrap");
     const tagsEl = document.getElementById("shuffle-track-tags");
     const lyricsEl = document.getElementById("shuffle-lyrics-content");
 
     if (!track) {
-      if (titleEl) titleEl.textContent = "暂无播放音频";
+      if (titleEl) {
+        titleEl.textContent = "暂无播放音频";
+        titleEl.classList.remove("clickable");
+        titleEl.onclick = null;
+      }
+      if (coverWrap) {
+        coverWrap.classList.remove("clickable");
+        coverWrap.onclick = null;
+      }
       if (coverEl) coverEl.src = "/favicon.svg";
       if (tagsEl) tagsEl.innerHTML = "";
       if (lyricsEl) {
@@ -5444,7 +5891,27 @@ export const ShufflePlayer = {
       return;
     }
 
-    if (titleEl) titleEl.textContent = track.title || "无标题音频";
+    if (titleEl) {
+      titleEl.textContent = track.title || "无标题音频";
+      titleEl.classList.add("clickable");
+      titleEl.title = "点击查看该笔记详情与文案";
+      titleEl.onclick = () => {
+        if (typeof openNoteDetail === "function" && track.id) {
+          openNoteDetail(track.id);
+        }
+      };
+    }
+
+    if (coverWrap) {
+      coverWrap.classList.add("clickable");
+      coverWrap.title = "点击查看该笔记详情与文案";
+      coverWrap.onclick = () => {
+        if (typeof openNoteDetail === "function" && track.id) {
+          openNoteDetail(track.id);
+        }
+      };
+    }
+
     if (coverEl) coverEl.src = track.coverUrl || "/favicon.svg";
 
     if (tagsEl) {
@@ -5748,8 +6215,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (window.location.hash !== "#kb") {
         window.location.hash = "kb";
       }
-      loadTags();
-      loadNotes();
+      if (ExtractionDashboardManager.activeView === "tasks") {
+        ExtractionDashboardManager.refresh();
+      } else {
+        loadTags();
+        loadNotes();
+      }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } else if (tabName === "shuffle") {
       downloadTabBtn?.classList.remove("active");
@@ -6677,6 +7148,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // 初始化随身听播放引擎与播放库
   ShufflePlayer.init();
   ShufflePlayer.loadPlaylist();
+
+  // 初始化慢速字幕提取看板管理器
+  ExtractionDashboardManager.init();
 
   // 初始化多端自动断点接力检查 (延迟 2.5 秒，避开首屏高并发)
   setTimeout(() => {

@@ -82,6 +82,15 @@ export async function initDb(db) {
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN author_profile_url TEXT DEFAULT ''").run();
     } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN extraction_duration_ms INTEGER DEFAULT 0").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN extracted_at INTEGER DEFAULT 0").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN extraction_method TEXT DEFAULT ''").run();
+    } catch {}
 
     const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
     if (!existingPin) {
@@ -590,16 +599,42 @@ export async function updateThoughts(db, id, thoughts) {
 }
 
 /**
- * 保存/更新视频语音转写文本
+ * 保存/更新视频语音转写文本 (支持记录耗时、算法引擎及提取时间)
  */
-export async function updateTranscript(db, id, transcript) {
+export async function updateTranscript(db, id, transcript, { durationMs = null, method = null, extractedAt = null } = {}) {
   if (!db) throw new Error("数据库未绑定");
   await initDb(db);
   const now = Date.now();
-  await db.prepare("UPDATE notes SET transcript = ?, updated_at = ? WHERE id = ?")
-    .bind(String(transcript ?? "").trim(), now, id)
-    .run();
-  return { id, transcript, updatedAt: now };
+  const cleanTranscript = String(transcript ?? "").trim();
+  const effExtractedAt = extractedAt ? Number(extractedAt) : (cleanTranscript ? now : 0);
+  const effDurationMs = typeof durationMs === "number" ? Math.round(durationMs) : 0;
+  const effMethod = typeof method === "string" ? method.trim() : "";
+
+  if (effDurationMs > 0 || effMethod || effExtractedAt > 0) {
+    await db.prepare(`
+      UPDATE notes 
+      SET transcript = ?, 
+          updated_at = ?,
+          extraction_duration_ms = CASE WHEN ? > 0 THEN ? ELSE extraction_duration_ms END,
+          extracted_at = CASE WHEN ? > 0 THEN ? ELSE extracted_at END,
+          extraction_method = CASE WHEN ? != '' THEN ? ELSE extraction_method END
+      WHERE id = ?
+    `)
+      .bind(
+        cleanTranscript,
+        now,
+        effDurationMs, effDurationMs,
+        effExtractedAt, effExtractedAt,
+        effMethod, effMethod,
+        id
+      )
+      .run();
+  } else {
+    await db.prepare("UPDATE notes SET transcript = ?, updated_at = ? WHERE id = ?")
+      .bind(cleanTranscript, now, id)
+      .run();
+  }
+  return { id, transcript: cleanTranscript, updatedAt: now, durationMs: effDurationMs, method: effMethod };
 }
 
 /**
@@ -961,6 +996,113 @@ export async function getPendingSubtitleNotes(db, limit = 50) {
   }).filter(n => Array.isArray(n.videos) && n.videos.length > 0 && Boolean(n.videos[0]?.url || n.videos[0]));
 
   return { items, total };
+}
+
+/**
+ * 获取字幕提取任务列表与全量看板数据 (包含待提取、已提取、耗时记录与统计)
+ */
+export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {}) {
+  if (!db) return { items: [], total: 0, stats: { totalVideos: 0, completedCount: 0, pendingCount: 0, avgDurationSec: 0, avgDurationFormatted: '暂无' } };
+  await initDb(db);
+
+  // 1. 统计视频总数、已提取数、待提取数以及平均耗时
+  const statsRow = await db.prepare(`
+    SELECT 
+      COUNT(*) AS total_videos,
+      SUM(CASE WHEN transcript IS NOT NULL AND TRIM(transcript) != '' THEN 1 ELSE 0 END) AS completed_count,
+      SUM(CASE WHEN transcript IS NULL OR TRIM(transcript) = '' THEN 1 ELSE 0 END) AS pending_count,
+      AVG(CASE WHEN extraction_duration_ms > 0 THEN extraction_duration_ms ELSE NULL END) AS avg_duration_ms
+    FROM notes
+    WHERE videos_json IS NOT NULL AND videos_json != '[]' AND videos_json != ''
+  `).first();
+
+  const totalVideos = Number(statsRow?.total_videos || 0);
+  const completedCount = Number(statsRow?.completed_count || 0);
+  const pendingCount = Number(statsRow?.pending_count || 0);
+  const avgDurationMs = Number(statsRow?.avg_duration_ms || 0);
+  const avgDurationSec = Math.round(avgDurationMs / 1000);
+
+  // 2. 构造查询条件
+  let whereClause = "WHERE videos_json IS NOT NULL AND videos_json != '[]' AND videos_json != ''";
+  if (filter === 'completed') {
+    whereClause += " AND transcript IS NOT NULL AND TRIM(transcript) != ''";
+  } else if (filter === 'pending') {
+    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '')";
+  }
+
+  const rows = await db.prepare(`
+    SELECT 
+      id, title, cover_url, videos_json, audio_url, transcript, tags_json,
+      COALESCE(extraction_duration_ms, 0) AS extraction_duration_ms,
+      COALESCE(extracted_at, 0) AS extracted_at,
+      COALESCE(extraction_method, '') AS extraction_method,
+      created_at, updated_at
+    FROM notes
+    ${whereClause}
+    ORDER BY 
+      CASE WHEN (transcript IS NOT NULL AND TRIM(transcript) != '') THEN 1 ELSE 0 END,
+      COALESCE(extracted_at, 0) DESC,
+      created_at DESC
+    LIMIT ?
+  `).bind(limit).all();
+
+  const items = (rows.results || []).map(r => {
+    let videos = [];
+    try { videos = JSON.parse(r.videos_json || '[]'); } catch {}
+    let tags = [];
+    try { tags = JSON.parse(r.tags_json || '[]'); } catch {}
+    const transcriptText = String(r.transcript || '').trim();
+    const isCompleted = transcriptText.length > 0;
+    const durationMs = Number(r.extraction_duration_ms || 0);
+    const durationSec = Math.round(durationMs / 1000);
+
+    let durationFormatted = '未记录';
+    if (durationSec > 0) {
+      durationFormatted = durationSec >= 60 
+        ? `${Math.floor(durationSec / 60)}分${durationSec % 60}秒` 
+        : `${durationSec}秒`;
+    }
+
+    // 粗略断句计数
+    let sentenceCount = 0;
+    if (transcriptText) {
+      const sents = transcriptText.split(/[\r\n]+|[。！？!?]+/).filter(Boolean);
+      sentenceCount = sents.length;
+    }
+
+    return {
+      id: r.id,
+      title: r.title,
+      coverUrl: r.cover_url,
+      videos,
+      tags,
+      isCompleted,
+      transcript: transcriptText,
+      charCount: transcriptText.length,
+      sentenceCount,
+      durationMs,
+      durationSec,
+      durationFormatted,
+      extractedAt: r.extracted_at || 0,
+      extractedAtFormatted: r.extracted_at ? new Date(r.extracted_at).toLocaleString('zh-CN', { hour12: false }) : '',
+      method: r.extraction_method || (isCompleted ? 'speech_whisper' : ''),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at
+    };
+  }).filter(n => Array.isArray(n.videos) && n.videos.length > 0 && Boolean(n.videos[0]?.url || n.videos[0]));
+
+  return {
+    items,
+    stats: {
+      totalVideos,
+      completedCount,
+      pendingCount,
+      avgDurationSec,
+      avgDurationFormatted: avgDurationSec > 0 
+        ? (avgDurationSec >= 60 ? `${Math.floor(avgDurationSec / 60)}分${avgDurationSec % 60}秒` : `${avgDurationSec}秒`)
+        : '暂无'
+    }
+  };
 }
 
 

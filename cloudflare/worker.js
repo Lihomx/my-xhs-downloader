@@ -29,6 +29,7 @@ import {
   toggleNoteShuffle,
   getShuffleNotes,
   getPendingSubtitleNotes,
+  getExtractionTasks,
   updateNoteAuthor,
   getAuthorsWithCounts,
   getStorageUsage
@@ -789,6 +790,18 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           return json({ success: true, count: result.items.length, total: result.total, items: result.items });
         }
 
+        // 5.5 获取字幕提取看板任务记录与统计: GET /api/notes-extraction-tasks
+        if (path === '/api/notes-extraction-tasks' && request.method === 'GET') {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '100', 10), 1), 500);
+          const filter = url.searchParams.get('filter') || 'all';
+          const tasksData = await getExtractionTasks(env.DB, { limit, filter });
+          return json({ success: true, ...tasksData });
+        }
+
         // 6. 单篇笔记操作 (GET, DELETE, 更新感想, 更新标签)
         if (path.startsWith('/api/notes/')) {
           const subPath = path.slice('/api/notes/'.length);
@@ -826,7 +839,11 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           // 更新语音文案: PUT /api/notes/:id/transcript
           if (parts[1] === 'transcript' && request.method === 'PUT') {
             const body = await request.json().catch(() => ({}));
-            const res = await updateTranscript(env.DB, noteId, body.transcript);
+            const res = await updateTranscript(env.DB, noteId, body.transcript, {
+              durationMs: body.durationMs,
+              method: body.method,
+              extractedAt: body.extractedAt
+            });
             return json({ success: true, ...res });
           }
 
