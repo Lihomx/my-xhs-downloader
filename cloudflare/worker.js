@@ -235,8 +235,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             thirdPartyEndpoint = await getSetting(env.DB, 'whisper_api_endpoint', '');
           }
 
-          // 自动判断生效引擎
-          const effectiveProvider = whisperProvider || (thirdPartyKey ? 'groq' : 'cloudflare');
+          // 自动判断生效引擎：只要配置了有效 Groq Key，优先选用极速高准确率的 Groq Large-v3 引擎
+          const effectiveProvider = (whisperProvider === 'custom')
+            ? 'custom'
+            : (thirdPartyKey ? 'groq' : (whisperProvider || 'cloudflare'));
 
           // 接收客户端可选传递的上下文参数与调优配置
           const rawPrompt = request.headers.get('x-whisper-prompt');
@@ -607,12 +609,10 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
             }
           }
 
-          // 策略 2: 降级使用 Cloudflare Workers AI 视觉模型
+          // 策略 2: 降级使用 Cloudflare Workers AI 视觉模型 (仅保留具有视觉指令能力的真实大模型，坚决剔除 llava/moondream 等仅输出画面描述词的非 OCR 模型)
           if (env.AI) {
             const cfVisionModels = [
-              '@cf/meta/llama-3.2-11b-vision-instruct',
-              '@cf/llava-hf/llava-1.5-7b-hf',
-              '@cf/moondream/moondream3.1-9B-A2B'
+              '@cf/meta/llama-3.2-11b-vision-instruct'
             ];
 
             const pureBase64 = imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
@@ -629,6 +629,11 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 });
                 const text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
                 if (!text) continue;
+                // 过滤画面描述类幻觉（如“女性在台上发言”、“握手的女孩”、“红色礼服”等非字幕内容）
+                if (/(?:女性在|她在|身穿|握手的|红色礼服|图[片中]是|一[位名]人)/.test(text)) {
+                  console.warn("Filtered out image caption hallucination:", text);
+                  continue;
+                }
                 const cleaned = (text.includes('NONE') || text === '无' || text.includes('无字幕')) && text.length < 15 ? '' : text;
                 return json({
                   success: true,

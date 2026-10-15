@@ -3075,6 +3075,7 @@ async function extractVideoHardSubtitles(
             if (m) {
               const tStr = m[1];
               const tText = m[2].trim();
+              if (/(?:女性在|她在|身穿|握手的|红色礼服|图[片中]是|一[位名]人)/.test(tText)) continue;
               if (tText && (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== tText)) {
                 collectedSubs.push({
                   timeStr: tStr,
@@ -3083,6 +3084,7 @@ async function extractVideoHardSubtitles(
                 });
               }
             } else if (line.length > 1 && !line.includes("NONE")) {
+              if (/(?:女性在|她在|身穿|握手的|红色礼服|图[片中]是|一[位名]人)/.test(line)) continue;
               const approxTime = Math.floor(batchTimes[0]);
               if (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== line) {
                 collectedSubs.push({
@@ -3337,23 +3339,30 @@ const BackgroundSubtitleQueue = {
         isSlowMode: true,
         stepSec: 1.6,
         batchDelayMs: 2500,
+        fallbackToSpeech: true,
         onProgress: ({ percent, currentBatch, totalBatches }) => {
           this.updatePillUI(`🐢 后台精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
         }
       });
 
-      if (ok) {
-        showToast(`✅ 后台已完成「${noteTitle.substring(0, 12)}」慢速精细字幕提取！`);
-        // 同步通知随身听播放引擎更新
-        if (typeof ShufflePlayer !== "undefined" && typeof ShufflePlayer.loadPlaylist === "function") {
-          ShufflePlayer.loadPlaylist();
-        }
-      } else {
-        this.failedNoteIds.add(noteId);
+      if (!ok) {
+        // 视觉未提取到或遇到限制时，自动无缝启用 AI 语音转写 (Groq Whisper Large-v3) 极速补齐
+        this.updatePillUI(`🎙️ 画面字幕未就绪，自动转为语音转写: 「${noteTitle.substring(0, 8)}...」`);
+        await transcribeAudio(videoUrl, null, noteId);
+      }
+
+      showToast(`✅ 后台已完成「${noteTitle.substring(0, 12)}」文案字幕提取！`);
+      if (typeof ShufflePlayer !== "undefined" && typeof ShufflePlayer.loadPlaylist === "function") {
+        ShufflePlayer.loadPlaylist();
       }
     } catch (err) {
       console.warn("Background subtitle extraction error for note:", noteId, err);
-      this.failedNoteIds.add(noteId);
+      try {
+        await transcribeAudio(videoUrl, null, noteId);
+        showToast(`✅ 后台已完成「${noteTitle.substring(0, 12)}」语音文案提取！`);
+      } catch (audioErr) {
+        this.failedNoteIds.add(noteId);
+      }
     } finally {
       this.isProcessing = false;
       this.currentNote = null;
