@@ -606,9 +606,8 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (env.AI) {
             const cfVisionModels = [
               '@cf/meta/llama-3.2-11b-vision-instruct',
-              '@cf/moondream/moondream3.1-9B-A2B',
-              '@cf/mistralai/mistral-small-3.1-24b-instruct',
-              '@cf/llava-hf/llava-1.5-7b-hf'
+              '@cf/llava-hf/llava-1.5-7b-hf',
+              '@cf/moondream/moondream3.1-9B-A2B'
             ];
 
             const pureBase64 = imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
@@ -624,6 +623,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                   prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
                 });
                 const text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
+                if (!text) continue;
                 const cleaned = (text.includes('NONE') || text === '无' || text.includes('无字幕')) && text.length < 15 ? '' : text;
                 return json({
                   success: true,

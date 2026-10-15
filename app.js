@@ -2071,13 +2071,14 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
     container.dataset.aiProvider = detectedProvider;
   }
 
+  const isVision = String(detectedProvider || container.dataset.aiProvider || "").includes("vision");
   const effectiveProvider = container.dataset.aiProvider || state.whisperProvider || (document.getElementById("settings-whisper-key")?.value ? "groq" : "cloudflare");
-  const engineBadgeHtml = effectiveProvider === "groq"
-    ? `<span class="badge-engine badge-groq" title="由 Groq LPU 极速芯片 Whisper Large-v3 驱动">⚡ Groq Large-v3</span>`
-    : (effectiveProvider === "soft-subtitles"
-      ? `<span class="badge-engine" style="background: rgba(16, 185, 129, 0.15); color: #059669; border-color: rgba(16, 185, 129, 0.3);" title="由视频原生外挂软字幕直接提取">🎬 原生字幕轨</span>`
-      : (String(effectiveProvider).includes("vision")
-        ? `<span class="badge-engine" style="background: rgba(139, 92, 246, 0.15); color: #7c3aed; border-color: rgba(139, 92, 246, 0.3);" title="由 AI 视觉模型直接从视频画面底部的硬字幕识别提取">👁️ 画面硬字幕</span>`
+  const engineBadgeHtml = isVision
+    ? `<span class="badge-engine" style="background: rgba(139, 92, 246, 0.15); color: #7c3aed; border-color: rgba(139, 92, 246, 0.3);" title="由 AI 视觉模型直接从视频画面底部的硬字幕识别提取">👁️ 画面硬字幕</span>`
+    : (effectiveProvider === "groq"
+      ? `<span class="badge-engine badge-groq" title="由 Groq LPU 极速芯片 Whisper Large-v3 驱动">⚡ Groq Large-v3</span>`
+      : (effectiveProvider === "soft-subtitles"
+        ? `<span class="badge-engine" style="background: rgba(16, 185, 129, 0.15); color: #059669; border-color: rgba(16, 185, 129, 0.3);" title="由视频原生外挂软字幕直接提取">🎬 原生字幕轨</span>`
         : `<span class="badge-engine badge-cf" title="由 Cloudflare Workers AI 驱动">☁️ Cloudflare AI</span>`));
 
   const paragraphs = parseTranscriptParagraphs(rawText);
@@ -2117,7 +2118,7 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
   container.innerHTML = `
     <div class="transcript-header">
       <div class="transcript-header-left">
-        <span class="transcript-title">🎙️ 视频语音提取文案</span>
+        <span class="transcript-title">${isVision ? "👁️ 视频画面字幕提取" : "🎙️ 视频语音提取文案"}</span>
         ${engineBadgeHtml}
         <span class="transcript-hl-badge" style="display: none;">⭐ 0 处重点</span>
       </div>
@@ -2949,9 +2950,9 @@ async function extractVideoHardSubtitles(
 
     if (progressTrack) progressTrack.style.display = "block";
 
-    // 抽帧策略与延时步长：慢速模式下步长 1.2 秒（高密无遗漏抽样），普通模式 2.5 秒
-    const effectiveStepSec = stepSec || (isSlowMode ? 1.2 : 2.5);
-    const effectiveBatchDelay = batchDelayMs !== null && batchDelayMs !== undefined ? batchDelayMs : (isSlowMode ? 3000 : 500);
+    // 抽帧策略与延时步长：慢速模式下步长 1.6 秒（密集无遗漏同时防止打满 API Token），普通模式 2.5 秒
+    const effectiveStepSec = stepSec || (isSlowMode ? 1.6 : 2.5);
+    const effectiveBatchDelay = batchDelayMs !== null && batchDelayMs !== undefined ? batchDelayMs : (isSlowMode ? 2200 : 500);
 
     const sampleTimes = [];
     for (let t = 0.5; t < duration; t += effectiveStepSec) {
@@ -2959,21 +2960,21 @@ async function extractVideoHardSubtitles(
     }
     if (sampleTimes.length === 0) sampleTimes.push(0.5);
 
-    const batchSize = 3;
+    const batchSize = 2;
     const totalBatches = Math.ceil(sampleTimes.length / batchSize);
     const collectedSubs = [];
     let providerUsed = isSlowMode ? "vision-ocr-slow" : "vision-ocr";
 
     const vw = tempVideo.videoWidth || 720;
     const vh = tempVideo.videoHeight || 1280;
-    // 字幕热区：全面覆盖中下部 48% ~ 92% 高度范围，彻底包含人物胸部、腹部及底部的各种字幕摆放位置
-    const cropX = 0;
-    const cropY = Math.floor(vh * 0.48);
-    const cropW = vw;
-    const cropH = Math.floor(vh * 0.44);
+    // 字幕热区：精准覆盖中下部 58% ~ 88% 高度范围（彻底避免人脸和多余背景，节省 80% Token 消耗）
+    const cropX = Math.floor(vw * 0.05);
+    const cropY = Math.floor(vh * 0.58);
+    const cropW = Math.floor(vw * 0.90);
+    const cropH = Math.floor(vh * 0.30);
 
-    // 目标每个切条绘制规格：宽度 640，高度按比例
-    const targetW = 640;
+    // 目标每个切条绘制规格：宽度 520，高度按比例
+    const targetW = 520;
     const targetH = Math.round((cropH / cropW) * targetW);
 
     for (let b = 0; b < totalBatches; b++) {
