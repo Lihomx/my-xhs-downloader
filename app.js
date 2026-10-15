@@ -1158,6 +1158,14 @@ function renderParseResult(note) {
         });
       };
     }
+
+    // 双模对比提取按钮 (慢速画面字幕 VS AI 语音转写，并排对比预览后手工采纳)
+    const dualExtractBtn = document.getElementById("btn-dual-extract-video");
+    if (dualExtractBtn) {
+      dualExtractBtn.onclick = () => {
+        runDualSubtitleExtraction(activeUrl, "#transcript-panel", note.noteId || note.id);
+      };
+    }
   } else {
     vidSection.style.display = "none";
     videoPlayer.removeAttribute("src");
@@ -2545,30 +2553,69 @@ function cleanWhisperHallucinationsClient(text) {
   return cleaned.trim();
 }
 
-// 音频提取与 AI Whisper 语音识别 (支持多段切片流水线与实时流式文案呈现)
-async function transcribeAudio(mediaUrl, containerSelector, noteId) {
-  const container = document.querySelector(containerSelector);
-  if (!container) return;
-  container.style.display = "block";
-  container.innerHTML = `
-    <div class="transcript-loading">
-      <div class="spinner"></div>
-      <div style="flex: 1; min-width: 0;">
-        <div id="transcribe-status-text" style="font-weight: 500; font-size: 13px; color: #334155; margin-bottom: 6px;">
-          正在从视频提取并解析音频轨道 (Web Audio API)...
-        </div>
-        <div id="transcribe-progress-track" class="transcribe-progress-track" style="display: none;">
-          <div id="transcribe-progress-bar" class="transcribe-progress-bar" style="width: 0%;"></div>
+// 音频提取与 AI Whisper 语音识别 (支持多段切片流水线、实时流式文案呈现与双模对比)
+async function transcribeAudio(
+  mediaUrl,
+  containerSelector,
+  noteId,
+  {
+    autoSave = true,
+    renderBox = true,
+    onProgress = null,
+    onStatus = null,
+    onPartialResult = null
+  } = {}
+) {
+  const container = containerSelector ? document.querySelector(containerSelector) : null;
+  if (renderBox && !container) return;
+
+  if (renderBox && container) {
+    container.style.display = "block";
+    container.innerHTML = `
+      <div class="transcript-loading">
+        <div class="spinner"></div>
+        <div style="flex: 1; min-width: 0;">
+          <div id="transcribe-status-text" style="font-weight: 500; font-size: 13px; color: #334155; margin-bottom: 6px;">
+            正在从视频提取并解析音频轨道 (Web Audio API)...
+          </div>
+          <div id="transcribe-progress-track" class="transcribe-progress-track" style="display: none;">
+            <div id="transcribe-progress-bar" class="transcribe-progress-bar" style="width: 0%;"></div>
+          </div>
         </div>
       </div>
-    </div>
-    <div id="transcribe-live-preview" class="transcribe-live-preview" style="display: none;"></div>
-  `;
+      <div id="transcribe-live-preview" class="transcribe-live-preview" style="display: none;"></div>
+    `;
+  }
 
-  const statusText = container.querySelector("#transcribe-status-text");
-  const progressTrack = container.querySelector("#transcribe-progress-track");
-  const progressBar = container.querySelector("#transcribe-progress-bar");
-  const livePreview = container.querySelector("#transcribe-live-preview");
+  const statusText = renderBox && container ? container.querySelector("#transcribe-status-text") : null;
+  const progressTrack = renderBox && container ? container.querySelector("#transcribe-progress-track") : null;
+  const progressBar = renderBox && container ? container.querySelector("#transcribe-progress-bar") : null;
+  const livePreview = renderBox && container ? container.querySelector("#transcribe-live-preview") : null;
+
+  const updateStatus = (msg) => {
+    if (statusText) statusText.textContent = msg;
+    if (typeof onStatus === "function") {
+      try { onStatus(msg); } catch {}
+    }
+  };
+
+  const updateProgress = (pct, current, total, msg) => {
+    if (progressBar) progressBar.style.width = `${pct}%`;
+    if (typeof onProgress === "function") {
+      try { onProgress({ percent: pct, current, total, msg }); } catch {}
+    }
+  };
+
+  const updatePartial = (items) => {
+    if (livePreview && items.length > 0) {
+      livePreview.style.display = "block";
+      livePreview.textContent = items.map(it => `[${it.timeStr}] ${it.text}`).join("\n\n");
+      livePreview.scrollTop = livePreview.scrollHeight;
+    }
+    if (typeof onPartialResult === "function") {
+      try { onPartialResult(items); } catch {}
+    }
+  };
 
   try {
     const isGroq = state.whisperProvider === "groq" || Boolean(document.getElementById("settings-whisper-key")?.value);
@@ -2576,7 +2623,7 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
     const chunkDuration = 20;
 
     const { duration, chunks, sliceAudioBlob } = await extractAudioChunksFromMedia(mediaUrl, (msg) => {
-      if (statusText) statusText.textContent = msg;
+      updateStatus(msg);
     }, chunkDuration);
 
     const totalChunks = chunks.length;
@@ -2761,24 +2808,18 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
         }
 
         // 实时流式呈现在预览区
-        if (livePreview && collectedItems.length > 0) {
-          livePreview.style.display = "block";
-          livePreview.textContent = collectedItems.map(it => `[${it.timeStr}] ${it.text}`).join("\n\n");
-          livePreview.scrollTop = livePreview.scrollHeight;
-        }
+        updatePartial(collectedItems);
       }
     }
 
-    if (progressBar) progressBar.style.width = "100%";
+    updateProgress(100, totalChunks, totalChunks, "语音识别完成");
 
     const fullTranscript = collectedItems.map(it => `[${it.timeStr}] ${it.text}`).join("\n\n").trim();
     if (!fullTranscript || collectedItems.length === 0) {
       throw new Error("未能识别出有效语音或音频中无清晰人声");
     }
 
-    if (statusText) {
-      statusText.textContent = "✨ 语音提取完成，正在组织带时间戳的段落排版...";
-    }
+    updateStatus("✨ 语音提取完成，正在组织带时间戳的段落排版...");
 
     // 每一个独立完整单句为一个自然段卡片
     const finalLines = collectedItems.map(item => `[${item.timeStr}] ${item.text}`);
@@ -2786,16 +2827,18 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
     const targetNoteId = noteId || (state.activeDetailNote?.id);
 
     // 渲染最终文案结果面板
-    renderTranscriptBox(container, finalTranscript, noteId, detectedProvider);
-    if (detectedProvider === "groq") {
-      showToast(`⚡ 视频文案已由 Groq Whisper Large-v3 提取并生成精准时间戳 (共 ${finalLines.length} 个段落)！`);
-    } else {
-      showToast(`🎉 视频语音文案已提取完成 (共 ${finalLines.length} 个段落)！`);
+    if (renderBox && container) {
+      renderTranscriptBox(container, finalTranscript, noteId, detectedProvider);
+      if (detectedProvider === "groq") {
+        showToast(`⚡ 视频文案已由 Groq Whisper Large-v3 提取并生成精准时间戳 (共 ${finalLines.length} 个段落)！`);
+      } else {
+        showToast(`🎉 视频语音文案已提取完成 (共 ${finalLines.length} 个段落)！`);
+      }
     }
 
-    if (targetNoteId) {
+    if (autoSave && targetNoteId) {
       try {
-        const savedTranscript = serializeTranscriptParagraphs(container) || fullTranscript;
+        const savedTranscript = (renderBox && container) ? (serializeTranscriptParagraphs(container) || fullTranscript) : fullTranscript;
         await fetch(`/api/notes/${targetNoteId}/transcript`, {
           method: "PUT",
           headers: {
@@ -2811,14 +2854,30 @@ async function transcribeAudio(mediaUrl, containerSelector, noteId) {
         console.warn("保存 transcript 到数据库失败:", err);
       }
     }
+
+    return {
+      success: true,
+      transcript: finalTranscript,
+      items: collectedItems,
+      provider: detectedProvider
+    };
   } catch (err) {
     console.error("Transcribe error:", err);
-    container.innerHTML = `
-      <div style="color: var(--primary); font-size: 13px; padding: 12px; background: rgba(234, 44, 67, 0.05); border-radius: 8px;">
-        ❌ 语音转写失败: ${escapeHtml(err.message)}
-      </div>
-    `;
-    showToast(`❌ 语音转写失败: ${err.message}`, { isError: true });
+    if (renderBox && container) {
+      container.innerHTML = `
+        <div style="color: var(--primary); font-size: 13px; padding: 12px; background: rgba(234, 44, 67, 0.05); border-radius: 8px;">
+          ❌ 语音转写失败: ${escapeHtml(err.message)}
+        </div>
+      `;
+      showToast(`❌ 语音转写失败: ${err.message}`, { isError: true });
+    }
+    if (!renderBox) {
+      throw err;
+    }
+    return {
+      success: false,
+      error: err.message
+    };
   }
 }
 
@@ -2853,7 +2912,7 @@ function detectVideoSoftSubtitles(videoEl) {
   return null;
 }
 
-// 视频画面底部硬字幕视觉提取 (Vision OCR，支持极速/慢速精细两种模式，支持后台静默执行)
+// 视频画面底部硬字幕视觉提取 (Vision OCR，支持极速/慢速精细两种模式，支持后台静默执行与双模对比)
 async function extractVideoHardSubtitles(
   mediaUrl,
   containerSelector,
@@ -2863,13 +2922,17 @@ async function extractVideoHardSubtitles(
     isSlowMode = false,
     stepSec = null,
     batchDelayMs = null,
-    onProgress = null
+    autoSave = true,
+    renderBox = true,
+    onProgress = null,
+    onStatus = null,
+    onPartialResult = null
   } = {}
 ) {
   const container = containerSelector ? document.querySelector(containerSelector) : null;
-  if (containerSelector && !container) return false;
+  if (renderBox && containerSelector && !container) return false;
 
-  if (container) {
+  if (renderBox && container) {
     container.style.display = "block";
     container.innerHTML = `
       <div class="transcript-loading">
@@ -2887,26 +2950,43 @@ async function extractVideoHardSubtitles(
     `;
   }
 
-  const statusText = container?.querySelector("#ocr-status-text");
-  const progressTrack = container?.querySelector("#ocr-progress-track");
-  const progressBar = container?.querySelector("#ocr-progress-bar");
-  const livePreview = container?.querySelector("#ocr-live-preview");
+  const statusText = renderBox && container ? container.querySelector("#ocr-status-text") : null;
+  const progressTrack = renderBox && container ? container.querySelector("#ocr-progress-track") : null;
+  const progressBar = renderBox && container ? container.querySelector("#ocr-progress-bar") : null;
+  const livePreview = renderBox && container ? container.querySelector("#ocr-live-preview") : null;
 
   let tempVideo = null;
   let createdBlobUrl = null;
 
-  try {
-    const notifyProgress = (pct, currentBatch, totalBatches, msg) => {
-      if (typeof onProgress === "function") {
-        try {
-          onProgress({ percent: pct, currentBatch, totalBatches, msg });
-        } catch {}
-      }
-    };
-
-    if (statusText) {
-      statusText.textContent = isSlowMode ? "🐢 正在获取视频画面资源 (准备慢速精细扫描)..." : "正在获取视频画面资源...";
+  const updateStatus = (msg) => {
+    if (statusText) statusText.textContent = msg;
+    if (typeof onStatus === "function") {
+      try { onStatus(msg); } catch {}
     }
+  };
+
+  const notifyProgress = (pct, currentBatch, totalBatches, msg) => {
+    if (progressBar) progressBar.style.width = `${pct}%`;
+    if (typeof onProgress === "function") {
+      try {
+        onProgress({ percent: pct, currentBatch, totalBatches, msg });
+      } catch {}
+    }
+  };
+
+  const updatePartial = (subs) => {
+    if (livePreview && subs.length > 0) {
+      livePreview.style.display = "block";
+      livePreview.textContent = subs.map(s => `[${s.timeStr}] ${s.text}`).join("\n");
+      livePreview.scrollTop = livePreview.scrollHeight;
+    }
+    if (typeof onPartialResult === "function") {
+      try { onPartialResult(subs); } catch {}
+    }
+  };
+
+  try {
+    updateStatus(isSlowMode ? "🐢 正在获取视频画面资源 (准备慢速精细扫描)..." : "正在获取视频画面资源...");
     notifyProgress(0, 0, 0, "正在获取视频画面资源...");
 
     let safeVideoUrl = mediaUrl;
@@ -3097,11 +3177,7 @@ async function extractVideoHardSubtitles(
             }
           }
 
-          if (livePreview && collectedSubs.length > 0) {
-            livePreview.style.display = "block";
-            livePreview.textContent = collectedSubs.map(s => `[${s.timeStr}] ${s.text}`).join("\n");
-            livePreview.scrollTop = livePreview.scrollHeight;
-          }
+          updatePartial(collectedSubs);
         }
       } else if (lastErr) {
         console.warn(`第 ${b + 1} 批多次重试后仍然未成功:`, lastErr.message);
@@ -3112,7 +3188,7 @@ async function extractVideoHardSubtitles(
 
       // 探针策略：如果在前 2 批 (约前 15 秒) 采样完毕后完全未识别出任何字幕，才平滑自动启用语音转写
       if (b === 1 && collectedSubs.length === 0 && fallbackToSpeech) {
-        if (statusText) statusText.textContent = "前 15 秒画面未检测到硬字幕，自动启用 AI 语音转写引擎...";
+        updateStatus("前 15 秒画面未检测到硬字幕，自动启用 AI 语音转写引擎...");
         await new Promise(r => setTimeout(r, 600));
         return false;
       }
@@ -3132,13 +3208,13 @@ async function extractVideoHardSubtitles(
     const finalTranscript = finalLines.join("\n");
     const targetNoteId = noteId || (state.activeDetailNote?.id);
 
-    if (container) {
+    if (renderBox && container) {
       renderTranscriptBox(container, finalTranscript, targetNoteId, providerUsed);
       showToast(`👁️ 已直接从视频画面提取硬字幕 (共 ${collectedSubs.length} 条)！`);
     }
 
     // 存储字幕至云端 D1，并实时更新当前活跃展示的视图
-    if (targetNoteId) {
+    if (autoSave && targetNoteId) {
       try {
         await fetch(`/api/notes/${targetNoteId}/transcript`, {
           method: "PUT",
@@ -3154,7 +3230,7 @@ async function extractVideoHardSubtitles(
           // 若详情弹窗当前打开，刷新详情弹窗内的字幕框
           const modalPanel = document.getElementById("modal-transcript-panel");
           const modalDetail = document.getElementById("modal-note-detail");
-          if (modalPanel && modalDetail?.classList.contains("active")) {
+          if (renderBox && modalPanel && modalDetail?.classList.contains("active")) {
             renderTranscriptBox(modalPanel, finalTranscript, targetNoteId, providerUsed);
           }
         }
@@ -3163,7 +3239,7 @@ async function extractVideoHardSubtitles(
         if (state.lastParsedNote && (state.lastParsedNote.noteId === targetNoteId || state.lastParsedNote.id === targetNoteId)) {
           state.lastParsedNote.transcript = finalTranscript;
           const mainPanel = document.getElementById("transcript-panel");
-          if (mainPanel) {
+          if (renderBox && mainPanel) {
             renderTranscriptBox(mainPanel, finalTranscript, targetNoteId, providerUsed);
           }
         }
@@ -3172,9 +3248,14 @@ async function extractVideoHardSubtitles(
       }
     }
 
-    return true;
+    return {
+      success: true,
+      transcript: finalTranscript,
+      items: collectedSubs,
+      provider: providerUsed
+    };
   } catch (err) {
-    if (fallbackToSpeech && container) {
+    if (fallbackToSpeech && container && renderBox) {
       console.warn("画面字幕提取遇到限制或未果，自动切换至 AI 语音识别:", err.message);
       showToast("🐢 画面视觉接口繁忙，已自动为您平滑切换至 AI 语音极速转写！");
       try {
@@ -3188,7 +3269,7 @@ async function extractVideoHardSubtitles(
       return false;
     }
     console.error("Hard subtitle OCR error:", err);
-    if (container) {
+    if (renderBox && container) {
       // 遇到视觉限制时，直接自动平滑转为语音识别兜底
       showToast("🐢 画面字幕识别受限，正在平滑切换至 AI 语音极速转写...");
       try {
@@ -3206,6 +3287,9 @@ async function extractVideoHardSubtitles(
         showToast(`提取未果: ${cleanMsg}`, { isError: true });
         return false;
       }
+    }
+    if (!renderBox) {
+      throw err;
     }
     return false;
   } finally {
@@ -3440,6 +3524,337 @@ async function extractVideoSubtitlesOrAudio(mediaUrl, containerSelector, noteId,
 
   // 3. 画面无字幕时，平滑自动启用 AI 语音转写引擎 (Whisper Large-v3 / Cloudflare)
   await transcribeAudio(mediaUrl, containerSelector, noteId);
+}
+
+// 双模对比提取：慢速精细画面字幕提取 VS AI 语音识别转写，并排预览对比后手工确定采纳版本
+async function runDualSubtitleExtraction(mediaUrl, containerSelector, noteId) {
+  const container = document.querySelector(containerSelector);
+  if (!container) return;
+
+  container.style.display = "block";
+
+  // 记录原先已有文案 (如果用户关闭对比或放弃，可以恢复)
+  const prevTranscript = (state.activeDetailNote && state.activeDetailNote.id === noteId && state.activeDetailNote.transcript)
+    ? state.activeDetailNote.transcript
+    : ((state.lastParsedNote && (state.lastParsedNote.noteId === noteId || state.lastParsedNote.id === noteId) && state.lastParsedNote.transcript)
+        ? state.lastParsedNote.transcript
+        : "");
+
+  container.innerHTML = `
+    <div class="dual-compare-container">
+      <div class="dual-compare-header">
+        <div class="dual-compare-title-wrap">
+          <div class="dual-compare-title">⚖️ 双模对比提取 · 画面字幕 VS 语音转写</div>
+          <div class="dual-compare-sub">
+            系统正在同时并发运行【慢速精细画面字幕提取】与【AI 语音识别转写】。您可在下方并排核对文案完整度、错别字与断句，点击底部按钮直接采纳心仪版本。
+          </div>
+        </div>
+        <div class="dual-compare-header-actions">
+          <button type="button" class="btn-dual-close" title="退出对比模式">✖️ 关闭对比</button>
+        </div>
+      </div>
+
+      <div class="dual-compare-grid">
+        <!-- 左侧：画面字幕提取 (Vision OCR) -->
+        <div class="dual-col dual-col-vision" id="dual-col-vision">
+          <div class="dual-col-header">
+            <div class="dual-col-title-box">
+              <span class="dual-col-tag tag-vision">🐢 慢速精细画面字幕</span>
+              <span class="dual-stats-badge" id="dual-vision-stats">正在逐帧扫描...</span>
+            </div>
+            <span class="dual-engine-badge badge-vision" id="dual-vision-engine">CF Vision / Qwen</span>
+          </div>
+
+          <div class="dual-progress-wrap" id="dual-vision-progress-wrap">
+            <div class="dual-status-text" id="dual-vision-status">正在准备抽帧分析画面字幕...</div>
+            <div class="transcribe-progress-track">
+              <div class="transcribe-progress-bar" id="dual-vision-progress-bar" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="dual-preview-box" id="dual-vision-preview">
+            <div class="dual-empty-tip">⏳ 正在密集抽帧分析画面硬字幕 (慢速精细模式)...</div>
+          </div>
+
+          <div class="dual-col-footer">
+            <button type="button" class="btn-adopt-dual btn-adopt-vision" id="btn-adopt-vision" disabled>
+              ✅ 采纳画面字幕版
+            </button>
+            <button type="button" class="btn-copy-dual" id="btn-copy-vision" disabled title="复制画面字幕纯文本">
+              📋 复制
+            </button>
+          </div>
+        </div>
+
+        <!-- 右侧：语音识别转写 (Whisper) -->
+        <div class="dual-col dual-col-speech" id="dual-col-speech">
+          <div class="dual-col-header">
+            <div class="dual-col-title-box">
+              <span class="dual-col-tag tag-speech">🎙️ AI 语音识别转写</span>
+              <span class="dual-stats-badge" id="dual-speech-stats">准备中...</span>
+            </div>
+            <span class="dual-engine-badge badge-speech" id="dual-speech-engine">Groq Whisper Large-v3</span>
+          </div>
+
+          <div class="dual-progress-wrap" id="dual-speech-progress-wrap">
+            <div class="dual-status-text" id="dual-speech-status">正在解析音频轨道...</div>
+            <div class="transcribe-progress-track">
+              <div class="transcribe-progress-bar" id="dual-speech-progress-bar" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="dual-preview-box" id="dual-speech-preview">
+            <div class="dual-empty-tip">⏳ 正在提取视频音频进行语音识别...</div>
+          </div>
+
+          <div class="dual-col-footer">
+            <button type="button" class="btn-adopt-dual btn-adopt-speech" id="btn-adopt-speech" disabled>
+              ✅ 采纳语音转写版
+            </button>
+            <button type="button" class="btn-copy-dual" id="btn-copy-speech" disabled title="复制语音文案纯文本">
+              📋 复制
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // 绑定关闭对比按钮
+  const closeBtn = container.querySelector(".btn-dual-close");
+  if (closeBtn) {
+    closeBtn.onclick = () => {
+      if (prevTranscript) {
+        renderTranscriptBox(container, prevTranscript, noteId);
+      } else {
+        container.style.display = "none";
+        container.innerHTML = "";
+      }
+    };
+  }
+
+  // 点击时间戳跳转播放事件委托
+  container.onclick = (e) => {
+    const timeEl = e.target.closest(".dual-preview-time");
+    if (timeEl && timeEl.dataset.time !== undefined && timeEl.dataset.time !== "") {
+      const sec = parseFloat(timeEl.dataset.time);
+      if (!isNaN(sec)) {
+        seekAllMediaTo(sec);
+      }
+    }
+  };
+
+  // 视觉与语音 UI 节点缓存
+  const visionStatusEl = container.querySelector("#dual-vision-status");
+  const visionBarEl = container.querySelector("#dual-vision-progress-bar");
+  const visionPreviewEl = container.querySelector("#dual-vision-preview");
+  const visionStatsEl = container.querySelector("#dual-vision-stats");
+  const visionEngineEl = container.querySelector("#dual-vision-engine");
+  const btnAdoptVision = container.querySelector("#btn-adopt-vision");
+  const btnCopyVision = container.querySelector("#btn-copy-vision");
+
+  const speechStatusEl = container.querySelector("#dual-speech-status");
+  const speechBarEl = container.querySelector("#dual-speech-progress-bar");
+  const speechPreviewEl = container.querySelector("#dual-speech-preview");
+  const speechStatsEl = container.querySelector("#dual-speech-stats");
+  const speechEngineEl = container.querySelector("#dual-speech-engine");
+  const btnAdoptSpeech = container.querySelector("#btn-adopt-speech");
+  const btnCopySpeech = container.querySelector("#btn-copy-speech");
+
+  let visionResult = null;
+  let speechResult = null;
+
+  // 渲染对比条目辅助函数
+  const renderItemsToBox = (boxEl, items) => {
+    if (!boxEl) return;
+    if (!items || items.length === 0) {
+      boxEl.innerHTML = `<div class="dual-empty-tip">暂无提取内容</div>`;
+      return;
+    }
+    boxEl.innerHTML = items.map((it) => `
+      <div class="dual-preview-item">
+        <span class="dual-preview-time" data-time="${it.timeSec ?? ''}" title="点击跳转至此时间点播放">${escapeHtml(it.timeStr || '00:00')}</span>
+        <span class="dual-preview-text">${escapeHtml(it.text)}</span>
+      </div>
+    `).join("");
+    boxEl.scrollTop = boxEl.scrollHeight;
+  };
+
+  // 统一采纳保存处理
+  const adoptVersion = async (chosenTranscript, chosenProvider, sourceName) => {
+    const targetNoteId = noteId || state.activeDetailNote?.id;
+    if (targetNoteId) {
+      try {
+        await fetch(`/api/notes/${targetNoteId}/transcript`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ transcript: chosenTranscript })
+        });
+
+        if (state.activeDetailNote && state.activeDetailNote.id === targetNoteId) {
+          state.activeDetailNote.transcript = chosenTranscript;
+        }
+        if (state.lastParsedNote && (state.lastParsedNote.noteId === targetNoteId || state.lastParsedNote.id === targetNoteId)) {
+          state.lastParsedNote.transcript = chosenTranscript;
+        }
+      } catch (err) {
+        console.warn("保存采纳文案到数据库失败:", err);
+      }
+    }
+
+    renderTranscriptBox(container, chosenTranscript, targetNoteId, chosenProvider);
+    showToast(`🎉 已成功采纳【${sourceName}】并永久保存至云端数据库！`);
+  };
+
+  // 采纳与复制按钮交互绑定
+  if (btnAdoptVision) {
+    btnAdoptVision.onclick = () => {
+      if (visionResult?.transcript) {
+        adoptVersion(visionResult.transcript, visionResult.provider || "vision", "画面字幕版");
+      }
+    };
+  }
+  if (btnCopyVision) {
+    btnCopyVision.onclick = () => {
+      if (visionResult?.transcript) {
+        navigator.clipboard.writeText(visionResult.transcript);
+        showToast("📋 已复制画面字幕全文！");
+      }
+    };
+  }
+
+  if (btnAdoptSpeech) {
+    btnAdoptSpeech.onclick = () => {
+      if (speechResult?.transcript) {
+        adoptVersion(speechResult.transcript, speechResult.provider || "groq", "语音转写版");
+      }
+    };
+  }
+  if (btnCopySpeech) {
+    btnCopySpeech.onclick = () => {
+      if (speechResult?.transcript) {
+        navigator.clipboard.writeText(speechResult.transcript);
+        showToast("📋 已复制语音转写文案全文！");
+      }
+    };
+  }
+
+  // 1. 并发启动极速语音识别转写 (Whisper)
+  const pSpeech = (async () => {
+    try {
+      const res = await transcribeAudio(mediaUrl, containerSelector, noteId, {
+        autoSave: false,
+        renderBox: false,
+        onStatus: (msg) => {
+          if (speechStatusEl) speechStatusEl.textContent = msg;
+        },
+        onProgress: ({ percent, current, total, msg }) => {
+          if (speechBarEl) speechBarEl.style.width = `${percent}%`;
+          if (speechStatusEl && msg) speechStatusEl.textContent = msg;
+        },
+        onPartialResult: (items) => {
+          renderItemsToBox(speechPreviewEl, items);
+          if (speechStatsEl) {
+            const charCount = items.reduce((acc, it) => acc + (it.text ? it.text.length : 0), 0);
+            speechStatsEl.textContent = `已识别 ${items.length} 句 · ${charCount} 字`;
+          }
+        }
+      });
+
+      if (res && res.items && res.items.length > 0) {
+        speechResult = res;
+        if (speechBarEl) speechBarEl.style.width = "100%";
+        const totalChars = res.items.reduce((acc, it) => acc + (it.text ? it.text.length : 0), 0);
+        if (speechStatusEl) speechStatusEl.textContent = `✨ 语音转写完成 (共 ${res.items.length} 句 · ${totalChars} 字)`;
+        if (speechStatsEl) speechStatsEl.textContent = `共 ${res.items.length} 句 · ${totalChars} 字`;
+        if (speechEngineEl && res.provider) {
+          speechEngineEl.textContent = res.provider === "groq" ? "⚡ Groq Whisper Large-v3" : "☁️ Cloudflare AI";
+        }
+        renderItemsToBox(speechPreviewEl, res.items);
+        if (btnAdoptSpeech) {
+          btnAdoptSpeech.disabled = false;
+          btnAdoptSpeech.classList.add("ready");
+        }
+        if (btnCopySpeech) btnCopySpeech.disabled = false;
+        showToast(`🎙️ 语音转写就绪 (${res.items.length} 句)！可并排预览对比`);
+      } else {
+        throw new Error("未能识别出有效语音或音频中无清晰人声");
+      }
+    } catch (err) {
+      console.warn("Dual extraction speech error:", err);
+      if (speechStatusEl) speechStatusEl.textContent = `⚠️ 语音转写未成功: ${err.message}`;
+      if (speechPreviewEl) {
+        speechPreviewEl.innerHTML = `
+          <div class="dual-error-tip">
+            <p>❌ 语音转写未成功 (${escapeHtml(err.message)})</p>
+            <p style="margin-top: 6px; font-size: 12px; color: #64748b;">提示：若视频无声或声音过小，可参考左侧【画面字幕提取】。</p>
+          </div>
+        `;
+      }
+    }
+  })();
+
+  // 2. 并发启动慢速精细画面字幕提取 (Vision OCR)
+  const pVision = (async () => {
+    try {
+      const res = await extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, {
+        isSlowMode: true,
+        stepSec: 1.6,
+        batchDelayMs: 2200,
+        fallbackToSpeech: false, // 对比模式下画面字幕无需降级回语音，各自独立展示真实效果
+        autoSave: false,
+        renderBox: false,
+        onStatus: (msg) => {
+          if (visionStatusEl) visionStatusEl.textContent = msg;
+        },
+        onProgress: ({ percent, currentBatch, totalBatches, msg }) => {
+          if (visionBarEl) visionBarEl.style.width = `${percent}%`;
+          if (visionStatusEl && msg) visionStatusEl.textContent = msg;
+        },
+        onPartialResult: (subs) => {
+          renderItemsToBox(visionPreviewEl, subs);
+          if (visionStatsEl) {
+            const charCount = subs.reduce((acc, it) => acc + (it.text ? it.text.length : 0), 0);
+            visionStatsEl.textContent = `已扫描 ${subs.length} 句 · ${charCount} 字`;
+          }
+        }
+      });
+
+      if (res && res.items && res.items.length > 0) {
+        visionResult = res;
+        if (visionBarEl) visionBarEl.style.width = "100%";
+        const totalChars = res.items.reduce((acc, it) => acc + (it.text ? it.text.length : 0), 0);
+        if (visionStatusEl) visionStatusEl.textContent = `✨ 画面字幕提取完成 (共 ${res.items.length} 句 · ${totalChars} 字)`;
+        if (visionStatsEl) visionStatsEl.textContent = `共 ${res.items.length} 句 · ${totalChars} 字`;
+        if (visionEngineEl && res.provider) {
+          visionEngineEl.textContent = res.provider.includes("llama") ? "🦙 Llama 3.2 Vision" : (res.provider === "groq" ? "⚡ Groq Vision" : res.provider);
+        }
+        renderItemsToBox(visionPreviewEl, res.items);
+        if (btnAdoptVision) {
+          btnAdoptVision.disabled = false;
+          btnAdoptVision.classList.add("ready");
+        }
+        if (btnCopyVision) btnCopyVision.disabled = false;
+        showToast(`🐢 画面字幕提取就绪 (${res.items.length} 句)！`);
+      } else {
+        throw new Error("视频画面未检测到清晰硬字幕");
+      }
+    } catch (err) {
+      console.warn("Dual extraction vision error:", err);
+      if (visionStatusEl) visionStatusEl.textContent = `⚠️ 画面硬字幕未能提取: ${err.message}`;
+      if (visionPreviewEl) {
+        visionPreviewEl.innerHTML = `
+          <div class="dual-error-tip">
+            <p>⚠️ 画面字幕未检测到字幕或已限流 (${escapeHtml(err.message)})</p>
+            <p style="margin-top: 6px; font-size: 12px; color: #64748b;">提示：若视频无底部硬字幕或视觉接口繁忙，建议右侧直接点击【采纳语音转写版】。</p>
+          </div>
+        `;
+      }
+    }
+  })();
 }
 
 // 3. 抽屉与收藏知识库管理
@@ -4060,6 +4475,7 @@ async function openNoteDetail(noteId) {
     const transcribeBtn = document.getElementById("btn-modal-transcribe");
     const modalOcrBtn = document.getElementById("btn-modal-ocr-subtitles");
     const modalSlowOcrBtn = document.getElementById("btn-modal-slow-ocr");
+    const modalDualBtn = document.getElementById("btn-modal-dual-extract");
     const downloadVideoBtn = document.getElementById("btn-modal-download-video");
     const cleanupMediaBtn = document.getElementById("btn-modal-cleanup-media");
     const transcriptPanel = document.getElementById("modal-transcript-panel");
@@ -4195,6 +4611,12 @@ async function openNoteDetail(noteId) {
           });
         };
       }
+      if (modalDualBtn) {
+        modalDualBtn.style.display = "inline-flex";
+        modalDualBtn.onclick = () => {
+          runDualSubtitleExtraction(activeVideoUrl, "#modal-transcript-panel", note.id);
+        };
+      }
     } else if (hasAudio) {
       // 视频已清理，但纯音频保留
       if (vidWrap) vidWrap.style.display = "block";
@@ -4222,6 +4644,7 @@ async function openNoteDetail(noteId) {
       if (cleanupMediaBtn) cleanupMediaBtn.style.display = "inline-flex";
       if (modalOcrBtn) modalOcrBtn.style.display = "none";
       if (modalSlowOcrBtn) modalSlowOcrBtn.style.display = "none";
+      if (modalDualBtn) modalDualBtn.style.display = "none";
 
       if (transcribeBtn) {
         transcribeBtn.style.display = "inline-flex";
@@ -4233,6 +4656,7 @@ async function openNoteDetail(noteId) {
       // 视频与音频均已删除，但提取的语音文案完整保留
       if (modalOcrBtn) modalOcrBtn.style.display = "none";
       if (modalSlowOcrBtn) modalSlowOcrBtn.style.display = "none";
+      if (modalDualBtn) modalDualBtn.style.display = "none";
       if (vidWrap) vidWrap.style.display = "block";
       if (vidContainer) vidContainer.style.display = "none";
       if (audioWrap) audioWrap.style.display = "none";
@@ -4244,6 +4668,7 @@ async function openNoteDetail(noteId) {
       // 普通图文笔记或无任何媒体
       if (modalOcrBtn) modalOcrBtn.style.display = "none";
       if (modalSlowOcrBtn) modalSlowOcrBtn.style.display = "none";
+      if (modalDualBtn) modalDualBtn.style.display = "none";
       if (vidWrap) vidWrap.style.display = "none";
       vidPlayer?.removeAttribute("src");
       audioPlayer?.removeAttribute("src");

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.28" />
+    <link rel="stylesheet" href="/style.css?v=2.0.29" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -188,6 +188,7 @@
                 <button id="btn-transcribe-video" class="btn btn-secondary" type="button" title="优先扫描视频字幕，无字幕则自动启用 AI 语音转写">🎙️ 提取字幕与文案</button>
                 <button id="btn-ocr-video" class="btn btn-secondary" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">🔍 画面字幕提取</button>
                 <button id="btn-slow-ocr-video" class="btn btn-secondary" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">🐢 慢速精细提取</button>
+                <button id="btn-dual-extract-video" class="btn btn-secondary" type="button" title="同时进行慢速精细画面字幕提取与语音识别转写，并排预览对比后手工确定采纳版本">⚖️ 双模对比提取</button>
                 <select id="video-quality-select" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px;"></select>
                 <button id="btn-download-video" class="btn btn-primary" type="button">下载视频</button>
               </div>
@@ -522,6 +523,9 @@
                 </button>
                 <button id="btn-modal-slow-ocr" class="btn btn-secondary" style="display: none;" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">
                   🐢 慢速精细提取
+                </button>
+                <button id="btn-modal-dual-extract" class="btn btn-secondary" style="display: none;" type="button" title="同时进行慢速精细画面字幕提取与语音识别转写，并排预览对比后手工确定采纳版本">
+                  ⚖️ 双模对比提取
                 </button>
                 <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
                   📻 加入随身听
@@ -1014,6 +1018,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.28"></script>
+    <script type="module" src="/app.js?v=2.0.29"></script>
   </body>
 </html>
