@@ -1062,17 +1062,25 @@ export async function getPendingSubtitleNotes(db, limit = 50) {
       AND videos_json IS NOT NULL
       AND videos_json != '[]'
       AND videos_json != ''
+      AND COALESCE(extraction_status, '') != 'manual'
   `).first();
   const total = countRow?.total || 0;
 
+  // 关键：未曾失败的任务 (fail_count = 0) 排在最前，尝试失败过的 (fail_count > 0) 移至队列末尾！
+  // 手工提取模式 (extraction_status = 'manual') 直接排除，不参与后台自动队列循环
   const rows = await db.prepare(`
-    SELECT id, title, cover_url, videos_json, audio_url, transcript, tags_json, created_at
+    SELECT id, title, cover_url, videos_json, audio_url, transcript, tags_json, created_at,
+           COALESCE(extraction_status, 'pending') AS extraction_status,
+           COALESCE(extraction_fail_count, 0) AS extraction_fail_count
     FROM notes
     WHERE (transcript IS NULL OR TRIM(transcript) = '')
       AND videos_json IS NOT NULL
       AND videos_json != '[]'
       AND videos_json != ''
-    ORDER BY created_at DESC
+      AND COALESCE(extraction_status, '') != 'manual'
+    ORDER BY 
+      COALESCE(extraction_fail_count, 0) ASC,
+      created_at DESC
     LIMIT ?
   `).bind(limit).all();
 
@@ -1087,6 +1095,8 @@ export async function getPendingSubtitleNotes(db, limit = 50) {
       coverUrl: r.cover_url,
       videos,
       tags,
+      failCount: Number(r.extraction_fail_count || 0),
+      status: r.extraction_status,
       createdAt: r.created_at
     };
   }).filter(n => Array.isArray(n.videos) && n.videos.length > 0 && Boolean(n.videos[0]?.url || n.videos[0]));
@@ -1095,19 +1105,52 @@ export async function getPendingSubtitleNotes(db, limit = 50) {
 }
 
 /**
+ * 切换笔记字幕提取模式 (手工提取 'manual' vs 自动接力 'auto')
+ */
+export async function setExtractionMode(db, id, mode = 'manual') {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+  const now = Date.now();
+  const isAuto = mode === 'auto';
+  const targetStatus = isAuto ? 'pending' : 'manual';
+
+  if (isAuto) {
+    // 恢复自动接力：重置为 pending 并清空失败计数，允许重新排入自动队列
+    await db.prepare(`
+      UPDATE notes 
+      SET extraction_status = 'pending',
+          extraction_fail_count = 0,
+          updated_at = ?
+      WHERE id = ?
+    `).bind(now, id).run();
+  } else {
+    // 切换为手工提取模式：停止后台自动队列重试
+    await db.prepare(`
+      UPDATE notes 
+      SET extraction_status = 'manual',
+          updated_at = ?
+      WHERE id = ?
+    `).bind(now, id).run();
+  }
+
+  return { id, mode: targetStatus, status: targetStatus, updatedAt: now };
+}
+
+/**
  * 获取字幕提取任务列表与全量看板数据 (包含待提取、已提取、耗时记录与统计)
  */
 export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {}) {
-  if (!db) return { items: [], total: 0, stats: { totalVideos: 0, completedCount: 0, pendingCount: 0, failedCount: 0, avgDurationSec: 0, avgDurationFormatted: '暂无' } };
+  if (!db) return { items: [], total: 0, stats: { totalVideos: 0, completedCount: 0, pendingCount: 0, failedCount: 0, manualCount: 0, avgDurationSec: 0, avgDurationFormatted: '暂无' } };
   await initDb(db);
 
-  // 1. 统计视频总数、已提取数、待提取数、提取失败数以及平均耗时
+  // 1. 统计视频总数、已提取数、待提取数、提取失败数、手工提取数以及平均耗时
   const statsRow = await db.prepare(`
     SELECT 
       COUNT(*) AS total_videos,
       SUM(CASE WHEN transcript IS NOT NULL AND TRIM(transcript) != '' THEN 1 ELSE 0 END) AS completed_count,
-      SUM(CASE WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) = 0 THEN 1 ELSE 0 END) AS pending_count,
-      SUM(CASE WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) > 0 THEN 1 ELSE 0 END) AS failed_count,
+      SUM(CASE WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_status, '') != 'manual' AND COALESCE(extraction_fail_count, 0) = 0 THEN 1 ELSE 0 END) AS pending_count,
+      SUM(CASE WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_status, '') != 'manual' AND COALESCE(extraction_fail_count, 0) > 0 THEN 1 ELSE 0 END) AS failed_count,
+      SUM(CASE WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_status, '') = 'manual' THEN 1 ELSE 0 END) AS manual_count,
       AVG(CASE WHEN extraction_duration_ms > 0 THEN extraction_duration_ms ELSE NULL END) AS avg_duration_ms
     FROM notes
     WHERE videos_json IS NOT NULL AND videos_json != '[]' AND videos_json != ''
@@ -1117,6 +1160,7 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
   const completedCount = Number(statsRow?.completed_count || 0);
   const pendingCount = Number(statsRow?.pending_count || 0);
   const failedCount = Number(statsRow?.failed_count || 0);
+  const manualCount = Number(statsRow?.manual_count || 0);
   const avgDurationMs = Number(statsRow?.avg_duration_ms || 0);
   const avgDurationSec = Math.round(avgDurationMs / 1000);
 
@@ -1125,11 +1169,18 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
   if (filter === 'completed') {
     whereClause += " AND transcript IS NOT NULL AND TRIM(transcript) != ''";
   } else if (filter === 'pending') {
-    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) = 0";
+    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_status, '') != 'manual' AND COALESCE(extraction_fail_count, 0) = 0";
   } else if (filter === 'failed') {
-    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) > 0";
+    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_status, '') != 'manual' AND COALESCE(extraction_fail_count, 0) > 0";
+  } else if (filter === 'manual') {
+    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_status, '') = 'manual'";
   }
 
+  // 排序优先级：
+  // 0: 未曾尝试的待提取任务 (排在最前)
+  // 1: 尝试失败过的任务 (放到队列最后，避免阻挡未处理的任务)
+  // 2: 切换为手工提取的任务
+  // 3: 已提取完成的任务
   const rows = await db.prepare(`
     SELECT 
       id, title, cover_url, videos_json, audio_url, transcript, tags_json,
@@ -1145,9 +1196,10 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
     ${whereClause}
     ORDER BY 
       CASE 
-        WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) > 0 THEN 0
-        WHEN (transcript IS NULL OR TRIM(transcript) = '') THEN 1
-        ELSE 2 
+        WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_status, '') != 'manual' AND COALESCE(extraction_fail_count, 0) = 0 THEN 0
+        WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) > 0 THEN 1
+        WHEN COALESCE(extraction_status, '') = 'manual' THEN 2
+        ELSE 3 
       END,
       COALESCE(extracted_at, 0) DESC,
       created_at DESC
@@ -1161,6 +1213,7 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
     try { tags = JSON.parse(r.tags_json || '[]'); } catch {}
     const transcriptText = String(r.transcript || '').trim();
     const isCompleted = transcriptText.length > 0;
+    const isManual = r.extraction_status === 'manual';
     const durationMs = Number(r.extraction_duration_ms || 0);
     const durationSec = Math.round(durationMs / 1000);
 
@@ -1191,6 +1244,8 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
     let status = 'pending';
     if (isCompleted) {
       status = 'completed';
+    } else if (isManual) {
+      status = 'manual';
     } else if (failCount > 0 || r.extraction_status === 'failed') {
       status = 'failed';
     }
@@ -1202,6 +1257,7 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
       videos,
       tags,
       isCompleted,
+      isManual,
       status,
       failCount,
       lastError,
@@ -1227,6 +1283,7 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
       completedCount,
       pendingCount,
       failedCount,
+      manualCount,
       avgDurationSec,
       avgDurationFormatted: avgDurationSec > 0 
         ? (avgDurationSec >= 60 ? `${Math.floor(avgDurationSec / 60)}分${avgDurationSec % 60}秒` : `${avgDurationSec}秒`)

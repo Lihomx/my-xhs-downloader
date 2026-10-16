@@ -3347,9 +3347,11 @@ const BackgroundSubtitleQueue = {
     const noteId = note.id || note.noteId;
     if (!noteId) return;
 
-    // 已有文案或已在处理中或已在队列中或已知失败，跳过
+    // 手工提取模式跳过自动队列
+    if (note.status === 'manual' || note.isManual || note.extractionStatus === 'manual') return;
+
+    // 已有文案或已在处理中或已在队列中，跳过
     if (note.transcript && String(note.transcript).trim()) return;
-    if (this.failedNoteIds.has(noteId)) return;
     if (this.currentNote && (this.currentNote.id === noteId || this.currentNote.noteId === noteId)) return;
     if (this.queue.some(n => (n.id || n.noteId) === noteId)) return;
 
@@ -3357,7 +3359,19 @@ const BackgroundSubtitleQueue = {
     const hasVideo = Array.isArray(note.videos) && note.videos.length > 0 && Boolean(note.videos[0]?.url || note.videos[0]);
     if (!hasVideo) return;
 
-    this.queue.push(note);
+    // 关键：尝试失败过的任务放到队列最后；全新未尝试任务排在前面优先处理！
+    const failCount = Number(note.failCount || note.extractionFailCount || 0);
+    if (failCount > 0) {
+      this.queue.push(note);
+    } else {
+      const firstFailIdx = this.queue.findIndex(n => Number(n.failCount || n.extractionFailCount || 0) > 0);
+      if (firstFailIdx !== -1) {
+        this.queue.splice(firstFailIdx, 0, note);
+      } else {
+        this.queue.push(note);
+      }
+    }
+
     this.updatePillUI();
     if (typeof ExtractionDashboardManager !== "undefined") {
       ExtractionDashboardManager.renderStats();
@@ -3366,6 +3380,13 @@ const BackgroundSubtitleQueue = {
       }
     }
     this.processNext();
+  },
+
+  removeFromQueue(noteId) {
+    if (!noteId) return;
+    const idStr = String(noteId);
+    this.queue = this.queue.filter(n => String(n.id || n.noteId) !== idStr);
+    this.updatePillUI();
   },
 
   togglePause() {
@@ -3477,14 +3498,29 @@ const BackgroundSubtitleQueue = {
       if (!Array.isArray(items) || items.length === 0) return 0;
 
       let addedCount = 0;
+      const freshNotes = [];
+      const failedNotes = [];
+
       items.forEach((note) => {
         const noteId = note.id;
         if (!noteId) return;
+        // 排除已标记为手工提取的笔记
+        if (note.status === 'manual' || note.isManual || note.extractionStatus === 'manual') return;
         if (this.failedNoteIds.has(noteId)) return;
         if (this.currentNote && (this.currentNote.id === noteId || this.currentNote.noteId === noteId)) return;
         if (this.queue.some((n) => (n.id || n.noteId) === noteId)) return;
 
-        this.queue.push(note);
+        if (Number(note.failCount || note.extractionFailCount || 0) > 0) {
+          failedNotes.push(note);
+        } else {
+          freshNotes.push(note);
+        }
+      });
+
+      // 核心要求：未尝试的新鲜任务排在最前处理，失败过的任务放到队列末尾！
+      const sortedToAdd = [...freshNotes, ...failedNotes];
+      sortedToAdd.forEach((n) => {
+        this.queue.push(n);
         addedCount++;
       });
 
@@ -3809,11 +3845,17 @@ export const ExtractionDashboardManager = {
     const tabActiveCount = document.getElementById("kb-tab-active-count");
     const tabCompletedCount = document.getElementById("kb-tab-completed-count");
     const tabFailedCount = document.getElementById("kb-tab-failed-count");
+    const tabManualCount = document.getElementById("kb-tab-manual-count");
+
+    const manualCount = this.tasksData?.stats?.manualCount !== undefined
+      ? this.tasksData.stats.manualCount
+      : (this.tasksData?.items || []).filter(it => it.status === "manual" || it.isManual).length;
 
     if (tabAllCount) tabAllCount.textContent = (this.tasksData?.items || []).length;
     if (tabActiveCount) tabActiveCount.textContent = pendingCount + (BackgroundSubtitleQueue.currentNote ? 1 : 0);
     if (tabCompletedCount) tabCompletedCount.textContent = completedCount;
     if (tabFailedCount) tabFailedCount.textContent = failedCount;
+    if (tabManualCount) tabManualCount.textContent = manualCount;
 
     if (badgeEl) {
       badgeEl.textContent = pendingCount;
@@ -3870,26 +3912,29 @@ export const ExtractionDashboardManager = {
 
     items = Array.from(itemMap.values());
 
-    // 排序：处理中 > 异常记录 > 排队中 > 已完成按时间倒序
+    // 核心要求排序：处理中 > 全新未尝试排队中 > 尝试失败(放到队列最后) > 手工提取模式 > 已完成
     items.sort((a, b) => {
       const score = (item) => {
-        if (item.status === "processing") return 4;
-        if (item.status === "failed" || (item.failCount > 0 && !item.isCompleted)) return 3;
-        if (item.status === "pending") return 2;
-        return 1;
+        if (item.status === "processing") return 5;
+        if (item.status === "pending" && (!item.failCount || item.failCount === 0)) return 4;
+        if (item.status === "failed" || (item.failCount > 0 && !item.isCompleted && !item.isManual && item.status !== "manual")) return 2;
+        if (item.status === "manual" || item.isManual) return 1.5;
+        return 1; // completed
       };
       const diff = score(b) - score(a);
       if (diff !== 0) return diff;
-      return (b.extractedAt || b.downloadTime || 0) - (a.extractedAt || a.downloadTime || 0);
+      return (b.extractedAt || b.createdAt || b.downloadTime || 0) - (a.extractedAt || a.createdAt || a.downloadTime || 0);
     });
 
     // 分类筛选
     if (this.currentFilter === "active") {
-      items = items.filter(it => it.status === "processing" || (it.status === "pending" && it.failCount === 0));
+      items = items.filter(it => it.status === "processing" || (it.status === "pending" && (!it.failCount || it.failCount === 0)));
     } else if (this.currentFilter === "completed") {
       items = items.filter(it => it.status === "completed" || it.isCompleted);
     } else if (this.currentFilter === "failed") {
-      items = items.filter(it => it.status === "failed" || (it.failCount > 0 && !it.isCompleted));
+      items = items.filter(it => (it.status === "failed" || it.failCount > 0) && !it.isCompleted && !it.isManual && it.status !== "manual");
+    } else if (this.currentFilter === "manual") {
+      items = items.filter(it => (it.status === "manual" || it.isManual) && !it.isCompleted);
     }
 
     // 关键词搜索
@@ -3903,7 +3948,7 @@ export const ExtractionDashboardManager = {
           <div class="empty-icon">📭</div>
           <div style="font-weight: 600; margin-bottom: 4px;">暂无相关提取记录</div>
           <div style="font-size: 12px; color: var(--text-muted);">
-            ${this.currentFilter === 'active' ? '当前没有正在处理或排队的接力任务' : (this.currentFilter === 'failed' ? '太棒了！暂无提取异常的记录' : '暂未找到符合条件的提取任务')}
+            ${this.currentFilter === 'active' ? '当前没有正在处理或排队的接力任务' : (this.currentFilter === 'failed' ? '太棒了！暂无提取异常的记录' : (this.currentFilter === 'manual' ? '暂无手动提取模式的视频笔记' : '暂未找到符合条件的提取任务'))}
           </div>
         </div>
       `;
@@ -3926,6 +3971,9 @@ export const ExtractionDashboardManager = {
       } else if (task.status === "processing") {
         statusBadgeClass = "processing";
         statusBadgeLabel = "🔄 正在提取中";
+      } else if (task.status === "manual" || task.isManual) {
+        statusBadgeClass = "manual";
+        statusBadgeLabel = "🖐️ 手工提取模式";
       } else if (task.status === "failed" || task.failCount > 0) {
         statusBadgeClass = "failed";
         statusBadgeLabel = `⚠️ 提取异常 (失败 ${task.failCount} 次)`;
@@ -3949,7 +3997,12 @@ export const ExtractionDashboardManager = {
                 <span class="failure-badge">⚠️ 尝试失败 ${task.failCount} 次${latestDurationStr}</span>
                 <span class="failure-latest-reason">${escapeHtml(task.lastError || latestLog.error || "提取过程遇到异常")}</span>
               </div>
-              ${hasMultiple ? `<button type="button" class="btn-toggle-error-history">查看各次失败原因 (${errorLogs.length}次) ▾</button>` : ''}
+              <div style="display: inline-flex; align-items: center; gap: 6px;">
+                ${!task.isCompleted && !task.isManual && task.status !== "manual" ? `
+                  <button type="button" class="btn-box-switch-manual" title="转入手工提取模式，避免后台接力反复重试">🖐️ 切换成手工提取</button>
+                ` : ""}
+                ${hasMultiple ? `<button type="button" class="btn-toggle-error-history">查看各次原因 (${errorLogs.length}次) ▾</button>` : ''}
+              </div>
             </div>
             ${hasMultiple ? `
               <div class="task-failure-history" style="display: none;">
@@ -3987,7 +4040,15 @@ export const ExtractionDashboardManager = {
         </div>
         <div class="kb-task-actions">
           <button class="btn btn-secondary btn-sm btn-task-view" type="button" title="查看笔记详情与完整提取文案">📖 查看</button>
-          ${task.status !== "processing" ? `<button class="btn btn-ghost btn-sm btn-task-retry" type="button" title="重新放入后台队列重新提取">🔄 重提</button>` : ""}
+          ${!task.isCompleted ? `
+            ${(task.isManual || task.status === "manual") ? `
+              <button class="btn btn-warning btn-sm btn-task-manual active" type="button" title="当前为手工提取模式，点击打开详情提取">🖐️ 手工提取</button>
+              <button class="btn btn-ghost btn-sm btn-task-auto" type="button" title="恢复自动后台慢速接力">🔄 恢复自动</button>
+            ` : `
+              <button class="btn btn-warning btn-sm btn-task-manual" type="button" title="切换成手工提取模式，后台接力将不再重试此笔记">🖐️ 手工提取</button>
+              ${task.status !== "processing" ? `<button class="btn btn-ghost btn-sm btn-task-retry" type="button" title="重新放入后台队列重新提取">🔄 重提</button>` : ""}
+            `}
+          ` : ""}
         </div>
       `;
 
@@ -3998,9 +4059,73 @@ export const ExtractionDashboardManager = {
         if (histEl) {
           const isHidden = histEl.style.display === "none";
           histEl.style.display = isHidden ? "flex" : "none";
-          e.currentTarget.textContent = isHidden ? `收起失败明细 ▴` : `查看各次失败原因 (${task.errorLog?.length || task.failCount}次) ▾`;
+          e.currentTarget.textContent = isHidden ? `收起失败明细 ▴` : `查看各次原因 (${task.errorLog?.length || task.failCount}次) ▾`;
         }
       });
+
+      // 切换为手工提取模式操作函数
+      const switchToManual = async (e) => {
+        if (e) e.stopPropagation();
+        try {
+          showToast("⏳ 正在切换为手工提取模式...");
+          await fetch(`/api/notes/${task.id}/extraction-mode`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({ mode: "manual" })
+          });
+          BackgroundSubtitleQueue.removeFromQueue(task.id);
+          showToast("🖐️ 已切换为手工提取模式（后台接力已跳过此篇）！正在打开详情...");
+          if (typeof openNoteDetail === "function") {
+            await openNoteDetail(task.id);
+            setTimeout(() => {
+              const targetAction = document.getElementById("btn-modal-dual-extract") || document.getElementById("btn-modal-transcribe") || document.getElementById("modal-media-actions");
+              if (targetAction) {
+                targetAction.scrollIntoView({ behavior: "smooth", block: "center" });
+                targetAction.classList.add("pulse-highlight");
+                setTimeout(() => targetAction.classList.remove("pulse-highlight"), 4000);
+              }
+            }, 350);
+          }
+          ExtractionDashboardManager.refresh();
+        } catch (err) {
+          showToast(`切换失败: ${err.message}`);
+        }
+      };
+
+      // 恢复自动接力提取操作函数
+      const switchToAuto = async (e) => {
+        if (e) e.stopPropagation();
+        try {
+          showToast("⏳ 正在恢复自动接力提取...");
+          await fetch(`/api/notes/${task.id}/extraction-mode`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({ mode: "auto" })
+          });
+          BackgroundSubtitleQueue.failedNoteIds.delete(task.id);
+          BackgroundSubtitleQueue.enqueue({
+            id: task.id,
+            title: task.title,
+            coverUrl: task.coverUrl,
+            videos: task.videos || [{ url: task.videoUrl || "" }]
+          });
+          showToast("🔄 已恢复自动后台接力提取！");
+          ExtractionDashboardManager.refresh();
+        } catch (err) {
+          showToast(`操作失败: ${err.message}`);
+        }
+      };
+
+      // 绑定手工提取与恢复自动事件
+      card.querySelector(".btn-task-manual")?.addEventListener("click", switchToManual);
+      card.querySelector(".btn-box-switch-manual")?.addEventListener("click", switchToManual);
+      card.querySelector(".btn-task-auto")?.addEventListener("click", switchToAuto);
 
       // 点击标题或封面直接进入该笔记详情
       card.querySelector(".kb-task-title")?.addEventListener("click", () => {
@@ -4015,11 +4140,12 @@ export const ExtractionDashboardManager = {
       card.querySelector(".btn-task-retry")?.addEventListener("click", (e) => {
         e.stopPropagation();
         showToast(`已将「${(task.title || "").substring(0, 8)}...」加入慢速精细提取队列`);
+        BackgroundSubtitleQueue.failedNoteIds.delete(task.id);
         BackgroundSubtitleQueue.enqueue({
           id: task.id,
           title: task.title,
           coverUrl: task.coverUrl,
-          videos: [{ url: task.videoUrl || "" }]
+          videos: task.videos || [{ url: task.videoUrl || "" }]
         });
         ExtractionDashboardManager.refresh();
       });
@@ -5204,24 +5330,36 @@ async function openNoteDetail(noteId) {
       audioPlayer?.removeAttribute("src");
     }
 
-    // 只要有提取过的语音文案，一律置顶稳定呈现；若提取失败，展示失败原因与尝试历史
+    // 只要有提取过的语音文案，一律置顶稳定呈现；若提取失败或设为手工提取，展示模式状态与操作入口
     if (hasTranscript) {
       renderTranscriptBox(transcriptPanel, note.transcript, note.id);
     } else if (transcriptPanel) {
-      if (note.extractionFailCount > 0) {
+      const isManual = note.extractionStatus === "manual";
+      if (note.extractionFailCount > 0 || isManual) {
         const errList = Array.isArray(note.extractionErrorLog) ? note.extractionErrorLog : [];
         const durSec = Math.round((note.extractionDurationMs || 0) / 1000);
         transcriptPanel.style.display = "block";
         transcriptPanel.innerHTML = `
-          <div class="modal-extraction-failure-alert">
+          <div class="modal-extraction-failure-alert" style="${isManual ? 'background: rgba(254, 243, 199, 0.85); border-color: #fde68a;' : ''}">
             <div class="modal-failure-header">
-              <span class="modal-failure-title">
-                ⚠️ 字幕与文案尝试提取失败 (${note.extractionFailCount}次${durSec > 0 ? ` · 用时 ${durSec}s` : ""})
+              <span class="modal-failure-title" style="${isManual ? 'color: #92400e;' : ''}">
+                ${isManual 
+                  ? '🖐️ 当前处于手工提取模式（后台接力已跳过此篇）' 
+                  : `⚠️ 字幕与文案尝试提取未成功 (${note.extractionFailCount}次${durSec > 0 ? ` · 用时 ${durSec}s` : ""})`}
               </span>
-              <button type="button" class="btn btn-primary btn-sm btn-modal-retry-extract">🔄 重新提取</button>
+              <div style="display: inline-flex; align-items: center; gap: 8px;">
+                ${isManual ? `
+                  <button type="button" class="btn btn-ghost btn-sm btn-modal-switch-auto" title="恢复自动多端断点接力后台提取">🔄 恢复自动</button>
+                ` : `
+                  <button type="button" class="btn btn-warning btn-sm btn-modal-switch-manual" title="转入手工提取模式，避免后台接力反复重试">🖐️ 切换成手工提取</button>
+                `}
+                <button type="button" class="btn btn-primary btn-sm btn-modal-retry-extract">🔄 重新提取</button>
+              </div>
             </div>
-            <div class="modal-failure-body">
-              <strong>失败原因：</strong>${escapeHtml(note.extractionLastError || "未知提取异常")}
+            <div class="modal-failure-body" style="${isManual ? 'color: #78350f;' : ''}">
+              ${isManual 
+                ? `<strong>提示：</strong>可在上方点击<strong>「⚖️ 双模对比提取」</strong>或<strong>「🎙️ 提取字幕与文案」</strong>进行精准提取。${note.extractionLastError ? `<div style="margin-top: 4px; font-size: 11.5px; color: #b45309;">上次失败原因：${escapeHtml(note.extractionLastError)}</div>` : ''}`
+                : `<strong>失败原因：</strong>${escapeHtml(note.extractionLastError || "未知提取异常")}`}
             </div>
             ${errList.length > 1 ? `
               <div class="task-failure-history" style="margin-top: 6px;">
@@ -5240,6 +5378,55 @@ async function openNoteDetail(noteId) {
             ` : ""}
           </div>
         `;
+
+        transcriptPanel.querySelector(".btn-modal-switch-manual")?.addEventListener("click", async () => {
+          try {
+            showToast("⏳ 正在切换为手工提取模式...");
+            await fetch(`/api/notes/${note.id}/extraction-mode`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+              body: JSON.stringify({ mode: "manual" })
+            });
+            BackgroundSubtitleQueue.removeFromQueue(note.id);
+            showToast("🖐️ 已切换为手工提取模式，后台接力将不再反复重试！");
+            openNoteDetail(note.id);
+            ExtractionDashboardManager.refresh();
+            setTimeout(() => {
+              const dualBtn = document.getElementById("btn-modal-dual-extract") || document.getElementById("btn-modal-transcribe");
+              if (dualBtn) {
+                dualBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+                dualBtn.classList.add("pulse-highlight");
+                setTimeout(() => dualBtn.classList.remove("pulse-highlight"), 3500);
+              }
+            }, 300);
+          } catch (err) {
+            showToast(`操作失败: ${err.message}`);
+          }
+        });
+
+        transcriptPanel.querySelector(".btn-modal-switch-auto")?.addEventListener("click", async () => {
+          try {
+            showToast("⏳ 正在恢复自动后台接力...");
+            await fetch(`/api/notes/${note.id}/extraction-mode`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+              body: JSON.stringify({ mode: "auto" })
+            });
+            BackgroundSubtitleQueue.failedNoteIds.delete(note.id);
+            BackgroundSubtitleQueue.enqueue({
+              id: note.id,
+              title: note.title,
+              coverUrl: note.cover_url,
+              videos: note.videos || []
+            });
+            showToast("🔄 已恢复自动后台接力提取！");
+            openNoteDetail(note.id);
+            ExtractionDashboardManager.refresh();
+          } catch (err) {
+            showToast(`操作失败: ${err.message}`);
+          }
+        });
+
         transcriptPanel.querySelector(".btn-modal-retry-extract")?.addEventListener("click", () => {
           if (modalSlowOcrBtn) modalSlowOcrBtn.click();
         });

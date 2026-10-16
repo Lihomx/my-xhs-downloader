@@ -31,6 +31,7 @@ import {
   getShuffleNotes,
   getPendingSubtitleNotes,
   getExtractionTasks,
+  setExtractionMode,
   updateNoteAuthor,
   getAuthorsWithCounts,
   getStorageUsage
@@ -856,6 +857,13 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               durationMs: body.durationMs,
               method: body.method
             });
+            return json({ success: true, ...res });
+          }
+
+          // 切换提取模式 (手动提取 / 自动接力): POST /api/notes/:id/extraction-mode
+          if (parts[1] === 'extraction-mode' && request.method === 'POST') {
+            const body = await request.json().catch(() => ({}));
+            const res = await setExtractionMode(env.DB, noteId, body.mode || 'manual');
             return json({ success: true, ...res });
           }
 
