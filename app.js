@@ -987,6 +987,17 @@ async function downloadSingleNote(note) {
 }
 
 // 渲染解析结果
+function formatDisplayUrl(urlStr) {
+  if (!urlStr) return "";
+  try {
+    const u = new URL(urlStr);
+    // 去除冗长无意义的内部追踪参数 (?xsec_token=...&xsec_source=...)，只展示整洁路径
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return urlStr;
+  }
+}
+
 function renderParseResult(note) {
   const section = document.getElementById("result-section");
   if (!section) return;
@@ -1004,7 +1015,8 @@ function renderParseResult(note) {
   if (sourceBar && sourceLink && sourceUrl) {
     sourceBar.style.display = "flex";
     sourceLink.href = sourceUrl;
-    sourceLink.textContent = sourceUrl;
+    sourceLink.textContent = formatDisplayUrl(sourceUrl);
+    sourceLink.title = sourceUrl;
     copyBtn.onclick = async () => {
       await navigator.clipboard.writeText(sourceUrl);
       showToast("已复制原始采集链接");
@@ -1028,9 +1040,10 @@ function renderParseResult(note) {
     }
     if (authorLinkEl) {
       if (authorProfileUrl) {
-        authorLinkEl.style.display = "inline";
+        authorLinkEl.style.display = "block";
         authorLinkEl.href = authorProfileUrl;
-        authorLinkEl.textContent = authorProfileUrl;
+        authorLinkEl.textContent = formatDisplayUrl(authorProfileUrl);
+        authorLinkEl.title = authorProfileUrl;
       } else {
         authorLinkEl.style.display = "none";
       }
@@ -5164,7 +5177,8 @@ async function openNoteDetail(noteId) {
     if (sourceBar && sourceLink && note.sourceUrl) {
       sourceBar.style.display = "flex";
       sourceLink.href = note.sourceUrl;
-      sourceLink.textContent = note.sourceUrl;
+      sourceLink.textContent = formatDisplayUrl(note.sourceUrl);
+      sourceLink.title = note.sourceUrl;
       if (copyBtn) {
         copyBtn.onclick = async () => {
           await navigator.clipboard.writeText(note.sourceUrl);
@@ -5198,7 +5212,8 @@ async function openNoteDetail(noteId) {
           modalAuthorLinkRow.style.display = "flex";
           if (modalAuthorLink) {
             modalAuthorLink.href = noteAuthorProfileUrl;
-            modalAuthorLink.textContent = noteAuthorProfileUrl;
+            modalAuthorLink.textContent = formatDisplayUrl(noteAuthorProfileUrl);
+            modalAuthorLink.title = noteAuthorProfileUrl;
           }
           if (copyModalAuthorBtn) {
             copyModalAuthorBtn.onclick = async () => {

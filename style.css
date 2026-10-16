@@ -693,6 +693,10 @@ input:checked + .slider:before {
   box-shadow: var(--shadow-md);
   padding: 28px;
   margin-top: 24px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .result-header {
@@ -703,6 +707,16 @@ input:checked + .slider:before {
   margin-bottom: 18px;
   padding-bottom: 16px;
   border-bottom: 1px solid var(--surface-alt);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.result-title-group {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .result-title-group h2 {
@@ -710,6 +724,8 @@ input:checked + .slider:before {
   font-weight: 700;
   line-height: 1.4;
   margin-bottom: 6px;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .cloud-sync-badge {
@@ -2090,12 +2106,18 @@ input:checked + .slider:before {
   padding: 8px 12px;
   font-size: 13px;
   margin-top: 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .source-label {
   font-weight: 600;
   color: var(--text-muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .source-link {
@@ -2105,6 +2127,9 @@ input:checked + .slider:before {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
+  display: block;
+  word-break: break-all;
 }
 
 .source-link:hover {
@@ -2121,6 +2146,7 @@ input:checked + .slider:before {
   cursor: pointer;
   white-space: nowrap;
   transition: all 0.15s;
+  flex-shrink: 0;
 }
 
 .btn-copy-link:hover {
@@ -2139,6 +2165,11 @@ input:checked + .slider:before {
   padding: 8px 12px;
   font-size: 13px;
   margin-top: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .author-row {
@@ -2146,13 +2177,16 @@ input:checked + .slider:before {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  flex-wrap: wrap;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .author-label {
   font-weight: 600;
   color: var(--text-muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .author-name-text {
@@ -2161,6 +2195,8 @@ input:checked + .slider:before {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex: 1;
 }
 
 .author-row-actions {
@@ -2169,6 +2205,7 @@ input:checked + .slider:before {
   gap: 6px;
   margin-left: auto;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .author-row-actions .btn {
@@ -2184,6 +2221,9 @@ input:checked + .slider:before {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
+  display: block;
+  word-break: break-all;
 }
 
 .author-link:hover {
