@@ -23,6 +23,7 @@ import {
   deleteCustomTag,
   updateNoteTags,
   updateTranscript,
+  recordExtractionFailure,
   updateNoteDetail,
   deleteNoteMedia,
   saveNoteAudio,
@@ -843,6 +844,17 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
               durationMs: body.durationMs,
               method: body.method,
               extractedAt: body.extractedAt
+            });
+            return json({ success: true, ...res });
+          }
+
+          // 记录字幕提取失败原因、耗时与尝试历史: POST /api/notes/:id/extraction-failure
+          if (parts[1] === 'extraction-failure' && request.method === 'POST') {
+            const body = await request.json().catch(() => ({}));
+            const res = await recordExtractionFailure(env.DB, noteId, {
+              errorMessage: body.errorMessage || body.error || '未知提取异常',
+              durationMs: body.durationMs,
+              method: body.method
             });
             return json({ success: true, ...res });
           }

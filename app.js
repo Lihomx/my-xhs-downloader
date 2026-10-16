@@ -3565,21 +3565,38 @@ const BackgroundSubtitleQueue = {
     try {
       this.updatePillUI(`🐢 后台精细提取准备中: 「${noteTitle.substring(0, 10)}...」`);
 
-      const ok = await extractVideoHardSubtitles(videoUrl, null, noteId, {
-        isSlowMode: true,
-        stepSec: 1.6,
-        batchDelayMs: 2500,
-        fallbackToSpeech: true,
-        onProgress: ({ percent, currentBatch, totalBatches }) => {
-          this.updateActiveProgress(percent);
-          this.updatePillUI(`🐢 后台精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
-        }
-      });
+      let visionError = "";
+      let ok = false;
+      try {
+        ok = await extractVideoHardSubtitles(videoUrl, null, noteId, {
+          isSlowMode: true,
+          stepSec: 1.6,
+          batchDelayMs: 2500,
+          fallbackToSpeech: false,
+          onProgress: ({ percent, currentBatch, totalBatches }) => {
+            this.updateActiveProgress(percent);
+            this.updatePillUI(`🐢 后台精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
+          }
+        });
+      } catch (vErr) {
+        visionError = vErr.message || String(vErr);
+        ok = false;
+      }
 
       if (!ok) {
         // 视觉未提取到或遇到限制时，自动无缝启用 AI 语音转写 (Groq Whisper Large-v3) 极速补齐
         this.updatePillUI(`🎙️ 画面字幕未就绪，自动转为语音转写: 「${noteTitle.substring(0, 8)}...」`);
-        await transcribeAudio(videoUrl, null, noteId);
+        try {
+          const speechRes = await transcribeAudio(videoUrl, null, noteId);
+          if (!speechRes || !speechRes.transcript || !speechRes.transcript.trim()) {
+            throw new Error(visionError ? `画面视觉未提取到字幕 (${visionError})，且音频未识别出有效人声` : "画面与音频均未检测到清晰字幕或人声");
+          }
+        } catch (sErr) {
+          const finalReason = visionError 
+            ? `画面视觉: ${visionError}；语音转写: ${sErr.message || sErr}`
+            : (sErr.message || "未能识别出有效字幕或语音人声");
+          throw new Error(finalReason);
+        }
       }
 
       showToast(`✅ 后台已完成「${noteTitle.substring(0, 12)}」文案字幕提取！`);
@@ -3587,13 +3604,30 @@ const BackgroundSubtitleQueue = {
         ShufflePlayer.loadPlaylist();
       }
     } catch (err) {
-      console.warn("Background subtitle extraction error for note:", noteId, err);
+      const durationMs = Date.now() - (this.taskStartTime || Date.now());
+      const cleanErrMsg = (err.message || String(err)).replace(/Error:\s*/g, "").slice(0, 400);
+      console.warn("Background subtitle extraction error for note:", noteId, cleanErrMsg);
+      this.failedNoteIds.add(noteId);
+
+      // 上报失败原因、耗时与尝试记录到云端 D1
       try {
-        await transcribeAudio(videoUrl, null, noteId);
-        showToast(`✅ 后台已完成「${noteTitle.substring(0, 12)}」语音文案提取！`);
-      } catch (audioErr) {
-        this.failedNoteIds.add(noteId);
+        await fetch(`/api/notes/${noteId}/extraction-failure`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({
+            errorMessage: cleanErrMsg,
+            durationMs,
+            method: "vision_slow"
+          })
+        });
+      } catch (saveErr) {
+        console.warn("Failed to report extraction failure to D1:", saveErr);
       }
+
+      showToast(`⚠️「${noteTitle.substring(0, 10)}」提取未成功: ${cleanErrMsg.substring(0, 32)}`, { isError: true });
     } finally {
       this.stopTaskTimer();
       this.isProcessing = false;
@@ -3632,7 +3666,7 @@ const BackgroundSubtitleQueue = {
 
 // ==========================================================================
 // 🐢 慢速精细字幕提取看板管理器 (ExtractionDashboardManager)
-// 统一管理多端断点接力、耗时统计、分类记录与笔记快捷详情进入
+// 统一管理多端断点接力、耗时统计、分类记录、失败排查与笔记快捷详情进入
 // ==========================================================================
 export const ExtractionDashboardManager = {
   currentFilter: "all",
@@ -3746,20 +3780,40 @@ export const ExtractionDashboardManager = {
   },
 
   renderStats() {
-    const pendingCount = this.tasksData?.pending !== undefined
-      ? this.tasksData.pending
-      : BackgroundSubtitleQueue.queue.length + (BackgroundSubtitleQueue.currentNote ? 1 : 0);
-    const completedCount = this.tasksData?.completed || 0;
-    const avgSec = this.tasksData?.avgDurationSec || 0;
+    const pendingCount = this.tasksData?.stats?.pendingCount !== undefined
+      ? this.tasksData.stats.pendingCount
+      : (this.tasksData?.pending !== undefined ? this.tasksData.pending : BackgroundSubtitleQueue.queue.length + (BackgroundSubtitleQueue.currentNote ? 1 : 0));
+    const completedCount = this.tasksData?.stats?.completedCount !== undefined
+      ? this.tasksData.stats.completedCount
+      : (this.tasksData?.completed || 0);
+    const failedCount = this.tasksData?.stats?.failedCount !== undefined
+      ? this.tasksData.stats.failedCount
+      : 0;
+    const avgSec = this.tasksData?.stats?.avgDurationSec !== undefined
+      ? this.tasksData.stats.avgDurationSec
+      : (this.tasksData?.avgDurationSec || 0);
 
     const pendingEl = document.getElementById("kb-stat-pending-count");
     const completedEl = document.getElementById("kb-stat-completed-count");
+    const failedEl = document.getElementById("kb-stat-failed-count");
     const avgEl = document.getElementById("kb-stat-avg-duration");
     const badgeEl = document.getElementById("kb-tasks-badge");
 
     if (pendingEl) pendingEl.textContent = pendingCount;
     if (completedEl) completedEl.textContent = completedCount;
+    if (failedEl) failedEl.textContent = failedCount;
     if (avgEl) avgEl.textContent = avgSec > 0 ? `${avgSec}s` : "--";
+
+    // 统计各 Tab 上的数量
+    const tabAllCount = document.getElementById("kb-tab-all-count");
+    const tabActiveCount = document.getElementById("kb-tab-active-count");
+    const tabCompletedCount = document.getElementById("kb-tab-completed-count");
+    const tabFailedCount = document.getElementById("kb-tab-failed-count");
+
+    if (tabAllCount) tabAllCount.textContent = (this.tasksData?.items || []).length;
+    if (tabActiveCount) tabActiveCount.textContent = pendingCount + (BackgroundSubtitleQueue.currentNote ? 1 : 0);
+    if (tabCompletedCount) tabCompletedCount.textContent = completedCount;
+    if (tabFailedCount) tabFailedCount.textContent = failedCount;
 
     if (badgeEl) {
       badgeEl.textContent = pendingCount;
@@ -3816,10 +3870,11 @@ export const ExtractionDashboardManager = {
 
     items = Array.from(itemMap.values());
 
-    // 排序：处理中 > 排队中 > 已完成按时间倒序
+    // 排序：处理中 > 异常记录 > 排队中 > 已完成按时间倒序
     items.sort((a, b) => {
       const score = (item) => {
-        if (item.status === "processing") return 3;
+        if (item.status === "processing") return 4;
+        if (item.status === "failed" || (item.failCount > 0 && !item.isCompleted)) return 3;
         if (item.status === "pending") return 2;
         return 1;
       };
@@ -3830,11 +3885,11 @@ export const ExtractionDashboardManager = {
 
     // 分类筛选
     if (this.currentFilter === "active") {
-      items = items.filter(it => it.status === "processing" || it.status === "pending");
+      items = items.filter(it => it.status === "processing" || (it.status === "pending" && it.failCount === 0));
     } else if (this.currentFilter === "completed") {
-      items = items.filter(it => it.status === "completed");
+      items = items.filter(it => it.status === "completed" || it.isCompleted);
     } else if (this.currentFilter === "failed") {
-      items = items.filter(it => it.status === "failed");
+      items = items.filter(it => it.status === "failed" || (it.failCount > 0 && !it.isCompleted));
     }
 
     // 关键词搜索
@@ -3848,7 +3903,7 @@ export const ExtractionDashboardManager = {
           <div class="empty-icon">📭</div>
           <div style="font-weight: 600; margin-bottom: 4px;">暂无相关提取记录</div>
           <div style="font-size: 12px; color: var(--text-muted);">
-            ${this.currentFilter === 'active' ? '当前没有正在处理或排队的接力任务' : '暂未找到符合条件的提取任务'}
+            ${this.currentFilter === 'active' ? '当前没有正在处理或排队的接力任务' : (this.currentFilter === 'failed' ? '太棒了！暂无提取异常的记录' : '暂未找到符合条件的提取任务')}
           </div>
         </div>
       `;
@@ -3865,15 +3920,54 @@ export const ExtractionDashboardManager = {
 
       let statusBadgeClass = "pending";
       let statusBadgeLabel = "⏳ 排队待提取";
-      if (task.status === "completed") {
+      if (task.status === "completed" || task.isCompleted) {
         statusBadgeClass = "completed";
         statusBadgeLabel = "✅ 已提取文案";
       } else if (task.status === "processing") {
         statusBadgeClass = "processing";
         statusBadgeLabel = "🔄 正在提取中";
-      } else if (task.status === "failed") {
+      } else if (task.status === "failed" || task.failCount > 0) {
         statusBadgeClass = "failed";
-        statusBadgeLabel = "⚠️ 提取异常";
+        statusBadgeLabel = `⚠️ 提取异常 (失败 ${task.failCount} 次)`;
+      }
+
+      // 组装失败原因与历史列表展开结构
+      let failureBoxHtml = "";
+      if (task.failCount > 0) {
+        const errorLogs = Array.isArray(task.errorLog) && task.errorLog.length > 0
+          ? task.errorLog
+          : (task.lastError ? [{ attempt: task.failCount, time: task.updatedAt || Date.now(), error: task.lastError, durationSec: task.durationSec }] : []);
+
+        const hasMultiple = errorLogs.length > 1;
+        const latestLog = errorLogs[0] || {};
+        const latestDurationStr = (latestLog.durationSec > 0 || task.durationSec > 0) ? ` · 耗时 ${latestLog.durationSec || task.durationSec}s` : "";
+
+        failureBoxHtml = `
+          <div class="task-failure-box">
+            <div class="task-failure-header">
+              <div class="failure-title-wrap">
+                <span class="failure-badge">⚠️ 尝试失败 ${task.failCount} 次${latestDurationStr}</span>
+                <span class="failure-latest-reason">${escapeHtml(task.lastError || latestLog.error || "提取过程遇到异常")}</span>
+              </div>
+              ${hasMultiple ? `<button type="button" class="btn-toggle-error-history">查看各次失败原因 (${errorLogs.length}次) ▾</button>` : ''}
+            </div>
+            ${hasMultiple ? `
+              <div class="task-failure-history" style="display: none;">
+                ${errorLogs.map((log, idx) => `
+                  <div class="failure-history-item">
+                    <div class="failure-history-meta">
+                      <span class="fail-idx">第 ${log.attempt || (errorLogs.length - idx)} 次</span>
+                      <span class="fail-duration">⏱️ 用时 ${log.durationSec || Math.round((log.durationMs || 0)/1000)}s</span>
+                      <span class="fail-time">${log.time ? formatTime(log.time) : ""}</span>
+                      ${log.method ? `<span style="font-size: 10.5px; color: #6b7280;">(${log.method})</span>` : ""}
+                    </div>
+                    <div class="fail-reason">${escapeHtml(log.error || "未记录具体异常信息")}</div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `;
       }
 
       card.innerHTML = `
@@ -3883,10 +3977,12 @@ export const ExtractionDashboardManager = {
             <div class="kb-task-title" title="点击查看笔记详情与文案">${escapeHtml(task.title || "视频笔记")}</div>
             <div class="kb-task-meta">
               <span class="task-status-pill ${statusBadgeClass}">${statusBadgeLabel}</span>
+              ${task.isCompleted && task.failCount > 0 ? `<span class="task-prev-failed-pill" title="该笔记曾尝试失败后成功提取">⚠️ 曾失败 ${task.failCount} 次后成功</span>` : ""}
               ${durationText ? `<span class="task-duration-pill">${durationText}</span>` : ""}
               <span class="task-method-badge">${methodLabel}</span>
               <span style="font-size: 11.5px; color: var(--text-muted);">${formatRelativeTime(task.extractedAt || task.downloadTime)}</span>
             </div>
+            ${failureBoxHtml}
           </div>
         </div>
         <div class="kb-task-actions">
@@ -3894,6 +3990,17 @@ export const ExtractionDashboardManager = {
           ${task.status !== "processing" ? `<button class="btn btn-ghost btn-sm btn-task-retry" type="button" title="重新放入后台队列重新提取">🔄 重提</button>` : ""}
         </div>
       `;
+
+      // 展开/收起多条失败原因明细
+      card.querySelector(".btn-toggle-error-history")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const histEl = card.querySelector(".task-failure-history");
+        if (histEl) {
+          const isHidden = histEl.style.display === "none";
+          histEl.style.display = isHidden ? "flex" : "none";
+          e.currentTarget.textContent = isHidden ? `收起失败明细 ▴` : `查看各次失败原因 (${task.errorLog?.length || task.failCount}次) ▾`;
+        }
+      });
 
       // 点击标题或封面直接进入该笔记详情
       card.querySelector(".kb-task-title")?.addEventListener("click", () => {
@@ -5097,12 +5204,49 @@ async function openNoteDetail(noteId) {
       audioPlayer?.removeAttribute("src");
     }
 
-    // 只要有提取过的语音文案，一律置顶稳定呈现
+    // 只要有提取过的语音文案，一律置顶稳定呈现；若提取失败，展示失败原因与尝试历史
     if (hasTranscript) {
       renderTranscriptBox(transcriptPanel, note.transcript, note.id);
     } else if (transcriptPanel) {
-      transcriptPanel.style.display = "none";
-      transcriptPanel.innerHTML = "";
+      if (note.extractionFailCount > 0) {
+        const errList = Array.isArray(note.extractionErrorLog) ? note.extractionErrorLog : [];
+        const durSec = Math.round((note.extractionDurationMs || 0) / 1000);
+        transcriptPanel.style.display = "block";
+        transcriptPanel.innerHTML = `
+          <div class="modal-extraction-failure-alert">
+            <div class="modal-failure-header">
+              <span class="modal-failure-title">
+                ⚠️ 字幕与文案尝试提取失败 (${note.extractionFailCount}次${durSec > 0 ? ` · 用时 ${durSec}s` : ""})
+              </span>
+              <button type="button" class="btn btn-primary btn-sm btn-modal-retry-extract">🔄 重新提取</button>
+            </div>
+            <div class="modal-failure-body">
+              <strong>失败原因：</strong>${escapeHtml(note.extractionLastError || "未知提取异常")}
+            </div>
+            ${errList.length > 1 ? `
+              <div class="task-failure-history" style="margin-top: 6px;">
+                <div style="font-size: 11px; font-weight: 700; color: #991b1b; margin-bottom: 2px;">📋 历次失败记录：</div>
+                ${errList.map((log, idx) => `
+                  <div class="failure-history-item">
+                    <div class="failure-history-meta">
+                      <span class="fail-idx">第 ${log.attempt || (errList.length - idx)} 次</span>
+                      <span class="fail-duration">⏱️ 用时 ${log.durationSec || Math.round((log.durationMs || 0)/1000)}s</span>
+                      <span class="fail-time">${log.time ? formatTime(log.time) : ""}</span>
+                    </div>
+                    <div class="fail-reason">${escapeHtml(log.error || "未记录异常")}</div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ""}
+          </div>
+        `;
+        transcriptPanel.querySelector(".btn-modal-retry-extract")?.addEventListener("click", () => {
+          if (modalSlowOcrBtn) modalSlowOcrBtn.click();
+        });
+      } else {
+        transcriptPanel.style.display = "none";
+        transcriptPanel.innerHTML = "";
+      }
     }
 
     // 显示弹窗

@@ -91,6 +91,18 @@ export async function initDb(db) {
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN extraction_method TEXT DEFAULT ''").run();
     } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN extraction_status TEXT DEFAULT 'pending'").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN extraction_fail_count INTEGER DEFAULT 0").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN extraction_last_error TEXT DEFAULT ''").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN extraction_error_log TEXT DEFAULT '[]'").run();
+    } catch {}
 
     const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
     if (!existingPin) {
@@ -563,6 +575,14 @@ export async function getNote(db, id) {
   let tags = [];
   try { tags = JSON.parse(row.tags_json || '[]'); } catch {}
 
+  let errorLog = [];
+  try {
+    errorLog = JSON.parse(row.extraction_error_log || '[]');
+    if (!Array.isArray(errorLog)) errorLog = [];
+  } catch {
+    errorLog = [];
+  }
+
   return {
     id: row.id,
     title: row.title,
@@ -580,6 +600,13 @@ export async function getNote(db, id) {
     authorName: row.author_name || "",
     authorId: row.author_id || "",
     authorProfileUrl: row.author_profile_url || (row.author_id ? `https://www.xiaohongshu.com/user/profile/${row.author_id}` : ""),
+    extractionStatus: row.extraction_status || (row.transcript ? "completed" : "pending"),
+    extractionFailCount: Number(row.extraction_fail_count || 0),
+    extractionLastError: row.extraction_last_error || "",
+    extractionErrorLog: errorLog,
+    extractionDurationMs: Number(row.extraction_duration_ms || 0),
+    extractedAt: Number(row.extracted_at || 0),
+    extractionMethod: row.extraction_method || "",
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -615,6 +642,7 @@ export async function updateTranscript(db, id, transcript, { durationMs = null, 
       UPDATE notes 
       SET transcript = ?, 
           updated_at = ?,
+          extraction_status = CASE WHEN ? != '' THEN 'completed' ELSE extraction_status END,
           extraction_duration_ms = CASE WHEN ? > 0 THEN ? ELSE extraction_duration_ms END,
           extracted_at = CASE WHEN ? > 0 THEN ? ELSE extracted_at END,
           extraction_method = CASE WHEN ? != '' THEN ? ELSE extraction_method END
@@ -623,6 +651,7 @@ export async function updateTranscript(db, id, transcript, { durationMs = null, 
       .bind(
         cleanTranscript,
         now,
+        cleanTranscript,
         effDurationMs, effDurationMs,
         effExtractedAt, effExtractedAt,
         effMethod, effMethod,
@@ -630,11 +659,78 @@ export async function updateTranscript(db, id, transcript, { durationMs = null, 
       )
       .run();
   } else {
-    await db.prepare("UPDATE notes SET transcript = ?, updated_at = ? WHERE id = ?")
-      .bind(cleanTranscript, now, id)
+    await db.prepare(`
+      UPDATE notes 
+      SET transcript = ?, 
+          updated_at = ?,
+          extraction_status = CASE WHEN ? != '' THEN 'completed' ELSE extraction_status END
+      WHERE id = ?
+    `)
+      .bind(cleanTranscript, now, cleanTranscript, id)
       .run();
   }
-  return { id, transcript: cleanTranscript, updatedAt: now, durationMs: effDurationMs, method: effMethod };
+  return { id, transcript: cleanTranscript, updatedAt: now, durationMs: effDurationMs, method: effMethod, status: cleanTranscript ? 'completed' : 'pending' };
+}
+
+/**
+ * 记录字幕提取失败原因、耗时与尝试历史
+ */
+export async function recordExtractionFailure(db, id, { errorMessage = "", durationMs = null, method = null } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+  const now = Date.now();
+  const cleanMsg = String(errorMessage || "提取未成功").trim().slice(0, 500);
+  const effDurationMs = typeof durationMs === "number" ? Math.round(durationMs) : 0;
+  const effMethod = typeof method === "string" ? method.trim() : "";
+
+  // 读取现有 fail_count 与 error_log
+  const row = await db.prepare("SELECT extraction_fail_count, extraction_error_log, extraction_duration_ms FROM notes WHERE id = ?").bind(id).first();
+  const curCount = Number(row?.extraction_fail_count || 0) + 1;
+  let log = [];
+  try {
+    log = JSON.parse(row?.extraction_error_log || "[]");
+    if (!Array.isArray(log)) log = [];
+  } catch {
+    log = [];
+  }
+
+  // 追加最新的失败记录 (置顶，保留最近 15 次)
+  log.unshift({
+    attempt: curCount,
+    time: now,
+    error: cleanMsg,
+    durationMs: effDurationMs,
+    durationSec: Math.round(effDurationMs / 1000),
+    method: effMethod
+  });
+  if (log.length > 15) log = log.slice(0, 15);
+
+  await db.prepare(`
+    UPDATE notes
+    SET extraction_status = 'failed',
+        extraction_fail_count = ?,
+        extraction_last_error = ?,
+        extraction_error_log = ?,
+        extraction_duration_ms = CASE WHEN ? > 0 THEN ? ELSE extraction_duration_ms END,
+        updated_at = ?
+    WHERE id = ?
+  `).bind(
+    curCount,
+    cleanMsg,
+    JSON.stringify(log),
+    effDurationMs, effDurationMs,
+    now,
+    id
+  ).run();
+
+  return {
+    id,
+    failCount: curCount,
+    lastError: cleanMsg,
+    errorLog: log,
+    durationMs: effDurationMs,
+    status: 'failed'
+  };
 }
 
 /**
@@ -1002,15 +1098,16 @@ export async function getPendingSubtitleNotes(db, limit = 50) {
  * 获取字幕提取任务列表与全量看板数据 (包含待提取、已提取、耗时记录与统计)
  */
 export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {}) {
-  if (!db) return { items: [], total: 0, stats: { totalVideos: 0, completedCount: 0, pendingCount: 0, avgDurationSec: 0, avgDurationFormatted: '暂无' } };
+  if (!db) return { items: [], total: 0, stats: { totalVideos: 0, completedCount: 0, pendingCount: 0, failedCount: 0, avgDurationSec: 0, avgDurationFormatted: '暂无' } };
   await initDb(db);
 
-  // 1. 统计视频总数、已提取数、待提取数以及平均耗时
+  // 1. 统计视频总数、已提取数、待提取数、提取失败数以及平均耗时
   const statsRow = await db.prepare(`
     SELECT 
       COUNT(*) AS total_videos,
       SUM(CASE WHEN transcript IS NOT NULL AND TRIM(transcript) != '' THEN 1 ELSE 0 END) AS completed_count,
-      SUM(CASE WHEN transcript IS NULL OR TRIM(transcript) = '' THEN 1 ELSE 0 END) AS pending_count,
+      SUM(CASE WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) = 0 THEN 1 ELSE 0 END) AS pending_count,
+      SUM(CASE WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) > 0 THEN 1 ELSE 0 END) AS failed_count,
       AVG(CASE WHEN extraction_duration_ms > 0 THEN extraction_duration_ms ELSE NULL END) AS avg_duration_ms
     FROM notes
     WHERE videos_json IS NOT NULL AND videos_json != '[]' AND videos_json != ''
@@ -1019,6 +1116,7 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
   const totalVideos = Number(statsRow?.total_videos || 0);
   const completedCount = Number(statsRow?.completed_count || 0);
   const pendingCount = Number(statsRow?.pending_count || 0);
+  const failedCount = Number(statsRow?.failed_count || 0);
   const avgDurationMs = Number(statsRow?.avg_duration_ms || 0);
   const avgDurationSec = Math.round(avgDurationMs / 1000);
 
@@ -1027,12 +1125,18 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
   if (filter === 'completed') {
     whereClause += " AND transcript IS NOT NULL AND TRIM(transcript) != ''";
   } else if (filter === 'pending') {
-    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '')";
+    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) = 0";
+  } else if (filter === 'failed') {
+    whereClause += " AND (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) > 0";
   }
 
   const rows = await db.prepare(`
     SELECT 
       id, title, cover_url, videos_json, audio_url, transcript, tags_json,
+      COALESCE(extraction_status, 'pending') AS extraction_status,
+      COALESCE(extraction_fail_count, 0) AS extraction_fail_count,
+      COALESCE(extraction_last_error, '') AS extraction_last_error,
+      COALESCE(extraction_error_log, '[]') AS extraction_error_log,
       COALESCE(extraction_duration_ms, 0) AS extraction_duration_ms,
       COALESCE(extracted_at, 0) AS extracted_at,
       COALESCE(extraction_method, '') AS extraction_method,
@@ -1040,7 +1144,11 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
     FROM notes
     ${whereClause}
     ORDER BY 
-      CASE WHEN (transcript IS NOT NULL AND TRIM(transcript) != '') THEN 1 ELSE 0 END,
+      CASE 
+        WHEN (transcript IS NULL OR TRIM(transcript) = '') AND COALESCE(extraction_fail_count, 0) > 0 THEN 0
+        WHEN (transcript IS NULL OR TRIM(transcript) = '') THEN 1
+        ELSE 2 
+      END,
       COALESCE(extracted_at, 0) DESC,
       created_at DESC
     LIMIT ?
@@ -1070,6 +1178,23 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
       sentenceCount = sents.length;
     }
 
+    const failCount = Number(r.extraction_fail_count || 0);
+    const lastError = String(r.extraction_last_error || '').trim();
+    let errorLog = [];
+    try {
+      errorLog = JSON.parse(r.extraction_error_log || '[]');
+      if (!Array.isArray(errorLog)) errorLog = [];
+    } catch {
+      errorLog = [];
+    }
+
+    let status = 'pending';
+    if (isCompleted) {
+      status = 'completed';
+    } else if (failCount > 0 || r.extraction_status === 'failed') {
+      status = 'failed';
+    }
+
     return {
       id: r.id,
       title: r.title,
@@ -1077,6 +1202,10 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
       videos,
       tags,
       isCompleted,
+      status,
+      failCount,
+      lastError,
+      errorLog,
       transcript: transcriptText,
       charCount: transcriptText.length,
       sentenceCount,
@@ -1097,6 +1226,7 @@ export async function getExtractionTasks(db, { limit = 100, filter = 'all' } = {
       totalVideos,
       completedCount,
       pendingCount,
+      failedCount,
       avgDurationSec,
       avgDurationFormatted: avgDurationSec > 0 
         ? (avgDurationSec >= 60 ? `${Math.floor(avgDurationSec / 60)}分${avgDurationSec % 60}秒` : `${avgDurationSec}秒`)
