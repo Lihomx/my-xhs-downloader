@@ -2580,10 +2580,14 @@ async function transcribeAudio(
   } = {}
 ) {
   const extractionStartTime = Date.now();
+  const isHeadless = !containerSelector;
   const container = containerSelector ? document.querySelector(containerSelector) : null;
-  if (renderBox && !container) return;
+  const shouldRender = renderBox && !isHeadless && Boolean(container);
 
-  if (renderBox && container) {
+  // 仅当前台明确指定了 DOM 选择器但该元素不存在时，才放弃前台渲染；后台静默调用 (!containerSelector) 必须正常执行！
+  if (renderBox && containerSelector && !container) return null;
+
+  if (shouldRender) {
     container.style.display = "block";
     container.innerHTML = `
       <div class="transcript-loading">
@@ -2601,10 +2605,10 @@ async function transcribeAudio(
     `;
   }
 
-  const statusText = renderBox && container ? container.querySelector("#transcribe-status-text") : null;
-  const progressTrack = renderBox && container ? container.querySelector("#transcribe-progress-track") : null;
-  const progressBar = renderBox && container ? container.querySelector("#transcribe-progress-bar") : null;
-  const livePreview = renderBox && container ? container.querySelector("#transcribe-live-preview") : null;
+  const statusText = shouldRender ? container.querySelector("#transcribe-status-text") : null;
+  const progressTrack = shouldRender ? container.querySelector("#transcribe-progress-track") : null;
+  const progressBar = shouldRender ? container.querySelector("#transcribe-progress-bar") : null;
+  const livePreview = shouldRender ? container.querySelector("#transcribe-live-preview") : null;
 
   const updateStatus = (msg) => {
     if (statusText) statusText.textContent = msg;
@@ -2664,11 +2668,11 @@ async function transcribeAudio(
 
       // 绝不跳过任何分段（包含低音量片段），确保 100% 完整录音全部进入转写
       if (progressBar) progressBar.style.width = `${percent}%`;
-      if (statusText) {
-        statusText.textContent = totalChunks > 1
-          ? `正在识别分段 [${chunkIndex}/${totalChunks}] (${percent}%)...`
-          : "正在通过 AI (Whisper) 深度识别文本，请稍候...";
-      }
+      const curMsg = totalChunks > 1
+        ? `正在识别分段 [${chunkIndex}/${totalChunks}] (${percent}%)...`
+        : "正在通过 AI (Whisper) 深度识别文本，请稍候...";
+      if (statusText) statusText.textContent = curMsg;
+      updateProgress(percent, chunkIndex, totalChunks, curMsg);
 
       // 上下文顺延：将上一段末尾语句作为本次转写 Prompt，维持上下文语义连贯，防止 Whisper 换段早停或幻觉
       const carryPrompt = lastChunkSentence ? lastChunkSentence.slice(-60) : "";
@@ -2841,7 +2845,7 @@ async function transcribeAudio(
     const targetNoteId = noteId || (state.activeDetailNote?.id);
 
     // 渲染最终文案结果面板
-    if (renderBox && container) {
+    if (shouldRender) {
       renderTranscriptBox(container, finalTranscript, noteId, detectedProvider);
       if (detectedProvider === "groq") {
         showToast(`⚡ 视频文案已由 Groq Whisper Large-v3 提取并生成精准时间戳 (共 ${finalLines.length} 个段落)！`);
@@ -2852,7 +2856,7 @@ async function transcribeAudio(
 
     if (autoSave && targetNoteId) {
       try {
-        const savedTranscript = (renderBox && container) ? (serializeTranscriptParagraphs(container) || fullTranscript) : fullTranscript;
+        const savedTranscript = shouldRender ? (serializeTranscriptParagraphs(container) || fullTranscript) : fullTranscript;
         const durationMs = Date.now() - extractionStartTime;
         await fetch(`/api/notes/${targetNoteId}/transcript`, {
           method: "PUT",
@@ -2883,7 +2887,7 @@ async function transcribeAudio(
     };
   } catch (err) {
     console.error("Transcribe error:", err);
-    if (renderBox && container) {
+    if (shouldRender) {
       container.innerHTML = `
         <div style="color: var(--primary); font-size: 13px; padding: 12px; background: rgba(234, 44, 67, 0.05); border-radius: 8px;">
           ❌ 语音转写失败: ${escapeHtml(err.message)}
@@ -2891,7 +2895,7 @@ async function transcribeAudio(
       `;
       showToast(`❌ 语音转写失败: ${err.message}`, { isError: true });
     }
-    if (!renderBox) {
+    if (!shouldRender) {
       throw err;
     }
     return {
@@ -3598,72 +3602,153 @@ const BackgroundSubtitleQueue = {
       }
     }
 
+    const currentFailCount = Number(note.failCount || note.extractionFailCount || 0);
+    const forceSpeech = Boolean(note.forceSpeech);
+    const shouldDirectlyUseSpeech = forceSpeech || currentFailCount >= 2;
+
     try {
-      this.updatePillUI(`🐢 后台精细提取准备中: 「${noteTitle.substring(0, 10)}...」`);
-
-      let visionError = "";
-      let ok = false;
-      try {
-        ok = await extractVideoHardSubtitles(videoUrl, null, noteId, {
-          isSlowMode: true,
-          stepSec: 1.6,
-          batchDelayMs: 2500,
-          fallbackToSpeech: false,
-          onProgress: ({ percent, currentBatch, totalBatches }) => {
-            this.updateActiveProgress(percent);
-            this.updatePillUI(`🐢 后台精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
-          }
-        });
-      } catch (vErr) {
-        visionError = vErr.message || String(vErr);
-        ok = false;
-      }
-
-      if (!ok) {
-        // 视觉未提取到或遇到限制时，自动无缝启用 AI 语音转写 (Groq Whisper Large-v3) 极速补齐
-        this.updatePillUI(`🎙️ 画面字幕未就绪，自动转为语音转写: 「${noteTitle.substring(0, 8)}...」`);
+      if (shouldDirectlyUseSpeech) {
+        // 升级分支：画面慢速精细已尝试失败 2 次，或者明确指定语音，直接使用 AI 语音转写 (Whisper Large-v3) 极速提取！
+        this.updatePillUI(`🎙️ 画面已失败 ${currentFailCount} 次，自动升级为语音转写: 「${noteTitle.substring(0, 8)}...」`);
         try {
-          const speechRes = await transcribeAudio(videoUrl, null, noteId);
+          const speechRes = await transcribeAudio(videoUrl, null, noteId, {
+            renderBox: false,
+            autoSave: true,
+            onProgress: ({ percent, current, total }) => {
+              this.updateActiveProgress(percent);
+              this.updatePillUI(`🎙️ 后台语音转写 (${percent}% 第${current}/${total}段): 「${noteTitle.substring(0, 8)}...」`);
+            }
+          });
           if (!speechRes || !speechRes.transcript || !speechRes.transcript.trim()) {
-            throw new Error(visionError ? `画面视觉未提取到字幕 (${visionError})，且音频未识别出有效人声` : "画面与音频均未检测到清晰字幕或人声");
+            throw new Error("未能识别出有效语音或音频中无清晰人声");
+          }
+          showToast(`✅ 已通过 AI 语音转写成功提取「${noteTitle.substring(0, 10)}」文案！`);
+          if (typeof ShufflePlayer !== "undefined" && typeof ShufflePlayer.loadPlaylist === "function") {
+            ShufflePlayer.loadPlaylist();
           }
         } catch (sErr) {
-          const finalReason = visionError 
-            ? `画面视觉: ${visionError}；语音转写: ${sErr.message || sErr}`
-            : (sErr.message || "未能识别出有效字幕或语音人声");
-          throw new Error(finalReason);
+          const sDurationMs = Date.now() - (this.taskStartTime || Date.now());
+          const cleanSErrMsg = (sErr.message || String(sErr)).replace(/Error:\s*/g, "").slice(0, 300);
+          this.failedNoteIds.add(noteId); // 画面与语音均失败，不再自动轮转
+
+          await fetch(`/api/notes/${noteId}/extraction-failure`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({
+              errorMessage: `画面已尝试${currentFailCount}次未果，且语音转写识别失败 (${cleanSErrMsg})`,
+              durationMs: sDurationMs,
+              method: "speech_whisper"
+            })
+          }).catch(() => {});
+
+          showToast(`⚠️「${noteTitle.substring(0, 8)}」画面与语音均提取失败: ${cleanSErrMsg.substring(0, 26)}`, { isError: true });
+        }
+      } else {
+        // 默认分支：采用画面慢速精细字幕提取 (第 1 次或第 2 次尝试)
+        const attemptIndex = currentFailCount + 1;
+        this.updatePillUI(`🐢 后台慢速精细提取 (第${attemptIndex}/2次): 「${noteTitle.substring(0, 8)}...」`);
+
+        let visionError = "";
+        let ocrResult = null;
+        try {
+          ocrResult = await extractVideoHardSubtitles(videoUrl, null, noteId, {
+            isSlowMode: true,
+            stepSec: 1.6,
+            batchDelayMs: 2500,
+            fallbackToSpeech: false,
+            renderBox: false,
+            onProgress: ({ percent, currentBatch, totalBatches }) => {
+              this.updateActiveProgress(percent);
+              this.updatePillUI(`🐢 慢速精细提取 (${percent}% 第${currentBatch}/${totalBatches}批): 「${noteTitle.substring(0, 8)}...」`);
+            }
+          });
+        } catch (vErr) {
+          visionError = vErr.message || String(vErr);
+        }
+
+        const isVisionOk = Boolean(ocrResult && (ocrResult.success || (typeof ocrResult === 'object' && ocrResult.transcript)));
+
+        if (isVisionOk) {
+          showToast(`✅ 后台已完成「${noteTitle.substring(0, 10)}」画面慢速精细字幕提取！`);
+          if (typeof ShufflePlayer !== "undefined" && typeof ShufflePlayer.loadPlaylist === "function") {
+            ShufflePlayer.loadPlaylist();
+          }
+        } else {
+          // 慢速精细提取未果
+          const vDurationMs = Date.now() - (this.taskStartTime || Date.now());
+          const cleanVErr = visionError || "画面慢速精细扫描未检测到清晰字幕";
+
+          // 上报失败到 D1，D1 内部会将 extraction_fail_count 递增 1
+          const newFailCount = currentFailCount + 1;
+          await fetch(`/api/notes/${noteId}/extraction-failure`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({
+              errorMessage: cleanVErr,
+              durationMs: vDurationMs,
+              method: "vision_slow"
+            })
+          }).catch(() => {});
+
+          if (newFailCount < 2) {
+            // 仅失败 1 次：按照规则“尝试1次提取失败的应该放到队列最后”
+            this.queue.push({
+              ...note,
+              failCount: newFailCount
+            });
+            showToast(`⚠️「${noteTitle.substring(0, 8)}」第 1 次画面提取未果，已移至队列末尾等待下轮重试`);
+          } else {
+            // 累计失败已达到 2 次：按照规则“如果提取两次失败后用语音去提取”
+            this.updatePillUI(`🎙️ 画面慢速精细已尝试 2 次未果，立即升级 AI 语音转写: 「${noteTitle.substring(0, 8)}...」`);
+            showToast(`🎙️「${noteTitle.substring(0, 8)}」画面已提取2次未果，立即升级 AI 语音转写...`);
+
+            try {
+              const speechRes = await transcribeAudio(videoUrl, null, noteId, {
+                renderBox: false,
+                autoSave: true,
+                onProgress: ({ percent, current, total }) => {
+                  this.updateActiveProgress(percent);
+                  this.updatePillUI(`🎙️ 后台语音转写 (${percent}% 第${current}/${total}段): 「${noteTitle.substring(0, 8)}...」`);
+                }
+              });
+              if (!speechRes || !speechRes.transcript || !speechRes.transcript.trim()) {
+                throw new Error("画面未提取到清晰字幕，且音频未识别出有效人声");
+              }
+              showToast(`✅「${noteTitle.substring(0, 10)}」已通过 AI 语音转写成功补齐文案！`);
+              if (typeof ShufflePlayer !== "undefined" && typeof ShufflePlayer.loadPlaylist === "function") {
+                ShufflePlayer.loadPlaylist();
+              }
+            } catch (sErr) {
+              const totalDurationMs = Date.now() - (this.taskStartTime || Date.now());
+              const cleanSErr = (sErr.message || String(sErr)).replace(/Error:\s*/g, "").slice(0, 300);
+              this.failedNoteIds.add(noteId); // 画面两次+语音均失败，加入集合不再自动轮转
+
+              await fetch(`/api/notes/${noteId}/extraction-failure`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-auth-pin": state.pin
+                },
+                body: JSON.stringify({
+                  errorMessage: `画面慢速提取已失败 2 次，且语音转写失败 (${cleanSErr})`,
+                  durationMs: totalDurationMs,
+                  method: "speech_whisper"
+                })
+              }).catch(() => {});
+
+              showToast(`⚠️「${noteTitle.substring(0, 8)}」画面与语音均提取失败，建议切换为手工提取`, { isError: true });
+            }
+          }
         }
       }
-
-      showToast(`✅ 后台已完成「${noteTitle.substring(0, 12)}」文案字幕提取！`);
-      if (typeof ShufflePlayer !== "undefined" && typeof ShufflePlayer.loadPlaylist === "function") {
-        ShufflePlayer.loadPlaylist();
-      }
-    } catch (err) {
-      const durationMs = Date.now() - (this.taskStartTime || Date.now());
-      const cleanErrMsg = (err.message || String(err)).replace(/Error:\s*/g, "").slice(0, 400);
-      console.warn("Background subtitle extraction error for note:", noteId, cleanErrMsg);
-      this.failedNoteIds.add(noteId);
-
-      // 上报失败原因、耗时与尝试记录到云端 D1
-      try {
-        await fetch(`/api/notes/${noteId}/extraction-failure`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-auth-pin": state.pin
-          },
-          body: JSON.stringify({
-            errorMessage: cleanErrMsg,
-            durationMs,
-            method: "vision_slow"
-          })
-        });
-      } catch (saveErr) {
-        console.warn("Failed to report extraction failure to D1:", saveErr);
-      }
-
-      showToast(`⚠️「${noteTitle.substring(0, 10)}」提取未成功: ${cleanErrMsg.substring(0, 32)}`, { isError: true });
+    } catch (topErr) {
+      console.warn("Queue unexpected processing error:", topErr);
     } finally {
       this.stopTaskTimer();
       this.isProcessing = false;
@@ -3749,6 +3834,35 @@ export const ExtractionDashboardManager = {
       const count = await BackgroundSubtitleQueue.checkAndResumePending(true);
       await this.refresh();
       showToast(`扫描完毕，已加入 ${count} 篇待接力提取视频`);
+    });
+
+    // 绑定一键语音补齐异常按钮
+    const retryFailedSpeechBtn = document.getElementById("btn-kb-retry-failed-speech");
+    retryFailedSpeechBtn?.addEventListener("click", async () => {
+      const failedItems = (this.tasksData?.items || []).filter(
+        (it) => (it.status === "failed" || it.failCount > 0) && !it.isCompleted && !it.isManual
+      );
+      if (failedItems.length === 0) {
+        showToast("太棒了！当前暂无需要补齐的异常笔记");
+        return;
+      }
+      showToast(`🎙️ 正在将 ${failedItems.length} 篇异常视频加入 AI 语音极速转写队列...`);
+      failedItems.forEach((it) => {
+        BackgroundSubtitleQueue.failedNoteIds.delete(it.id);
+        BackgroundSubtitleQueue.enqueue({
+          id: it.id,
+          title: it.title,
+          coverUrl: it.coverUrl,
+          videos: it.videos || [{ url: it.videoUrl || "" }],
+          failCount: 2,
+          forceSpeech: true
+        });
+      });
+      if (BackgroundSubtitleQueue.isPaused) {
+        BackgroundSubtitleQueue.togglePause();
+      }
+      BackgroundSubtitleQueue.processNext();
+      showToast(`🎙️ 已将 ${failedItems.length} 篇异常视频加入队列，正在使用 AI 语音转写 (Whisper) 极速补齐！`);
     });
 
     // 绑定浮动指示胶囊点击 -> 一键直达提取看板
@@ -3861,6 +3975,13 @@ export const ExtractionDashboardManager = {
       badgeEl.textContent = pendingCount;
       badgeEl.style.display = pendingCount > 0 ? "inline-flex" : "none";
     }
+
+    const btnRetryFailedSpeech = document.getElementById("btn-kb-retry-failed-speech");
+    const countRetryFailedEl = document.getElementById("kb-btn-retry-failed-count");
+    if (btnRetryFailedSpeech && countRetryFailedEl) {
+      countRetryFailedEl.textContent = failedCount;
+      btnRetryFailedSpeech.style.display = failedCount > 0 ? "inline-flex" : "none";
+    }
   },
 
   renderList() {
@@ -3961,7 +4082,18 @@ export const ExtractionDashboardManager = {
       card.className = `kb-task-card ${task.status}`;
 
       const durationText = task.durationSec > 0 ? `⏱️ 耗时 ${task.durationSec}s` : "";
-      const methodLabel = task.methodName || (task.method === "vision_slow" ? "🐢 画面慢速精细" : task.method?.startsWith("speech") ? "🎙️ 语音智能转写" : "AI 提取");
+      let methodLabel = task.methodName;
+      if (!methodLabel) {
+        if (task.method === "vision_slow") {
+          methodLabel = "🐢 画面慢速精细";
+        } else if (task.method?.startsWith("speech")) {
+          methodLabel = "🎙️ 语音智能转写";
+        } else if (task.failCount >= 2 && !task.isCompleted) {
+          methodLabel = "🎙️ 自动升级 AI 语音转写";
+        } else {
+          methodLabel = "🐢 画面慢速精细";
+        }
+      }
 
       let statusBadgeClass = "pending";
       let statusBadgeLabel = "⏳ 排队待提取";
@@ -3989,12 +4121,16 @@ export const ExtractionDashboardManager = {
         const hasMultiple = errorLogs.length > 1;
         const latestLog = errorLogs[0] || {};
         const latestDurationStr = (latestLog.durationSec > 0 || task.durationSec > 0) ? ` · 耗时 ${latestLog.durationSec || task.durationSec}s` : "";
+        const nextActionTip = task.failCount === 1
+          ? `<span class="fail-next-step">⏳ 画面失败 1 次 · 下次排在队尾重试精细提取</span>`
+          : `<span class="fail-next-step" style="color: #2563eb; background: #eff6ff; border-color: #bfdbfe;">🎙️ 画面已失败 ${task.failCount} 次 · 下次自动升级为 AI 语音转写</span>`;
 
         failureBoxHtml = `
           <div class="task-failure-box">
             <div class="task-failure-header">
               <div class="failure-title-wrap">
                 <span class="failure-badge">⚠️ 尝试失败 ${task.failCount} 次${latestDurationStr}</span>
+                ${!task.isCompleted ? nextActionTip : ""}
                 <span class="failure-latest-reason">${escapeHtml(task.lastError || latestLog.error || "提取过程遇到异常")}</span>
               </div>
               <div style="display: inline-flex; align-items: center; gap: 6px;">
@@ -4046,7 +4182,10 @@ export const ExtractionDashboardManager = {
               <button class="btn btn-ghost btn-sm btn-task-auto" type="button" title="恢复自动后台慢速接力">🔄 恢复自动</button>
             ` : `
               <button class="btn btn-warning btn-sm btn-task-manual" type="button" title="切换成手工提取模式，后台接力将不再重试此笔记">🖐️ 手工提取</button>
-              ${task.status !== "processing" ? `<button class="btn btn-ghost btn-sm btn-task-retry" type="button" title="重新放入后台队列重新提取">🔄 重提</button>` : ""}
+              ${task.status !== "processing" ? `
+                <button class="btn btn-sm btn-task-speech-retry" type="button" title="直接使用 AI 语音转写 (Whisper) 极速提取文案">🎙️ 语音转写</button>
+                <button class="btn btn-ghost btn-sm btn-task-vision-retry" type="button" title="重新从头进行画面慢速精细扫描">🐢 精细重试</button>
+              ` : ""}
             `}
           ` : ""}
         </div>
@@ -4137,6 +4276,36 @@ export const ExtractionDashboardManager = {
       card.querySelector(".btn-task-view")?.addEventListener("click", () => {
         if (typeof openNoteDetail === "function") openNoteDetail(task.id);
       });
+      card.querySelector(".btn-task-speech-retry")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showToast(`🎙️ 已将「${(task.title || "").substring(0, 8)}...」直接加入 AI 语音转写队列`);
+        BackgroundSubtitleQueue.failedNoteIds.delete(task.id);
+        BackgroundSubtitleQueue.enqueue({
+          id: task.id,
+          title: task.title,
+          coverUrl: task.coverUrl,
+          videos: task.videos || [{ url: task.videoUrl || "" }],
+          failCount: 2,
+          forceSpeech: true
+        });
+        ExtractionDashboardManager.refresh();
+      });
+
+      card.querySelector(".btn-task-vision-retry")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showToast(`🐢 已将「${(task.title || "").substring(0, 8)}...」加入慢速精细画面提取队列`);
+        BackgroundSubtitleQueue.failedNoteIds.delete(task.id);
+        BackgroundSubtitleQueue.enqueue({
+          id: task.id,
+          title: task.title,
+          coverUrl: task.coverUrl,
+          videos: task.videos || [{ url: task.videoUrl || "" }],
+          failCount: 0,
+          forceSpeech: false
+        });
+        ExtractionDashboardManager.refresh();
+      });
+
       card.querySelector(".btn-task-retry")?.addEventListener("click", (e) => {
         e.stopPropagation();
         showToast(`已将「${(task.title || "").substring(0, 8)}...」加入慢速精细提取队列`);

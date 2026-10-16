@@ -1063,6 +1063,7 @@ export async function getPendingSubtitleNotes(db, limit = 50) {
       AND videos_json != '[]'
       AND videos_json != ''
       AND COALESCE(extraction_status, '') != 'manual'
+      AND COALESCE(extraction_fail_count, 0) < 3
   `).first();
   const total = countRow?.total || 0;
 
@@ -1078,6 +1079,7 @@ export async function getPendingSubtitleNotes(db, limit = 50) {
       AND videos_json != '[]'
       AND videos_json != ''
       AND COALESCE(extraction_status, '') != 'manual'
+      AND COALESCE(extraction_fail_count, 0) < 3
     ORDER BY 
       COALESCE(extraction_fail_count, 0) ASC,
       created_at DESC

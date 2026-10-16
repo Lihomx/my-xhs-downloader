@@ -5316,4 +5316,93 @@ mark.transcript-hl:hover {
   line-height: 1.5;
 }
 
+/* 提取策略说明与一键补齐异常横幅 */
+.kb-tasks-strategy-tip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.9) 0%, rgba(254, 243, 199, 0.9) 100%);
+  border: 1px solid rgba(253, 230, 138, 0.9);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+  color: #78350f;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+  flex-wrap: wrap;
+}
+
+.kb-tasks-strategy-tip .strategy-tip-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.kb-tasks-strategy-tip strong {
+  color: #92400e;
+}
+
+.fail-next-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+  white-space: nowrap;
+}
+
+.btn-task-speech-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-task-speech-retry:hover {
+  background: #dbeafe;
+  border-color: #3b82f6;
+  color: #1e40af;
+  transform: translateY(-1px);
+}
+
+.btn-task-vision-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #f0fdf4;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-task-vision-retry:hover {
+  background: #dcfce7;
+  border-color: #10b981;
+  color: #065f46;
+  transform: translateY(-1px);
+}
+
 

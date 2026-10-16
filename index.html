@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.29" />
+    <link rel="stylesheet" href="/style.css?v=2.0.33" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -364,6 +364,17 @@
                   <button id="btn-kb-rescan-tasks" class="btn btn-primary btn-sm" type="button">🔄 立即扫描</button>
                 </div>
               </div>
+            </div>
+
+            <!-- 策略说明与一键异常语音补齐工具条 -->
+            <div class="kb-tasks-strategy-tip">
+              <div class="strategy-tip-text">
+                <span class="strategy-tip-icon">💡</span>
+                <span><strong>智能接力提取策略</strong>：默认采用<strong>画面慢速精细提取</strong>；失败 1 次自动移至队尾；<strong>失败 2 次后自动升级为 AI 语音转写</strong> (Groq Whisper Large-v3) 极速补齐。</span>
+              </div>
+              <button id="btn-kb-retry-failed-speech" class="btn btn-warning btn-sm" type="button" style="display: none; white-space: nowrap;">
+                🎙️ 一键语音补齐异常 (<span id="kb-btn-retry-failed-count">0</span>)
+              </button>
             </div>
 
             <!-- 看板分类切换标签栏 -->
@@ -1133,6 +1144,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.32"></script>
+    <script type="module" src="/app.js?v=2.0.33"></script>
   </body>
 </html>
