@@ -1129,9 +1129,17 @@ input:checked + .slider:before {
   flex-shrink: 0;
 }
 
-/* 弹窗全屏切换按钮 */
+/* 弹窗顶部操作组与全屏切换按钮 */
+.modal-header-actions {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  z-index: 5;
+}
+
 .btn-modal-fullscreen {
-  display: inline-flex;
+  display: inline-flex !important;
   align-items: center;
   gap: 5px;
   font-size: 12.5px;
@@ -1144,6 +1152,8 @@ input:checked + .slider:before {
   cursor: pointer;
   transition: all 0.15s ease;
   user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn-modal-fullscreen:hover {

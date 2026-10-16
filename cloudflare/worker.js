@@ -1013,7 +1013,20 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
         // 9. 静态前端页面托管 (由 Cloudflare Assets 提供)
         if (env.ASSETS?.fetch) {
-          return await env.ASSETS.fetch(request);
+          const assetResp = await env.ASSETS.fetch(request);
+          // 针对 HTML、JS 与 CSS，强制禁用客户端与 CDN 强缓存，确保用户实时获得最新功能
+          if (path === '/' || path === '/index.html' || path.endsWith('.html') || path.endsWith('.js') || path.endsWith('.css')) {
+            const newHeaders = new Headers(assetResp.headers);
+            newHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+            newHeaders.set('Pragma', 'no-cache');
+            newHeaders.set('Expires', '0');
+            return new Response(assetResp.body, {
+              status: assetResp.status,
+              statusText: assetResp.statusText,
+              headers: newHeaders
+            });
+          }
+          return assetResp;
         }
 
         return new Response('Not Found', { status: 404 });
