@@ -2099,12 +2099,19 @@ function initTranscriptSelectionPill() {
 function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
   if (!container) return;
   container.style.display = "block";
+  document.getElementById("modal-video-wrap")?.classList.add("has-transcript");
   if (noteId) {
     container.dataset.noteId = String(noteId);
   }
   if (detectedProvider) {
     container.dataset.aiProvider = detectedProvider;
   }
+
+  // 读取并应用用户偏好的文案字号 (默认 16px)
+  const FONT_SIZES = [14, 16, 18, 20, 22];
+  let curFontSize = parseInt(localStorage.getItem("xhs_transcript_font_size") || "16", 10);
+  if (!FONT_SIZES.includes(curFontSize)) curFontSize = 16;
+  container.style.setProperty("--transcript-font-size", `${curFontSize}px`);
 
   const isVision = String(detectedProvider || container.dataset.aiProvider || "").includes("vision");
   const effectiveProvider = container.dataset.aiProvider || state.whisperProvider || (document.getElementById("settings-whisper-key")?.value ? "groq" : "cloudflare");
@@ -2158,6 +2165,11 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
         <span class="transcript-hl-badge" style="display: none;">⭐ 0 处重点</span>
       </div>
       <div class="transcript-header-actions">
+        <div class="transcript-font-group" title="调节字幕文案字号 (当前: ${curFontSize}px)">
+          <button type="button" class="transcript-font-btn btn-font-dec" title="缩小字号 (A-)" ${curFontSize <= 14 ? 'disabled' : ''}>A-</button>
+          <span class="transcript-font-indicator" title="点击重置为默认字号 (16px)">${curFontSize}px</span>
+          <button type="button" class="transcript-font-btn btn-font-inc" title="放大字号 (A+)" ${curFontSize >= 22 ? 'disabled' : ''}>A+</button>
+        </div>
         <button type="button" class="transcript-btn btn-ai-punctuate" title="通过 AI 深度纠正同音错别字、恢复标点并精准按句分段">
           🪄 AI 智能纠错
         </button>
@@ -2184,6 +2196,45 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
   `;
 
   const wrap = container.querySelector(".transcript-paragraphs-wrap");
+
+  // 0. 字号大小调节器 (A- / 16px / A+)
+  const fontGroup = container.querySelector(".transcript-font-group");
+  if (fontGroup) {
+    const btnDec = fontGroup.querySelector(".btn-font-dec");
+    const btnInc = fontGroup.querySelector(".btn-font-inc");
+    const indicator = fontGroup.querySelector(".transcript-font-indicator");
+
+    const applyFontSize = (size) => {
+      curFontSize = size;
+      container.style.setProperty("--transcript-font-size", `${curFontSize}px`);
+      localStorage.setItem("xhs_transcript_font_size", String(curFontSize));
+      if (indicator) indicator.textContent = `${curFontSize}px`;
+      if (btnDec) btnDec.disabled = curFontSize <= FONT_SIZES[0];
+      if (btnInc) btnInc.disabled = curFontSize >= FONT_SIZES[FONT_SIZES.length - 1];
+      fontGroup.title = `调节字幕文案字号 (当前: ${curFontSize}px)`;
+    };
+
+    btnDec?.addEventListener("click", () => {
+      const idx = FONT_SIZES.indexOf(curFontSize);
+      if (idx > 0) {
+        applyFontSize(FONT_SIZES[idx - 1]);
+        showToast(`🔤 字号已调整为 ${curFontSize}px`);
+      }
+    });
+
+    btnInc?.addEventListener("click", () => {
+      const idx = FONT_SIZES.indexOf(curFontSize);
+      if (idx < FONT_SIZES.length - 1) {
+        applyFontSize(FONT_SIZES[idx + 1]);
+        showToast(`🔤 字号已放大为 ${curFontSize}px`);
+      }
+    });
+
+    indicator?.addEventListener("click", () => {
+      applyFontSize(16);
+      showToast("🔤 已重置为默认字号 16px");
+    });
+  }
 
   // 1. 段落星标重点点击事件
   container.querySelectorAll(".btn-para-star").forEach((btn) => {
@@ -5325,6 +5376,9 @@ async function openNoteDetail(noteId) {
     const hasAudio = Boolean(note.audioUrl);
     const activeAudioUrl = hasAudio ? note.audioUrl : (hasVideo ? activeVideoUrl : "");
     const hasTranscript = Boolean(note.transcript && String(note.transcript).trim());
+    if (vidWrap) {
+      vidWrap.classList.toggle("has-transcript", hasTranscript);
+    }
 
     // 随身听加入/移出交互绑定
     const toggleShuffleBtn = document.getElementById("btn-modal-toggle-shuffle");
@@ -7077,12 +7131,64 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // 详情弹窗关闭
+  // 详情弹窗关闭与全屏沉浸精读模式控制
   const noteModal = document.getElementById("modal-note-detail");
+  const modalElem = noteModal?.querySelector(".modal");
+  const toggleFullscreenBtn = document.getElementById("btn-modal-toggle-fullscreen");
+
+  const toggleModalFullscreen = (force) => {
+    if (!noteModal || !modalElem) return;
+    const isFs = typeof force === "boolean" 
+      ? force 
+      : !modalElem.classList.contains("modal-fullscreen");
+    modalElem.classList.toggle("modal-fullscreen", isFs);
+    noteModal.classList.toggle("fullscreen-active", isFs);
+    if (toggleFullscreenBtn) {
+      toggleFullscreenBtn.classList.toggle("active", isFs);
+      toggleFullscreenBtn.innerHTML = isFs 
+        ? `<span class="fs-icon-restore">🗗</span><span class="fs-text">还原</span>`
+        : `<span class="fs-icon-expand">⛶</span><span class="fs-text">全屏</span>`;
+      toggleFullscreenBtn.title = isFs ? "还原窗口大小 (快捷键: F 或 Esc)" : "切换全屏沉浸模式 (快捷键: F)";
+    }
+  };
+
+  toggleFullscreenBtn?.addEventListener("click", () => toggleModalFullscreen());
+
+  // 双击 modal-header 标题栏也可快捷切换全屏/还原
+  noteModal?.querySelector(".modal-header")?.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button") || e.target.closest("input") || e.target.closest("a")) return;
+    toggleModalFullscreen();
+  });
+
+  // 快捷键支持：打开详情弹窗时按 F 切换全屏，按 Esc 优先退出全屏
+  document.addEventListener("keydown", (e) => {
+    if (!noteModal?.classList.contains("active")) return;
+    const isEditing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+    if ((e.key === "f" || e.key === "F") && !isEditing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      toggleModalFullscreen();
+      return;
+    }
+    if (e.key === "Escape") {
+      if (modalElem?.classList.contains("modal-fullscreen")) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleModalFullscreen(false);
+      }
+    }
+  }, true);
+
   const closeNoteModal = () => {
     document.getElementById("modal-video-player")?.pause();
     document.getElementById("modal-audio-player")?.pause();
     noteModal?.classList.remove("active");
+    noteModal?.classList.remove("fullscreen-active");
+    modalElem?.classList.remove("modal-fullscreen");
+    if (toggleFullscreenBtn) {
+      toggleFullscreenBtn.classList.remove("active");
+      toggleFullscreenBtn.innerHTML = `<span class="fs-icon-expand">⛶</span><span class="fs-text">全屏</span>`;
+      toggleFullscreenBtn.title = "切换全屏沉浸模式 (快捷键: F)";
+    }
   };
   document.getElementById("btn-close-note-modal")?.addEventListener("click", closeNoteModal);
   noteModal?.addEventListener("click", (e) => {

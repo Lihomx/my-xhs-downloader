@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小红书无水印采集与知识库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/style.css?v=2.0.34" />
+    <link rel="stylesheet" href="/style.css?v=2.0.35" />
   </head>
   <body>
     <!-- 顶部极简导航与标签页 -->
@@ -571,8 +571,13 @@
     <div id="modal-note-detail" class="modal-overlay">
       <div class="modal">
         <div class="modal-header">
-          <h3 id="modal-note-title" style="font-size: 17px; max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">笔记详情</h3>
-          <button id="btn-close-note-modal" class="drawer-close">✕</button>
+          <h3 id="modal-note-title" style="font-size: 17px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 12px;">笔记详情</h3>
+          <div class="modal-header-actions" style="display: flex; align-items: center; gap: 8px;">
+            <button id="btn-modal-toggle-fullscreen" class="btn-modal-fullscreen" type="button" title="切换全屏沉浸模式 (快捷键: F)">
+              <span class="fs-icon-expand">⛶</span><span class="fs-text">全屏</span>
+            </button>
+            <button id="btn-close-note-modal" class="drawer-close" title="关闭 (Esc)">✕</button>
+          </div>
         </div>
 
         <div class="modal-body">
@@ -616,57 +621,61 @@
           </section>
 
           <!-- 视频与语音文案置顶区 (如果有视频或音频或文案，优先在最上方展示) -->
-          <div id="modal-video-wrap" style="display: none; margin-bottom: 20px;">
-            <!-- 媒体已清理提示横幅 (若音视频已清理但文案保留) -->
-            <div id="modal-media-freed-banner" style="display: none; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 9px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 12px;">
-              💾 <strong>音视频媒体已从云端删除（已释放 Cloudflare 硬盘空间）</strong>，当前文字笔记与提取语音文案已完整保留。
-            </div>
-
-            <!-- 视频播放器 -->
-            <div id="modal-video-player-container">
-              <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
-            </div>
-
-            <!-- 音频播放器 -->
-            <div id="modal-audio-player-wrap" style="display: none; margin-top: 8px;">
-              <div id="modal-audio-status-tag" style="display: none; font-size: 11px; color: #0369a1; background: #e0f2fe; padding: 3px 8px; border-radius: 4px; margin-bottom: 6px; font-weight: 500;">
-                🎧 纯音频模式（视频文件已从云端删除，节约 ~95% 空间）
+          <div id="modal-video-wrap" class="modal-video-wrap" style="display: none; margin-bottom: 20px;">
+            <div class="modal-video-left-col">
+              <!-- 媒体已清理提示横幅 (若音视频已清理但文案保留) -->
+              <div id="modal-media-freed-banner" style="display: none; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 9px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 12px;">
+                💾 <strong>音视频媒体已从云端删除（已释放 Cloudflare 硬盘空间）</strong>，当前文字笔记与提取语音文案已完整保留。
               </div>
-              <audio id="modal-audio-player" controls style="width: 100%;"></audio>
-            </div>
 
-            <!-- 媒体操作按钮栏 -->
-            <div id="modal-media-actions" class="modal-media-actions-bar">
-              <div class="modal-media-btn-group">
-                <button id="btn-modal-toggle-audio" class="btn btn-secondary" type="button">
-                  🎧 纯听音频
-                </button>
-                <button id="btn-modal-transcribe" class="btn btn-secondary" type="button" title="智能识别：优先提取视频字幕，无字幕则自动启用 AI 语音转写">
-                  🎙️ 提取字幕与文案
-                </button>
-                <button id="btn-modal-ocr-subtitles" class="btn btn-secondary" style="display: none;" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">
-                  🔍 画面字幕提取
-                </button>
-                <button id="btn-modal-slow-ocr" class="btn btn-secondary" style="display: none;" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">
-                  🐢 慢速精细提取
-                </button>
-                <button id="btn-modal-dual-extract" class="btn btn-secondary" style="display: none;" type="button" title="同时进行慢速精细画面字幕提取与语音识别转写，并排预览对比后手工确定采纳版本">
-                  ⚖️ 双模对比提取
-                </button>
-                <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
-                  📻 加入随身听
-                </button>
-                <button id="btn-modal-cleanup-media" class="btn btn-secondary btn-cleanup-pill" type="button" title="选择性删除视频或语音以腾出 Cloudflare 空间，文案与笔记完整保留">
-                  ⚡ 释放媒体空间
+              <!-- 视频播放器 -->
+              <div id="modal-video-player-container">
+                <video id="modal-video-player" controls style="width: 100%; max-height: 360px; border-radius: 8px; background: #000;"></video>
+              </div>
+
+              <!-- 音频播放器 -->
+              <div id="modal-audio-player-wrap" style="display: none; margin-top: 8px;">
+                <div id="modal-audio-status-tag" style="display: none; font-size: 11px; color: #0369a1; background: #e0f2fe; padding: 3px 8px; border-radius: 4px; margin-bottom: 6px; font-weight: 500;">
+                  🎧 纯音频模式（视频文件已从云端删除，节约 ~95% 空间）
+                </div>
+                <audio id="modal-audio-player" controls style="width: 100%;"></audio>
+              </div>
+
+              <!-- 媒体操作按钮栏 -->
+              <div id="modal-media-actions" class="modal-media-actions-bar">
+                <div class="modal-media-btn-group">
+                  <button id="btn-modal-toggle-audio" class="btn btn-secondary" type="button">
+                    🎧 纯听音频
+                  </button>
+                  <button id="btn-modal-transcribe" class="btn btn-secondary" type="button" title="智能识别：优先提取视频字幕，无字幕则自动启用 AI 语音转写">
+                    🎙️ 提取字幕与文案
+                  </button>
+                  <button id="btn-modal-ocr-subtitles" class="btn btn-secondary" style="display: none;" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">
+                    🔍 画面字幕提取
+                  </button>
+                  <button id="btn-modal-slow-ocr" class="btn btn-secondary" style="display: none;" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">
+                    🐢 慢速精细提取
+                  </button>
+                  <button id="btn-modal-dual-extract" class="btn btn-secondary" style="display: none;" type="button" title="同时进行慢速精细画面字幕提取与语音识别转写，并排预览对比后手工确定采纳版本">
+                    ⚖️ 双模对比提取
+                  </button>
+                  <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
+                    📻 加入随身听
+                  </button>
+                  <button id="btn-modal-cleanup-media" class="btn btn-secondary btn-cleanup-pill" type="button" title="选择性删除视频或语音以腾出 Cloudflare 空间，文案与笔记完整保留">
+                    ⚡ 释放媒体空间
+                  </button>
+                </div>
+                <button id="btn-modal-download-video" class="btn btn-secondary" type="button">
+                  🎬 下载视频 (按标题拼音命名)
                 </button>
               </div>
-              <button id="btn-modal-download-video" class="btn btn-secondary" type="button">
-                🎬 下载视频 (按标题拼音命名)
-              </button>
             </div>
 
-            <!-- 语音文案面板 (高优先级置顶显示于视频下方) -->
-            <div id="modal-transcript-panel" class="transcript-box" style="display: none;"></div>
+            <div class="modal-video-right-col">
+              <!-- 语音文案面板 (高优先级置顶显示于视频下方或全屏右侧) -->
+              <div id="modal-transcript-panel" class="transcript-box" style="display: none;"></div>
+            </div>
           </div>
 
           <!-- 笔记标题编辑区 -->
@@ -1144,6 +1153,6 @@
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.34"></script>
+    <script type="module" src="/app.js?v=2.0.35"></script>
   </body>
 </html>
