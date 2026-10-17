@@ -1542,6 +1542,182 @@ export async function getStorageUsage(env, { forceRefresh = false } = {}) {
 const SRS_INTERVALS = [0, 1, 3, 7, 15, 30, 60, 90];
 
 /**
+ * 智能提炼中文金句挖空关键词 (支持成语、专有名词、引号、引导动宾实词及子句重心)
+ */
+export function extractSmartClozeKeywords(text) {
+  const clean = String(text || '').trim();
+  if (!clean) return { keywords: [], clozeFront: '', answerBack: '', originalText: '' };
+
+  // 1. 如果已有 {{...}} 标记，检验是否是过长/全包裹的劣质挖空
+  const existingMatches = [...clean.matchAll(/\{\{([^}]+)\}\}/g)];
+  const isAllWrapped = existingMatches.length === 1 && existingMatches[0][0].trim() === clean;
+  const hasTooLongCloze = existingMatches.some(m => m[1].length > 8 || m[1].length > clean.length * 0.6);
+
+  // 如果原本就有精简合适的挖空（1~8字符），直接保留
+  if (existingMatches.length > 0 && !isAllWrapped && !hasTooLongCloze) {
+    const kws = existingMatches.map(m => m[1].trim());
+    return {
+      keywords: kws,
+      clozeFront: clean,
+      answerBack: kws.join('、'),
+      originalText: clean.replace(/\{\{|\}\}/g, '').trim()
+    };
+  }
+
+  // 剥离原有的 {{}} 还原纯文本
+  const rawText = clean.replace(/\{\{|\}\}/g, '').trim();
+  const candidates = [];
+
+  // 1. 引号、书名号中的核心概念: “...”, 《...》, 【...】
+  const quoteMatches = rawText.matchAll(/[“"《【]([^”"》】]{2,10})[”"》】]/g);
+  for (const m of quoteMatches) {
+    if (m[1]) candidates.push(m[1].trim());
+  }
+
+  // 2. 英文专有名词、术语 (如 SRS, Ebbinghaus, Anki, GPT)
+  const enMatches = rawText.matchAll(/[A-Za-z0-9_+#.-]{2,15}/g);
+  for (const m of enMatches) {
+    const w = m[0].trim();
+    if (!['the', 'and', 'for', 'with', 'that', 'this', 'you', 'are', 'was', 'were', 'not'].includes(w.toLowerCase())) {
+      candidates.push(w);
+    }
+  }
+
+  // 3. 中文语法核心概念引导词：在引导词之后截取纯词素
+  const triggerWords = [
+    '局限于', '打破', '摆脱', '积累', '沉淀', '建立', '掌握', '学会',
+    '实现', '坚持', '打造', '克服', '理解', '关于', '对抗', '利用',
+    '养成', '培养', '改变', '战胜', '专注于', '提升', '避免', '遵循',
+    '注重', '重构', '拥抱', '核心是', '关键是', '本质是', '前提是'
+  ];
+
+  for (const trigger of triggerWords) {
+    const idx = rawText.indexOf(trigger);
+    if (idx !== -1) {
+      const after = rawText.slice(idx + trigger.length).replace(/^[的了是在为与和于向\s]+/, '');
+      const match = after.match(/^[\u4e00-\u9fa5]{2,4}?(?=[的是在了为与和于向，,。！？!?\s]|$)/);
+      if (match && match[0].length >= 2) {
+        candidates.push(match[0]);
+      } else {
+        const fallbackMatch = after.match(/^[\u4e00-\u9fa5]{2,4}/);
+        if (fallbackMatch && fallbackMatch[0].length >= 2) {
+          const cleanWord = fallbackMatch[0].replace(/[的是在了为与和于向]+$/, '');
+          if (cleanWord.length >= 2) candidates.push(cleanWord);
+        }
+      }
+    }
+  }
+
+  // 4. 常见停用词与虚词
+  const stopWords = new Set([
+    '记住', '首先', '其次', '另外', '所以', '因此', '但是', '然而',
+    '如果', '比如', '例如', '千万', '一定', '必须', '应该', '可以',
+    '不要', '不能', '以及', '或者', '这个', '那个', '什么', '怎么',
+    '我们', '他们', '自己', '大家', '地方', '时候', '东西', '事情',
+    '所谓', '其实', '只要', '只有', '不过', '因为', '然后', '而且'
+  ]);
+
+  // 5. 分句切分：提取各子分句末尾的重点名词/动宾实词
+  const clauses = rawText.split(/[，,、。；;！？!?\s]+/).filter(c => c.length >= 2);
+  for (const clause of clauses) {
+    let core = clause;
+    for (const sw of stopWords) {
+      if (core.startsWith(sw)) core = core.slice(sw.length);
+    }
+    core = core.replace(/^[的了是在为与和于向\s]+/, '');
+    core = core.replace(/^[一二三四五六七八九十百千万0-9两几多]+[个种条年天分秒点分钟小时步级次倍]*/, '');
+
+    // 如果子句末尾包含纯中文实词
+    const tailMatch = core.match(/[\u4e00-\u9fa5]{2,4}$/);
+    if (tailMatch) {
+      const tail = tailMatch[0].replace(/^[的是在了为与和于向]+/, '').replace(/[的是在了为与和于向]+$/, '');
+      if (tail.length >= 2 && !stopWords.has(tail)) {
+        candidates.push(tail);
+      }
+    }
+  }
+
+  // 6. 筛选有效词：必须在原句中、长度在 2~6 字之间、不能是停用词
+  const valid = [];
+  for (const c of candidates) {
+    const trimmed = c.trim();
+    if (trimmed.length >= 2 && trimmed.length <= 6 && !stopWords.has(trimmed) && rawText.includes(trimmed) && !valid.includes(trimmed)) {
+      valid.push(trimmed);
+    }
+  }
+
+  // 7. 选取最多 2 个关键词挖空 (优先选不重叠的)
+  const selected = [];
+  for (const kw of valid) {
+    if (selected.length >= 2) break;
+    const isOverlapping = selected.some(s => {
+      const idxA = rawText.indexOf(s);
+      const idxB = rawText.indexOf(kw);
+      return Math.abs(idxA - idxB) < Math.min(s.length, kw.length);
+    });
+    if (!isOverlapping) {
+      selected.push(kw);
+    }
+  }
+
+  // 8. 兜底保护：如果依然未选出任何词且原句较长，选取句子末尾 2~4 个字
+  if (selected.length === 0 && rawText.length >= 4) {
+    const lastClause = clauses[clauses.length - 1] || rawText;
+    const cleanTail = lastClause.replace(/[。！？!?，,\s]+$/, '');
+    const fallbackKw = cleanTail.slice(-Math.min(4, Math.max(2, cleanTail.length - 1)));
+    if (fallbackKw && fallbackKw.length >= 2) {
+      selected.push(fallbackKw);
+    }
+  }
+
+  let clozeFront = rawText;
+  for (const kw of selected) {
+    clozeFront = clozeFront.replace(kw, `{{${kw}}}`);
+  }
+
+  return {
+    keywords: selected,
+    clozeFront: selected.length > 0 ? clozeFront : rawText,
+    answerBack: selected.join('、') || rawText,
+    originalText: rawText
+  };
+}
+
+/**
+ * 校验卡片正面挖空质量，若有全包裹或无挖空则自动修复并异步持久化
+ */
+export function ensureSmartCloze(c, db = null) {
+  if (!c) return c;
+  let front = String(c.front || '').trim();
+  let back = String(c.back || '').trim();
+  const existingMatches = [...front.matchAll(/\{\{([^}]+)\}\}/g)];
+  const isAllWrapped = existingMatches.length === 1 && existingMatches[0][0].trim() === front;
+  const hasTooLongCloze = existingMatches.some(m => m[1].length > 8 || m[1].length > front.length * 0.6);
+  const hasNoCloze = existingMatches.length === 0 && front.length > 6;
+
+  if (isAllWrapped || hasTooLongCloze || hasNoCloze) {
+    const raw = (isAllWrapped || hasTooLongCloze ? front.replace(/\{\{|\}\}/g, '').trim() : front);
+    const smart = extractSmartClozeKeywords(raw);
+    if (smart.keywords.length > 0) {
+      c.front = smart.clozeFront;
+      if (!c.contextSentence || c.contextSentence === c.back) {
+        c.contextSentence = smart.originalText;
+      }
+      if (back === front || isAllWrapped || !back) {
+        c.back = smart.answerBack + `\n\n原句：${smart.originalText}`;
+      }
+      if (db && c.id) {
+        db.prepare("UPDATE flashcards SET front = ?, back = ?, context_sentence = ? WHERE id = ?")
+          .bind(c.front, c.back, c.contextSentence || smart.originalText, c.id)
+          .run()
+          .catch(err => console.warn("Auto-repair flashcard error:", err));
+      }
+    }
+  }
+  return c;
+}
+
+/**
  * 从笔记高亮/重点导入闪卡
  */
 export async function importFlashcardsFromNote(db, { noteId, cards = [], deckName = '' } = {}) {
@@ -1573,14 +1749,33 @@ export async function importFlashcardsFromNote(db, { noteId, cards = [], deckNam
 
   for (let i = 0; i < cards.length; i++) {
     const item = cards[i];
-    const front = String(item.front || item.text || '').trim();
-    const back = String(item.back || item.answer || item.fullSentence || front).trim();
+    let front = String(item.front || item.text || '').trim();
+    let back = String(item.back || item.answer || item.fullSentence || front).trim();
     if (!front && !back) continue;
+
+    // 智能挖空过滤与强化
+    const existingMatches = [...front.matchAll(/\{\{([^}]+)\}\}/g)];
+    const isAllWrapped = existingMatches.length === 1 && existingMatches[0][0].trim() === front;
+    const hasTooLongCloze = existingMatches.some(m => m[1].length > 8 || m[1].length > front.length * 0.6);
+    const hasNoCloze = existingMatches.length === 0 && front.length > 6;
+
+    let contextSentence = item.contextSentence || back;
+
+    if (isAllWrapped || hasTooLongCloze || hasNoCloze) {
+      const raw = isAllWrapped || hasTooLongCloze ? front.replace(/\{\{|\}\}/g, '').trim() : front;
+      const smart = extractSmartClozeKeywords(raw);
+      if (smart.keywords.length > 0) {
+        front = smart.clozeFront;
+        contextSentence = smart.originalText;
+        if (back === item.front || isAllWrapped || !back) {
+          back = smart.answerBack + `\n\n原句：${smart.originalText}`;
+        }
+      }
+    }
 
     const cardId = 'fc_' + now + '_' + Math.random().toString(36).substring(2, 7) + '_' + i;
     const cardType = item.type || (front.includes('{{') && front.includes('}}') ? 'cloze' : 'cloze');
     const itemDeck = item.deckName || defaultDeck;
-    const contextSentence = item.contextSentence || back;
 
     await db.prepare(`
       INSERT INTO flashcards (
@@ -1732,7 +1927,7 @@ export async function getDueFlashcards(db, { deckName = '', limit = 100 } = {}) 
   params.push(Number(limit) || 100);
 
   const rows = await db.prepare(query).bind(...params).all();
-  return (rows?.results || []).map(r => ({
+  return (rows?.results || []).map(r => ensureSmartCloze({
     id: r.id,
     noteId: r.note_id,
     deckName: r.deck_name,
@@ -1749,7 +1944,7 @@ export async function getDueFlashcards(db, { deckName = '', limit = 100 } = {}) 
     reviewCount: Number(r.review_count || 0),
     lapseCount: Number(r.lapse_count || 0),
     createdAt: Number(r.created_at || 0)
-  }));
+  }, db));
 }
 
 /**
@@ -1806,7 +2001,7 @@ export async function getFlashcardsList(db, { deckName = '', noteId = '', search
   const listParams = [...params, Number(pageSize), offset];
   const rows = await db.prepare(query).bind(...listParams).all();
 
-  const cards = (rows?.results || []).map(r => ({
+  const cards = (rows?.results || []).map(r => ensureSmartCloze({
     id: r.id,
     noteId: r.note_id,
     deckName: r.deck_name,
@@ -1823,7 +2018,7 @@ export async function getFlashcardsList(db, { deckName = '', noteId = '', search
     reviewCount: Number(r.review_count || 0),
     lapseCount: Number(r.lapse_count || 0),
     createdAt: Number(r.created_at || 0)
-  }));
+  }, db));
 
   return { total, page: Number(page), pageSize: Number(pageSize), cards };
 }
@@ -1996,87 +2191,120 @@ export async function deleteFlashcard(db, cardId) {
 }
 
 /**
- * AI 智能提炼核心挖空建议词 (支持 Workers AI 与本地高保真启发式双模)
+ * AI 智能提炼核心挖空建议词 (支持 Groq 极速大模型、Workers AI 与本地高保真自然语言提取算法)
  */
 export async function generateAiClozeSuggestions(env, text) {
   const cleanText = String(text || '').trim();
   if (!cleanText) return { suggestions: [] };
 
-  // 1. 如果有 env.AI，尝试调用大语言模型进行精准概念提炼
-  if (env?.AI) {
+  // 1. 如果配置了 whisper_api_key (Groq Key)，优先调用 Groq 极速大模型
+  let groqKey = '';
+  if (env?.DB) {
     try {
-      const prompt = `请分析以下中文句子，挑选出最适合作为记忆测试填空的1至2个核心短语（成语、专业概念、金句重点关键词），并给出将该词用{{关键词}}挖空后的句子。
+      groqKey = await getSetting(env.DB, 'whisper_api_key', '');
+    } catch {}
+  }
+  if (!groqKey && env?.WHISPER_API_KEY) {
+    groqKey = env.WHISPER_API_KEY;
+  }
+
+  const prompt = `请分析以下中文句子，挑选出最适合作为记忆测试填空的1至2个核心短语（成语、专业概念、金句重点关键词），并给出将该词用{{关键词}}挖空后的句子。
 句子：${cleanText}
 
 只返回纯 JSON 格式：
 [
-  { "keyword": "选出的词", "clozeFront": "将关键词替换为{{关键词}}后的句子", "answerBack": "选出的词以及简要解释" }
+  { "keyword": "选出的词", "clozeFront": "将关键词替换为{{关键词}}后的句子", "answerBack": "选出的词" }
 ]`;
 
-      const aiResp = await env.AI.run('@cf/qwen/qwen2.5-7b-instruct', {
-        messages: [
-          { role: 'system', content: '你是一位精通认知心理学与艾宾浩斯记忆法的学习助手。只输出纯 JSON，不输出任何开场白或解释。' },
-          { role: 'user', content: prompt }
-        ],
-        max_tokens: 300,
-        temperature: 0.2
+  if (groqKey) {
+    try {
+      const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${groqKey.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            { role: 'system', content: '你是一位精通认知心理学与艾宾浩斯记忆法的学习助手。只输出纯 JSON 数组，不输出任何开场白或解释。' },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.2,
+          max_tokens: 300
+        })
       });
-
-      const raw = aiResp?.response || '';
-      const jsonMatch = raw.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return {
-            suggestions: parsed.map(p => ({
-              keyword: p.keyword,
-              clozeFront: p.clozeFront || cleanText.replace(p.keyword, `{{${p.keyword}}}`),
-              answerBack: p.answerBack || p.keyword
-            }))
-          };
+      if (groqRes.ok) {
+        const groqData = await groqRes.json();
+        const rawContent = groqData.choices?.[0]?.message?.content || '';
+        const match = rawContent.match(/\[[\s\S]*\]/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return {
+              suggestions: parsed.map(p => {
+                const kw = p.keyword || p.word || '';
+                return {
+                  word: kw,
+                  keyword: kw,
+                  clozeFront: p.clozeFront || cleanText.replace(kw, `{{${kw}}}`),
+                  answerBack: p.answerBack || kw
+                };
+              })
+            };
+          }
         }
       }
     } catch (e) {
-      console.warn("Workers AI cloze recommendation fallback:", e.message);
+      console.warn("Groq AI cloze suggestion fallback:", e.message);
     }
   }
 
-  // 2. 本地高保真启发式智能提取 (成语、双引号金句、破折号概念、长句后半段动宾词)
-  const suggestions = [];
-
-  // 模式 A: 提取成语或四字熟语 (如 "言听计从"、"势均力敌")
-  const idiomRegex = /[\u4e00-\u9fa5]{4}/g;
-  const idioms = cleanText.match(idiomRegex) || [];
-  if (idioms.length > 0) {
-    const candidate = idioms[0];
-    suggestions.push({
-      keyword: candidate,
-      clozeFront: cleanText.replace(candidate, `{{${candidate}}}`),
-      answerBack: candidate
-    });
+  // 2. 如果绑定了 Cloudflare Workers AI，尝试调用 Workers AI
+  if (env?.AI) {
+    const cfModels = ['@cf/meta/llama-3.3-70b-instruct', '@cf/meta/llama-3.2-3b-instruct'];
+    for (const model of cfModels) {
+      try {
+        const aiResp = await env.AI.run(model, {
+          messages: [
+            { role: 'system', content: '你是一位精通认知心理学与艾宾浩斯记忆法的学习助手。只输出纯 JSON 数组，不输出任何开场白。' },
+            { role: 'user', content: prompt }
+          ],
+          max_tokens: 300,
+          temperature: 0.2
+        });
+        const raw = aiResp?.response || '';
+        const jsonMatch = raw.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return {
+              suggestions: parsed.map(p => {
+                const kw = p.keyword || p.word || '';
+                return {
+                  word: kw,
+                  keyword: kw,
+                  clozeFront: p.clozeFront || cleanText.replace(kw, `{{${kw}}}`),
+                  answerBack: p.answerBack || kw
+                };
+              })
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`Workers AI ${model} fallback:`, err.message);
+      }
+    }
   }
 
-  // 模式 B: 提取带引号的核心重点 “...” 或 "..."
-  const quoteMatch = cleanText.match(/[“"']([^”"']{2,12})[”"']/);
-  if (quoteMatch && quoteMatch[1] && !suggestions.some(s => s.keyword === quoteMatch[1])) {
-    suggestions.push({
-      keyword: quoteMatch[1],
-      clozeFront: cleanText.replace(quoteMatch[0], `{{${quoteMatch[1]}}}`),
-      answerBack: quoteMatch[1]
-    });
-  }
-
-  // 模式 C: 若无特殊词，智能选取句子后半段关键谓语/宾语
-  if (suggestions.length === 0) {
-    const parts = cleanText.split(/[，,、]/);
-    const targetPart = parts[parts.length - 1] || cleanText;
-    const key = targetPart.length >= 4 ? targetPart.slice(-4) : targetPart;
-    suggestions.push({
-      keyword: key,
-      clozeFront: cleanText.replace(key, `{{${key}}}`),
-      answerBack: key
-    });
-  }
+  // 3. 高精度智能提炼算法 (零依赖、100% 成功率与极速响应保障)
+  const smart = extractSmartClozeKeywords(cleanText);
+  const suggestions = smart.keywords.map(kw => ({
+    word: kw,
+    keyword: kw,
+    clozeFront: smart.clozeFront,
+    answerBack: smart.answerBack
+  }));
 
   return { suggestions };
 }

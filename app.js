@@ -4806,6 +4806,9 @@ export const FlashcardManager = {
               <button class="btn btn-ghost btn-sm btn-single-review" data-id="${c.id}" type="button" title="单独复习这张卡片">
                 ▶️ 复习
               </button>
+              <button class="btn btn-ghost btn-sm btn-smart-cloze-card" data-id="${c.id}" type="button" title="智能提炼核心关键词挖空" style="color: #6366f1;">
+                🪄 智能挖空
+              </button>
               <button class="btn btn-secondary btn-sm btn-edit-card" data-id="${c.id}" type="button">
                 ✏️ 编辑 / 拆分
               </button>
@@ -4839,6 +4842,43 @@ export const FlashcardManager = {
       });
     });
 
+    container.querySelectorAll(".btn-smart-cloze-card").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        const card = this.cards.find(c => c.id === id);
+        if (!card) return;
+        const raw = (card.front || "").replace(/\{\{|\}\}/g, '').trim() || (card.back || "").trim();
+        const smart = this.extractSmartClozeKeywords(raw);
+        if (smart.keywords.length === 0) {
+          showToast("未提炼出合适的关键词，建议点击编辑手工划词挖空");
+          return;
+        }
+        try {
+          const res = await fetch(`/api/flashcards/${id}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({
+              front: smart.clozeFront,
+              back: smart.answerBack + `\n\n原句：${smart.originalText}`,
+              contextSentence: smart.originalText
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast(`✨ 已成功将「${smart.keywords.join('、')}」智能挖空！`);
+            this.refresh();
+          } else {
+            showToast(`操作失败: ${data.message}`);
+          }
+        } catch (err) {
+          showToast(`请求异常: ${err.message}`);
+        }
+      });
+    });
+
     container.querySelectorAll(".btn-edit-card").forEach(btn => {
       btn.addEventListener("click", () => {
         const id = btn.dataset.id;
@@ -4855,10 +4895,162 @@ export const FlashcardManager = {
     });
   },
 
+  // 智能提炼中文金句挖空关键词 (支持成语、专有名词、引导动宾实词及子句重心)
+  extractSmartClozeKeywords(text) {
+    const clean = String(text || '').trim();
+    if (!clean) return { keywords: [], clozeFront: '', answerBack: '', originalText: '' };
+
+    const existingMatches = [...clean.matchAll(/\{\{([^}]+)\}\}/g)];
+    const isAllWrapped = existingMatches.length === 1 && existingMatches[0][0].trim() === clean;
+    const hasTooLongCloze = existingMatches.some(m => m[1].length > 8 || m[1].length > clean.length * 0.6);
+
+    if (existingMatches.length > 0 && !isAllWrapped && !hasTooLongCloze) {
+      const kws = existingMatches.map(m => m[1].trim());
+      return {
+        keywords: kws,
+        clozeFront: clean,
+        answerBack: kws.join('、'),
+        originalText: clean.replace(/\{\{|\}\}/g, '').trim()
+      };
+    }
+
+    const rawText = clean.replace(/\{\{|\}\}/g, '').trim();
+    const candidates = [];
+
+    // 1. 引号、书名号中的核心概念: “...”, 《...》, 【...】
+    const quoteMatches = rawText.matchAll(/[“"《【]([^”"》】]{2,10})[”"》】]/g);
+    for (const m of quoteMatches) {
+      if (m[1]) candidates.push(m[1].trim());
+    }
+
+    // 2. 英文专有名词、术语 (如 SRS, Ebbinghaus, Anki, GPT)
+    const enMatches = rawText.matchAll(/[A-Za-z0-9_+#.-]{2,15}/g);
+    for (const m of enMatches) {
+      const w = m[0].trim();
+      if (!['the', 'and', 'for', 'with', 'that', 'this', 'you', 'are', 'was', 'were', 'not'].includes(w.toLowerCase())) {
+        candidates.push(w);
+      }
+    }
+
+    // 3. 中文语法核心概念引导词
+    const triggerWords = [
+      '局限于', '打破', '摆脱', '积累', '沉淀', '建立', '掌握', '学会',
+      '实现', '坚持', '打造', '克服', '理解', '关于', '对抗', '利用',
+      '养成', '培养', '改变', '战胜', '专注于', '提升', '避免', '遵循',
+      '注重', '重构', '拥抱', '核心是', '关键是', '本质是', '前提是'
+    ];
+
+    for (const trigger of triggerWords) {
+      const idx = rawText.indexOf(trigger);
+      if (idx !== -1) {
+        const after = rawText.slice(idx + trigger.length).replace(/^[的了是在为与和于向\s]+/, '');
+        const match = after.match(/^[\u4e00-\u9fa5]{2,4}?(?=[的是在了为与和于向，,。！？!?\s]|$)/);
+        if (match && match[0].length >= 2) {
+          candidates.push(match[0]);
+        } else {
+          const fallbackMatch = after.match(/^[\u4e00-\u9fa5]{2,4}/);
+          if (fallbackMatch && fallbackMatch[0].length >= 2) {
+            const cleanWord = fallbackMatch[0].replace(/[的是在了为与和于向]+$/, '');
+            if (cleanWord.length >= 2) candidates.push(cleanWord);
+          }
+        }
+      }
+    }
+
+    // 4. 常见停用词与虚词
+    const stopWords = new Set([
+      '记住', '首先', '其次', '另外', '所以', '因此', '但是', '然而',
+      '如果', '比如', '例如', '千万', '一定', '必须', '应该', '可以',
+      '不要', '不能', '以及', '或者', '这个', '那个', '什么', '怎么',
+      '我们', '他们', '自己', '大家', '地方', '时候', '东西', '事情',
+      '所谓', '其实', '只要', '只有', '不过', '因为', '然后', '而且'
+    ]);
+
+    // 5. 分句切分：提取各子分句末尾实词
+    const clauses = rawText.split(/[，,、。；;！？!?\s]+/).filter(c => c.length >= 2);
+    for (const clause of clauses) {
+      let core = clause;
+      for (const sw of stopWords) {
+        if (core.startsWith(sw)) core = core.slice(sw.length);
+      }
+      core = core.replace(/^[的了是在为与和于向\s]+/, '');
+      core = core.replace(/^[一二三四五六七八九十百千万0-9两几多]+[个种条年天分秒点分钟小时步级次倍]*/, '');
+
+      const tailMatch = core.match(/[\u4e00-\u9fa5]{2,4}$/);
+      if (tailMatch) {
+        const tail = tailMatch[0].replace(/^[的是在了为与和于向]+/, '').replace(/[的是在了为与和于向]+$/, '');
+        if (tail.length >= 2 && !stopWords.has(tail)) {
+          candidates.push(tail);
+        }
+      }
+    }
+
+    // 6. 筛选有效词
+    const valid = [];
+    for (const c of candidates) {
+      const trimmed = c.trim();
+      if (trimmed.length >= 2 && trimmed.length <= 6 && !stopWords.has(trimmed) && rawText.includes(trimmed) && !valid.includes(trimmed)) {
+        valid.push(trimmed);
+      }
+    }
+
+    // 7. 选取最多 2 个关键词挖空
+    const selected = [];
+    for (const kw of valid) {
+      if (selected.length >= 2) break;
+      const isOverlapping = selected.some(s => {
+        const idxA = rawText.indexOf(s);
+        const idxB = rawText.indexOf(kw);
+        return Math.abs(idxA - idxB) < Math.min(s.length, kw.length);
+      });
+      if (!isOverlapping) {
+        selected.push(kw);
+      }
+    }
+
+    // 8. 兜底保护
+    if (selected.length === 0 && rawText.length >= 4) {
+      const lastClause = clauses[clauses.length - 1] || rawText;
+      const cleanTail = lastClause.replace(/[。！？!?，,\s]+$/, '');
+      const fallbackKw = cleanTail.slice(-Math.min(4, Math.max(2, cleanTail.length - 1)));
+      if (fallbackKw && fallbackKw.length >= 2) {
+        selected.push(fallbackKw);
+      }
+    }
+
+    let clozeFront = rawText;
+    for (const kw of selected) {
+      clozeFront = clozeFront.replace(kw, `{{${kw}}}`);
+    }
+
+    return {
+      keywords: selected,
+      clozeFront: selected.length > 0 ? clozeFront : rawText,
+      answerBack: selected.join('、') || rawText,
+      originalText: rawText
+    };
+  },
+
   // 渲染挖空标记 {{关键词}}
   renderClozeHighlight(text = "", isRevealed = false) {
     if (!text) return "";
-    const escaped = this.escapeHtml(text);
+    let clean = String(text || '').trim();
+
+    // 检查是否全包裹或挖空词过长(>8字)或没有任何挖空标记且文本较长
+    const existingMatches = [...clean.matchAll(/\{\{([^}]+)\}\}/g)];
+    const isAllWrapped = existingMatches.length === 1 && existingMatches[0][0].trim() === clean;
+    const hasTooLongCloze = existingMatches.some(m => m[1].length > 8 || m[1].length > clean.length * 0.6);
+    const hasNoCloze = existingMatches.length === 0 && clean.length > 6;
+
+    if (isAllWrapped || hasTooLongCloze || hasNoCloze) {
+      const raw = isAllWrapped || hasTooLongCloze ? clean.replace(/\{\{|\}\}/g, '').trim() : clean;
+      const smart = this.extractSmartClozeKeywords(raw);
+      if (smart.keywords.length > 0) {
+        clean = smart.clozeFront;
+      }
+    }
+
+    const escaped = this.escapeHtml(clean);
     return escaped.replace(/\{\{(.*?)\}\}/g, (match, word) => {
       if (isRevealed) {
         return `<span class="cloze-revealed">${word}</span>`;
@@ -5249,10 +5441,35 @@ export const FlashcardManager = {
       }
     });
 
+    const btnQuickSmartCloze = document.getElementById("btn-quick-smart-cloze");
+    btnQuickSmartCloze?.addEventListener("click", () => {
+      const frontInput = document.getElementById("edit-fc-front");
+      const backInput = document.getElementById("edit-fc-back");
+      const contextInput = document.getElementById("edit-fc-context");
+      const rawText = (frontInput?.value || "").replace(/\{\{|\}\}/g, '').trim() || (backInput?.value || "").trim();
+      if (!rawText) {
+        showToast("请先在正面输入句子文案");
+        return;
+      }
+      const smart = this.extractSmartClozeKeywords(rawText);
+      if (smart.keywords.length === 0) {
+        showToast("未提炼出合适的关键词，建议手工划选文字后点击【插入填空】");
+        return;
+      }
+      if (frontInput) frontInput.value = smart.clozeFront;
+      if (backInput && (!backInput.value.trim() || backInput.value.trim() === rawText)) {
+        backInput.value = smart.answerBack + `\n\n原句：${smart.originalText}`;
+      }
+      if (contextInput && !contextInput.value.trim()) {
+        contextInput.value = smart.originalText;
+      }
+      showToast(`✨ 已成功将「${smart.keywords.join('、')}」智能挖空！`);
+    });
+
     btnAiCloze?.addEventListener("click", async () => {
       const frontInput = document.getElementById("edit-fc-front");
-      const text = (frontInput?.value || "").trim();
-      if (!text) {
+      const rawText = (frontInput?.value || "").replace(/\{\{|\}\}/g, '').trim();
+      if (!rawText) {
         showToast("请先在正面输入句子文案");
         return;
       }
@@ -5272,7 +5489,7 @@ export const FlashcardManager = {
             "Content-Type": "application/json",
             "x-auth-pin": state.pin
           },
-          body: JSON.stringify({ text })
+          body: JSON.stringify({ text: rawText })
         });
         const data = await res.json();
         if (data.success && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
@@ -5280,18 +5497,23 @@ export const FlashcardManager = {
           if (chipsContainer) {
             chipsContainer.innerHTML = data.suggestions.map(s => `
               <button type="button" class="btn btn-secondary btn-sm ai-cloze-chip" style="font-size: 12px; padding: 2px 8px; border-radius: 6px;">
-                + {{${this.escapeHtml(s.word)}}}
+                + {{${this.escapeHtml(s.word || s.keyword)}}}
               </button>
             `).join("");
 
             chipsContainer.querySelectorAll(".ai-cloze-chip").forEach((btn, idx) => {
               btn.addEventListener("click", () => {
-                const targetWord = data.suggestions[idx].word;
-                if (!frontInput.value.includes(`{{${targetWord}}}`) && frontInput.value.includes(targetWord)) {
-                  frontInput.value = frontInput.value.replace(targetWord, `{{${targetWord}}}`);
+                const targetWord = data.suggestions[idx].word || data.suggestions[idx].keyword;
+                let curVal = frontInput.value;
+                // 如果当前正面全被包裹，先拆开防止嵌套括号
+                if (curVal.startsWith('{{') && curVal.endsWith('}}') && !curVal.slice(2, -2).includes('}}')) {
+                  curVal = curVal.slice(2, -2).trim();
+                }
+                if (!curVal.includes(`{{${targetWord}}}`) && curVal.includes(targetWord)) {
+                  frontInput.value = curVal.replace(targetWord, `{{${targetWord}}}`);
                   showToast(`✨ 已成功挖空「${targetWord}」`);
-                } else if (!frontInput.value.includes(`{{${targetWord}}}`)) {
-                  frontInput.value = `${frontInput.value} {{${targetWord}}}`;
+                } else if (!curVal.includes(`{{${targetWord}}}`)) {
+                  frontInput.value = `${curVal} {{${targetWord}}}`;
                   showToast(`✨ 已添加填空「${targetWord}」`);
                 }
               });
@@ -5471,19 +5693,34 @@ export const FlashcardManager = {
             if (!word) return;
 
             const fullText = (contentEl.innerText || contentEl.textContent || "").trim();
-            const frontCloze = fullText.replace(word, `{{${word}}}`);
-            cardsToImport.push({
-              front: frontCloze,
-              back: word,
-              contextSentence: fullText
-            });
+            if (word.length <= 8) {
+              const frontCloze = fullText.replace(word, `{{${word}}}`);
+              cardsToImport.push({
+                front: frontCloze,
+                back: word,
+                contextSentence: fullText
+              });
+            } else {
+              // 划线内容为完整长句时，智能提炼核心重点挖空
+              const smart = this.extractSmartClozeKeywords(word);
+              let frontCloze = fullText;
+              for (const kw of smart.keywords) {
+                frontCloze = frontCloze.replace(kw, `{{${kw}}}`);
+              }
+              cardsToImport.push({
+                front: frontCloze,
+                back: smart.answerBack + `\n\n完整句子：${word}`,
+                contextSentence: fullText
+              });
+            }
           });
         } else if (isStarred) {
           const paraText = (contentEl.innerText || contentEl.textContent || "").trim();
           if (paraText) {
+            const smart = this.extractSmartClozeKeywords(paraText);
             cardsToImport.push({
-              front: `重点回忆：${paraText.slice(0, 32)}...`,
-              back: paraText,
+              front: smart.clozeFront,
+              back: smart.answerBack + `\n\n完整段落：${paraText}`,
               contextSentence: paraText
             });
           }
@@ -5491,7 +5728,7 @@ export const FlashcardManager = {
       });
     }
 
-    // 2. 如果文案中还没有标记高亮重点，尝试用笔记随笔感想或正文文案备选
+    // 2. 如果文案中还没有标记高亮重点，尝试用笔记随笔感想或正文文案备选并自动挖空
     if (cardsToImport.length === 0) {
       const thoughts = (note.thoughts || "").trim();
       const content = (note.content || "").trim();
@@ -5499,18 +5736,20 @@ export const FlashcardManager = {
       if (thoughts) {
         const lines = thoughts.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 5);
         lines.forEach(l => {
+          const smart = this.extractSmartClozeKeywords(l);
           cardsToImport.push({
-            front: l,
-            back: l,
+            front: smart.clozeFront,
+            back: smart.answerBack + `\n\n完整感想：${l}`,
             contextSentence: l
           });
         });
       } else if (content) {
         const lines = content.split(/[\r\n。！？!?]+/).map(l => l.trim()).filter(l => l.length > 10).slice(0, 5);
         lines.forEach(l => {
+          const smart = this.extractSmartClozeKeywords(l);
           cardsToImport.push({
-            front: l,
-            back: l,
+            front: smart.clozeFront,
+            back: smart.answerBack + `\n\n完整内容：${l}`,
             contextSentence: l
           });
         });
@@ -5554,7 +5793,7 @@ export const FlashcardManager = {
     }
   },
 
-  // 从划词浮动气泡一键制卡
+  // 从划词浮动气泡一键制卡 (支持短语直接挖空与长句自动智能挖空)
   async sendSelectedTextToFlashcard(note, selectedText) {
     if (!selectedText) return;
     let deckName = "默认卡包";
@@ -5563,13 +5802,25 @@ export const FlashcardManager = {
       if (tags.length > 0) deckName = tags[0];
     } catch {}
 
-    this.openCardEditor("", {
-      noteId: note.id,
-      deckName,
-      front: `{{${selectedText}}}`,
-      back: selectedText,
-      contextSentence: selectedText
-    });
+    const clean = selectedText.trim();
+    if (clean.length <= 8) {
+      this.openCardEditor("", {
+        noteId: note.id,
+        deckName,
+        front: `{{${clean}}}`,
+        back: clean,
+        contextSentence: clean
+      });
+    } else {
+      const smart = this.extractSmartClozeKeywords(clean);
+      this.openCardEditor("", {
+        noteId: note.id,
+        deckName,
+        front: smart.clozeFront,
+        back: smart.answerBack + `\n\n完整句子：${clean}`,
+        contextSentence: clean
+      });
+    }
   },
 
   escapeHtml(str = "") {
