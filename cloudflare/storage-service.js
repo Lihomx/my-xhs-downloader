@@ -1548,17 +1548,24 @@ export async function importFlashcardsFromNote(db, { noteId, cards = [], deckNam
   if (!db) throw new Error("数据库未绑定");
   await initDb(db);
 
-  if (!noteId) throw new Error("缺少笔记 ID");
-  const note = await db.prepare("SELECT id, title, tags_json, thoughts FROM notes WHERE id = ?").bind(noteId).first();
-  if (!note) throw new Error("未找到对应笔记");
-
   let defaultDeck = deckName;
-  if (!defaultDeck) {
+  let sourceTitle = '小红书笔记';
+
+  if (noteId && !noteId.startsWith('manual_')) {
     try {
-      const tags = JSON.parse(note.tags_json || '[]');
-      if (Array.isArray(tags) && tags.length > 0) defaultDeck = tags[0];
+      const note = await db.prepare("SELECT id, title, tags_json, thoughts FROM notes WHERE id = ?").bind(noteId).first();
+      if (note) {
+        sourceTitle = note.title || sourceTitle;
+        if (!defaultDeck) {
+          try {
+            const tags = JSON.parse(note.tags_json || '[]');
+            if (Array.isArray(tags) && tags.length > 0) defaultDeck = tags[0];
+          } catch {}
+        }
+      }
     } catch {}
   }
+
   if (!defaultDeck) defaultDeck = '默认卡包';
 
   const now = Date.now();
@@ -1589,7 +1596,7 @@ export async function importFlashcardsFromNote(db, { noteId, cards = [], deckNam
       front,
       back,
       contextSentence,
-      note.title || '小红书笔记',
+      sourceTitle,
       now, // 默认今日可立即开始学习
       now,
       now
