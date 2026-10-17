@@ -104,6 +104,46 @@ export async function initDb(db) {
       await db.prepare("ALTER TABLE notes ADD COLUMN extraction_error_log TEXT DEFAULT '[]'").run();
     } catch {}
 
+    // 闪卡表与艾宾浩斯复习记录表初始化
+    try {
+      await db.prepare(`CREATE TABLE IF NOT EXISTS flashcards (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        deck_name TEXT NOT NULL DEFAULT '默认卡包',
+        card_type TEXT NOT NULL DEFAULT 'cloze',
+        front TEXT NOT NULL,
+        back TEXT NOT NULL,
+        context_sentence TEXT DEFAULT '',
+        source_title TEXT DEFAULT '',
+        stage INTEGER NOT NULL DEFAULT 0,
+        interval_days INTEGER NOT NULL DEFAULT 0,
+        next_review_at INTEGER NOT NULL,
+        last_reviewed_at INTEGER DEFAULT 0,
+        consecutive_correct INTEGER DEFAULT 0,
+        review_count INTEGER DEFAULT 0,
+        lapse_count INTEGER DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`).run();
+      await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fc_next_review ON flashcards (next_review_at)`).run();
+      await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fc_deck ON flashcards (deck_name)`).run();
+      await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fc_note ON flashcards (note_id)`).run();
+
+      await db.prepare(`CREATE TABLE IF NOT EXISTS flashcard_reviews (
+        id TEXT PRIMARY KEY,
+        card_id TEXT NOT NULL,
+        rating TEXT NOT NULL,
+        old_stage INTEGER NOT NULL,
+        new_stage INTEGER NOT NULL,
+        interval_days INTEGER NOT NULL,
+        reviewed_at INTEGER NOT NULL
+      )`).run();
+      await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fcr_card ON flashcard_reviews (card_id)`).run();
+      await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fcr_time ON flashcard_reviews (reviewed_at)`).run();
+    } catch (e) {
+      console.warn("Flashcard tables init warning:", e.message);
+    }
+
     const existingPin = await db.prepare("SELECT value FROM settings WHERE key = 'pin_code'").first();
     if (!existingPin) {
       await db.prepare("INSERT INTO settings (key, value) VALUES ('pin_code', ?)").bind(DEFAULT_PIN).run();
@@ -1493,4 +1533,543 @@ export async function getStorageUsage(env, { forceRefresh = false } = {}) {
   };
 
   return result;
+}
+
+// ========================================================
+// 🗂️ 记忆闪卡系统 (Spaced Repetition Flashcards & SRS)
+// ========================================================
+
+const SRS_INTERVALS = [0, 1, 3, 7, 15, 30, 60, 90];
+
+/**
+ * 从笔记高亮/重点导入闪卡
+ */
+export async function importFlashcardsFromNote(db, { noteId, cards = [], deckName = '' } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  if (!noteId) throw new Error("缺少笔记 ID");
+  const note = await db.prepare("SELECT id, title, tags_json, thoughts FROM notes WHERE id = ?").bind(noteId).first();
+  if (!note) throw new Error("未找到对应笔记");
+
+  let defaultDeck = deckName;
+  if (!defaultDeck) {
+    try {
+      const tags = JSON.parse(note.tags_json || '[]');
+      if (Array.isArray(tags) && tags.length > 0) defaultDeck = tags[0];
+    } catch {}
+  }
+  if (!defaultDeck) defaultDeck = '默认卡包';
+
+  const now = Date.now();
+  const insertedCards = [];
+
+  for (let i = 0; i < cards.length; i++) {
+    const item = cards[i];
+    const front = String(item.front || item.text || '').trim();
+    const back = String(item.back || item.answer || item.fullSentence || front).trim();
+    if (!front && !back) continue;
+
+    const cardId = 'fc_' + now + '_' + Math.random().toString(36).substring(2, 7) + '_' + i;
+    const cardType = item.type || (front.includes('{{') && front.includes('}}') ? 'cloze' : 'cloze');
+    const itemDeck = item.deckName || defaultDeck;
+    const contextSentence = item.contextSentence || back;
+
+    await db.prepare(`
+      INSERT INTO flashcards (
+        id, note_id, deck_name, card_type, front, back, context_sentence, source_title,
+        stage, interval_days, next_review_at, last_reviewed_at, consecutive_correct,
+        review_count, lapse_count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, 0, 0, ?, ?)
+    `).bind(
+      cardId,
+      noteId,
+      itemDeck,
+      cardType,
+      front,
+      back,
+      contextSentence,
+      note.title || '小红书笔记',
+      now, // 默认今日可立即开始学习
+      now,
+      now
+    ).run();
+
+    insertedCards.push({ id: cardId, front, back, deckName: itemDeck });
+  }
+
+  return {
+    success: true,
+    count: insertedCards.length,
+    deckName: defaultDeck,
+    cards: insertedCards
+  };
+}
+
+/**
+ * 获取闪卡全景统计数据与卡包列表
+ */
+export async function getFlashcardStats(db) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  const now = Date.now();
+
+  // 1. 核心数量统计
+  const counts = await db.prepare(`
+    SELECT
+      COUNT(*) AS total_count,
+      SUM(CASE WHEN next_review_at <= ? THEN 1 ELSE 0 END) AS due_count,
+      SUM(CASE WHEN stage = 0 OR review_count = 0 THEN 1 ELSE 0 END) AS new_count,
+      SUM(CASE WHEN stage > 0 AND stage < 5 THEN 1 ELSE 0 END) AS learning_count,
+      SUM(CASE WHEN stage >= 5 THEN 1 ELSE 0 END) AS mastered_count,
+      SUM(CASE WHEN next_review_at <= (? - 86400000) AND stage > 0 THEN 1 ELSE 0 END) AS overdue_count
+    FROM flashcards
+  `).bind(now, now).first();
+
+  // 2. 复习记忆率统计 (最近 100 次复习的记得比例)
+  const reviewStats = await db.prepare(`
+    SELECT
+      COUNT(*) as total_reviews,
+      SUM(CASE WHEN rating = 'remembered' THEN 1 ELSE 0 END) as remembered_count
+    FROM (SELECT rating FROM flashcard_reviews ORDER BY reviewed_at DESC LIMIT 100)
+  `).first();
+
+  let retentionRate = 100;
+  if (reviewStats && reviewStats.total_reviews > 0) {
+    retentionRate = Math.round((reviewStats.remembered_count / reviewStats.total_reviews) * 100);
+  }
+
+  // 3. 连续学习天数计算 (Streak Days)
+  const reviewDays = await db.prepare(`
+    SELECT DISTINCT date(reviewed_at / 1000, 'unixepoch', 'localtime') as review_date
+    FROM flashcard_reviews
+    ORDER BY review_date DESC
+    LIMIT 60
+  `).all();
+
+  let streakDays = 0;
+  if (reviewDays && Array.isArray(reviewDays.results)) {
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const dates = new Set(reviewDays.results.map(r => r.review_date));
+    
+    let checkDate = dates.has(today) ? new Date() : (dates.has(yesterday) ? new Date(Date.now() - 86400000) : null);
+    if (checkDate) {
+      while (true) {
+        const dStr = checkDate.toISOString().slice(0, 10);
+        if (dates.has(dStr)) {
+          streakDays++;
+          checkDate = new Date(checkDate.getTime() - 86400000);
+        } else {
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. 各卡包细分指标列表
+  const deckRows = await db.prepare(`
+    SELECT
+      deck_name,
+      COUNT(*) AS total_count,
+      SUM(CASE WHEN next_review_at <= ? THEN 1 ELSE 0 END) AS due_count,
+      SUM(CASE WHEN stage >= 5 THEN 1 ELSE 0 END) AS mastered_count
+    FROM flashcards
+    GROUP BY deck_name
+    ORDER BY due_count DESC, total_count DESC
+  `).bind(now).all();
+
+  const decks = (deckRows?.results || []).map(r => ({
+    deckName: r.deck_name,
+    totalCount: Number(r.total_count || 0),
+    dueCount: Number(r.due_count || 0),
+    masteredCount: Number(r.mastered_count || 0)
+  }));
+
+  return {
+    totalCount: Number(counts?.total_count || 0),
+    dueCount: Number(counts?.due_count || 0),
+    newCount: Number(counts?.new_count || 0),
+    learningCount: Number(counts?.learning_count || 0),
+    masteredCount: Number(counts?.mastered_count || 0),
+    overdueCount: Number(counts?.overdue_count || 0),
+    retentionRate,
+    streakDays,
+    decks
+  };
+}
+
+/**
+ * 获取今日待复习的卡片队列
+ */
+export async function getDueFlashcards(db, { deckName = '', limit = 100 } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  const now = Date.now();
+  let query = `
+    SELECT *
+    FROM flashcards
+    WHERE next_review_at <= ?
+  `;
+  const params = [now];
+
+  if (deckName && deckName !== 'all' && deckName !== '__all__') {
+    query += ` AND deck_name = ?`;
+    params.push(deckName);
+  }
+
+  // 优先排序：新卡先行 -> 即将过期卡 -> 按阶段升序
+  query += ` ORDER BY stage ASC, next_review_at ASC LIMIT ?`;
+  params.push(Number(limit) || 100);
+
+  const rows = await db.prepare(query).bind(...params).all();
+  return (rows?.results || []).map(r => ({
+    id: r.id,
+    noteId: r.note_id,
+    deckName: r.deck_name,
+    cardType: r.card_type,
+    front: r.front,
+    back: r.back,
+    contextSentence: r.context_sentence,
+    sourceTitle: r.source_title,
+    stage: Number(r.stage || 0),
+    intervalDays: Number(r.interval_days || 0),
+    nextReviewAt: Number(r.next_review_at || 0),
+    lastReviewedAt: Number(r.last_reviewed_at || 0),
+    consecutiveCorrect: Number(r.consecutive_correct || 0),
+    reviewCount: Number(r.review_count || 0),
+    lapseCount: Number(r.lapse_count || 0),
+    createdAt: Number(r.created_at || 0)
+  }));
+}
+
+/**
+ * 获取卡片管理列表 (支持按分类、状态、搜索分页过滤)
+ */
+export async function getFlashcardsList(db, { deckName = '', noteId = '', search = '', filter = 'all', page = 1, pageSize = 50 } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  const now = Date.now();
+  let whereClauses = [];
+  let params = [];
+
+  if (deckName && deckName !== 'all' && deckName !== '__all__') {
+    whereClauses.push("deck_name = ?");
+    params.push(deckName);
+  }
+
+  if (noteId) {
+    whereClauses.push("note_id = ?");
+    params.push(noteId);
+  }
+
+  if (filter === 'due') {
+    whereClauses.push("next_review_at <= ?");
+    params.push(now);
+  } else if (filter === 'new') {
+    whereClauses.push("(stage = 0 OR review_count = 0)");
+  } else if (filter === 'learning') {
+    whereClauses.push("(stage > 0 AND stage < 5)");
+  } else if (filter === 'mastered') {
+    whereClauses.push("stage >= 5");
+  }
+
+  if (search && search.trim()) {
+    const s = `%${search.trim()}%`;
+    whereClauses.push("(front LIKE ? OR back LIKE ? OR source_title LIKE ?)");
+    params.push(s, s, s);
+  }
+
+  const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+  const countRow = await db.prepare(`SELECT COUNT(*) as total FROM flashcards ${whereStr}`).bind(...params).first();
+  const total = Number(countRow?.total || 0);
+
+  const offset = (Math.max(1, Number(page)) - 1) * Number(pageSize);
+  const query = `
+    SELECT *
+    FROM flashcards
+    ${whereStr}
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `;
+  const listParams = [...params, Number(pageSize), offset];
+  const rows = await db.prepare(query).bind(...listParams).all();
+
+  const cards = (rows?.results || []).map(r => ({
+    id: r.id,
+    noteId: r.note_id,
+    deckName: r.deck_name,
+    cardType: r.card_type,
+    front: r.front,
+    back: r.back,
+    contextSentence: r.context_sentence,
+    sourceTitle: r.source_title,
+    stage: Number(r.stage || 0),
+    intervalDays: Number(r.interval_days || 0),
+    nextReviewAt: Number(r.next_review_at || 0),
+    lastReviewedAt: Number(r.last_reviewed_at || 0),
+    consecutiveCorrect: Number(r.consecutive_correct || 0),
+    reviewCount: Number(r.review_count || 0),
+    lapseCount: Number(r.lapse_count || 0),
+    createdAt: Number(r.created_at || 0)
+  }));
+
+  return { total, page: Number(page), pageSize: Number(pageSize), cards };
+}
+
+/**
+ * 提交单张卡片复习打卡 (SRS 算法推进)
+ */
+export async function reviewFlashcard(db, { cardId, rating } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  if (!cardId) throw new Error("缺少卡片 ID");
+  const card = await db.prepare("SELECT * FROM flashcards WHERE id = ?").bind(cardId).first();
+  if (!card) throw new Error("未找到卡片");
+
+  const now = Date.now();
+  const oldStage = Number(card.stage || 0);
+  let nextStage = oldStage;
+  let consecutive = Number(card.consecutive_correct || 0);
+  let lapses = Number(card.lapse_count || 0);
+
+  if (rating === 'forgot') {
+    nextStage = 1; // 遗忘：退回阶段 1
+    consecutive = 0;
+    lapses += 1;
+  } else if (rating === 'hard') {
+    nextStage = Math.max(1, oldStage); // 模糊：维持当前阶段
+  } else if (rating === 'remembered') {
+    nextStage = Math.min(SRS_INTERVALS.length - 1, oldStage + 1); // 记得：进阶
+    consecutive += 1;
+  } else {
+    throw new Error("无效的评级，必须为 forgot / hard / remembered");
+  }
+
+  const intervalDays = SRS_INTERVALS[nextStage] || 1;
+  const nextReviewAt = now + intervalDays * 86400000;
+  const reviewCount = Number(card.review_count || 0) + 1;
+
+  // 更新卡片状态
+  await db.prepare(`
+    UPDATE flashcards
+    SET stage = ?,
+        interval_days = ?,
+        next_review_at = ?,
+        last_reviewed_at = ?,
+        consecutive_correct = ?,
+        review_count = ?,
+        lapse_count = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).bind(
+    nextStage,
+    intervalDays,
+    nextReviewAt,
+    now,
+    consecutive,
+    reviewCount,
+    lapses,
+    now,
+    cardId
+  ).run();
+
+  // 记录复习明细日志
+  const reviewLogId = 'fcr_' + now + '_' + Math.random().toString(36).substring(2, 7);
+  try {
+    await db.prepare(`
+      INSERT INTO flashcard_reviews (id, card_id, rating, old_stage, new_stage, interval_days, reviewed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(reviewLogId, cardId, rating, oldStage, nextStage, intervalDays, now).run();
+  } catch (err) {
+    console.warn("Review log write error:", err);
+  }
+
+  return {
+    success: true,
+    cardId,
+    rating,
+    oldStage,
+    newStage: nextStage,
+    intervalDays,
+    nextReviewAt,
+    isMastered: nextStage >= 5
+  };
+}
+
+/**
+ * 修改单张卡片内容
+ */
+export async function updateFlashcard(db, cardId, { front, back, cardType, deckName } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  const now = Date.now();
+  await db.prepare(`
+    UPDATE flashcards
+    SET front = COALESCE(?, front),
+        back = COALESCE(?, back),
+        card_type = COALESCE(?, card_type),
+        deck_name = COALESCE(?, deck_name),
+        updated_at = ?
+    WHERE id = ?
+  `).bind(front ?? null, back ?? null, cardType ?? null, deckName ?? null, now, cardId).run();
+
+  return { success: true, cardId };
+}
+
+/**
+ * 拆分单张闪卡为多张独立闪卡
+ */
+export async function splitFlashcard(db, cardId, { newCards = [] } = {}) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  if (!Array.isArray(newCards) || newCards.length === 0) {
+    throw new Error("拆分卡片内容不能为空");
+  }
+
+  const origCard = await db.prepare("SELECT * FROM flashcards WHERE id = ?").bind(cardId).first();
+  if (!origCard) throw new Error("原卡片不存在");
+
+  const now = Date.now();
+  // 插入拆分出来的新卡片
+  for (let i = 0; i < newCards.length; i++) {
+    const item = newCards[i];
+    const front = String(item.front || '').trim();
+    const back = String(item.back || '').trim();
+    if (!front && !back) continue;
+
+    const newId = 'fc_' + now + '_' + Math.random().toString(36).substring(2, 7) + '_' + i;
+    await db.prepare(`
+      INSERT INTO flashcards (
+        id, note_id, deck_name, card_type, front, back, context_sentence, source_title,
+        stage, interval_days, next_review_at, last_reviewed_at, consecutive_correct,
+        review_count, lapse_count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, 0, 0, ?, ?)
+    `).bind(
+      newId,
+      origCard.note_id,
+      origCard.deck_name,
+      item.cardType || origCard.card_type || 'cloze',
+      front,
+      back,
+      origCard.context_sentence,
+      origCard.source_title,
+      now,
+      now,
+      now
+    ).run();
+  }
+
+  // 删除原卡片
+  await db.prepare("DELETE FROM flashcards WHERE id = ?").bind(cardId).run();
+
+  return { success: true, splitCount: newCards.length };
+}
+
+/**
+ * 删除单张闪卡
+ */
+export async function deleteFlashcard(db, cardId) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+
+  await db.prepare("DELETE FROM flashcards WHERE id = ?").bind(cardId).run();
+  try {
+    await db.prepare("DELETE FROM flashcard_reviews WHERE card_id = ?").bind(cardId).run();
+  } catch {}
+
+  return { success: true, cardId };
+}
+
+/**
+ * AI 智能提炼核心挖空建议词 (支持 Workers AI 与本地高保真启发式双模)
+ */
+export async function generateAiClozeSuggestions(env, text) {
+  const cleanText = String(text || '').trim();
+  if (!cleanText) return { suggestions: [] };
+
+  // 1. 如果有 env.AI，尝试调用大语言模型进行精准概念提炼
+  if (env?.AI) {
+    try {
+      const prompt = `请分析以下中文句子，挑选出最适合作为记忆测试填空的1至2个核心短语（成语、专业概念、金句重点关键词），并给出将该词用{{关键词}}挖空后的句子。
+句子：${cleanText}
+
+只返回纯 JSON 格式：
+[
+  { "keyword": "选出的词", "clozeFront": "将关键词替换为{{关键词}}后的句子", "answerBack": "选出的词以及简要解释" }
+]`;
+
+      const aiResp = await env.AI.run('@cf/qwen/qwen2.5-7b-instruct', {
+        messages: [
+          { role: 'system', content: '你是一位精通认知心理学与艾宾浩斯记忆法的学习助手。只输出纯 JSON，不输出任何开场白或解释。' },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 300,
+        temperature: 0.2
+      });
+
+      const raw = aiResp?.response || '';
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return {
+            suggestions: parsed.map(p => ({
+              keyword: p.keyword,
+              clozeFront: p.clozeFront || cleanText.replace(p.keyword, `{{${p.keyword}}}`),
+              answerBack: p.answerBack || p.keyword
+            }))
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Workers AI cloze recommendation fallback:", e.message);
+    }
+  }
+
+  // 2. 本地高保真启发式智能提取 (成语、双引号金句、破折号概念、长句后半段动宾词)
+  const suggestions = [];
+
+  // 模式 A: 提取成语或四字熟语 (如 "言听计从"、"势均力敌")
+  const idiomRegex = /[\u4e00-\u9fa5]{4}/g;
+  const idioms = cleanText.match(idiomRegex) || [];
+  if (idioms.length > 0) {
+    const candidate = idioms[0];
+    suggestions.push({
+      keyword: candidate,
+      clozeFront: cleanText.replace(candidate, `{{${candidate}}}`),
+      answerBack: candidate
+    });
+  }
+
+  // 模式 B: 提取带引号的核心重点 “...” 或 "..."
+  const quoteMatch = cleanText.match(/[“"']([^”"']{2,12})[”"']/);
+  if (quoteMatch && quoteMatch[1] && !suggestions.some(s => s.keyword === quoteMatch[1])) {
+    suggestions.push({
+      keyword: quoteMatch[1],
+      clozeFront: cleanText.replace(quoteMatch[0], `{{${quoteMatch[1]}}}`),
+      answerBack: quoteMatch[1]
+    });
+  }
+
+  // 模式 C: 若无特殊词，智能选取句子后半段关键谓语/宾语
+  if (suggestions.length === 0) {
+    const parts = cleanText.split(/[，,、]/);
+    const targetPart = parts[parts.length - 1] || cleanText;
+    const key = targetPart.length >= 4 ? targetPart.slice(-4) : targetPart;
+    suggestions.push({
+      keyword: key,
+      clozeFront: cleanText.replace(key, `{{${key}}}`),
+      answerBack: key
+    });
+  }
+
+  return { suggestions };
 }

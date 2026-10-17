@@ -34,7 +34,16 @@ import {
   setExtractionMode,
   updateNoteAuthor,
   getAuthorsWithCounts,
-  getStorageUsage
+  getStorageUsage,
+  importFlashcardsFromNote,
+  getFlashcardStats,
+  getDueFlashcards,
+  getFlashcardsList,
+  reviewFlashcard,
+  updateFlashcard,
+  splitFlashcard,
+  deleteFlashcard,
+  generateAiClozeSuggestions
 } from './storage-service.js';
 
 const NODE_ROUTES = { '/api/parse': parse, '/api/image': image, '/api/video': video };
@@ -965,6 +974,86 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           if (!body.note) return json({ success: false, message: "缺少笔记数据" }, 400);
           const result = await archiveNote(env, body.note);
           return json({ success: true, result });
+        }
+
+        // ========================================================
+        // 🗂️ 记忆闪卡系统路由 (Flashcards & SRS)
+        // ========================================================
+        if (path.startsWith('/api/flashcards')) {
+          const pin = request.headers.get('x-auth-pin') || url.searchParams.get('pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          // 1. 从笔记导入闪卡
+          if (path === '/api/flashcards/import-from-note' && request.method === 'POST') {
+            const body = await request.json().catch(() => ({}));
+            const result = await importFlashcardsFromNote(env.DB, body);
+            return json(result);
+          }
+
+          // 2. 获取统计数据看板与卡包列表
+          if (path === '/api/flashcards/stats' && request.method === 'GET') {
+            const stats = await getFlashcardStats(env.DB);
+            return json({ success: true, stats });
+          }
+
+          // 3. 获取今日待复习卡片
+          if (path === '/api/flashcards/due' && request.method === 'GET') {
+            const deckName = url.searchParams.get('deckName') || '';
+            const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+            const cards = await getDueFlashcards(env.DB, { deckName, limit });
+            return json({ success: true, count: cards.length, cards });
+          }
+
+          // 4. 获取闪卡管理列表 (分页、筛选、搜索)
+          if (path === '/api/flashcards/list' && request.method === 'GET') {
+            const deckName = url.searchParams.get('deckName') || '';
+            const noteId = url.searchParams.get('noteId') || '';
+            const search = url.searchParams.get('search') || '';
+            const filter = url.searchParams.get('filter') || 'all';
+            const page = parseInt(url.searchParams.get('page') || '1', 10);
+            const pageSize = parseInt(url.searchParams.get('pageSize') || '50', 10);
+            const result = await getFlashcardsList(env.DB, { deckName, noteId, search, filter, page, pageSize });
+            return json({ success: true, ...result });
+          }
+
+          // 5. 提交单张卡片复习打卡 (SRS 算法推进)
+          if (path.startsWith('/api/flashcards/') && path.endsWith('/review') && request.method === 'POST') {
+            const cardId = path.slice('/api/flashcards/'.length, -'/review'.length);
+            const body = await request.json().catch(() => ({}));
+            const result = await reviewFlashcard(env.DB, { cardId, rating: body.rating });
+            return json(result);
+          }
+
+          // 6. 拆分卡片 (POST /api/flashcards/:id/split)
+          if (path.startsWith('/api/flashcards/') && path.endsWith('/split') && request.method === 'POST') {
+            const cardId = path.slice('/api/flashcards/'.length, -'/split'.length);
+            const body = await request.json().catch(() => ({}));
+            const result = await splitFlashcard(env.DB, cardId, { newCards: body.newCards });
+            return json(result);
+          }
+
+          // 7. AI 提炼智能挖空建议词 (POST /api/flashcards/ai-cloze)
+          if (path === '/api/flashcards/ai-cloze' && request.method === 'POST') {
+            const body = await request.json().catch(() => ({}));
+            const result = await generateAiClozeSuggestions(env, body.text);
+            return json({ success: true, ...result });
+          }
+
+          // 8. 修改单张卡片 (PUT /api/flashcards/:id)
+          if (path.startsWith('/api/flashcards/') && request.method === 'PUT') {
+            const cardId = path.slice('/api/flashcards/'.length);
+            const body = await request.json().catch(() => ({}));
+            const result = await updateFlashcard(env.DB, cardId, body);
+            return json(result);
+          }
+
+          // 9. 删除单张卡片 (DELETE /api/flashcards/:id)
+          if (path.startsWith('/api/flashcards/') && request.method === 'DELETE') {
+            const cardId = path.slice('/api/flashcards/'.length);
+            const result = await deleteFlashcard(env.DB, cardId);
+            return json(result);
+          }
         }
 
         // 8. 核心解析与下载路由 (Node.js 引擎)

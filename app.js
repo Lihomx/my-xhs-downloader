@@ -2093,6 +2093,23 @@ function initTranscriptSelectionPill() {
     }
     hideTranscriptPill();
   });
+
+  // 5. 快速制成闪卡
+  const btnPillFc = document.getElementById("btn-pill-flashcard");
+  btnPillFc?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = _currentActiveMark
+      ? _currentActiveMark.textContent.trim()
+      : (_currentActiveRange ? _currentActiveRange.toString().trim() : "");
+    if (!text) return;
+    hideTranscriptPill();
+    if (state.activeDetailNote) {
+      FlashcardManager.sendSelectedTextToFlashcard(state.activeDetailNote, text);
+    } else {
+      FlashcardManager.openCardEditor("", { front: `{{${text}}}`, back: text, contextSentence: text });
+    }
+  });
 }
 
 // 渲染语音文案面板 (置顶、自然分段、划词高亮、星标重点与仅看重点速览)
@@ -2181,6 +2198,9 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
         </button>
         <button type="button" class="transcript-btn btn-append-thoughts" title="将高亮重点或全文追加到下方感想批注">
           📌 追加重点到感想
+        </button>
+        <button type="button" class="transcript-btn btn-send-flashcards" title="将高亮重点与核心要点一键制作成记忆闪卡">
+          🗂️ 重点生成闪卡
         </button>
         <button type="button" class="transcript-btn btn-copy-transcript" title="复制纯文本格式文案">
           📋 复制文案
@@ -2308,6 +2328,19 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
       } else {
         navigator.clipboard.writeText(appendText);
         showToast("📋 已复制内容，可在笔记详情中存入感想批注");
+      }
+    });
+  }
+
+  // 4.5 「🗂️ 重点生成闪卡」
+  const sendFcBtn = container.querySelector(".btn-send-flashcards");
+  if (sendFcBtn) {
+    sendFcBtn.addEventListener("click", () => {
+      if (state.activeDetailNote) {
+        FlashcardManager.sendNoteToFlashcards(state.activeDetailNote);
+      } else {
+        const fullPlain = getTranscriptPlainText(container);
+        FlashcardManager.openCardEditor("", { front: fullPlain.slice(0, 50), back: fullPlain, contextSentence: fullPlain });
       }
     });
   }
@@ -4385,6 +4418,1167 @@ export const ExtractionDashboardManager = {
 
       listEl.appendChild(card);
     });
+  }
+};
+
+// ==========================================================================
+// 🗂️ 艾宾浩斯记忆闪卡管理与间隔重复算法 (Spaced Repetition & FlashcardManager)
+// ==========================================================================
+export const FlashcardManager = {
+  stats: null,
+  decks: [],
+  cards: [],
+  currentFilter: "all",
+  currentDeck: "",
+  searchQuery: "",
+  currentPage: 1,
+  pageSize: 50,
+  hasMore: false,
+  isLoading: false,
+
+  // 复习会话状态
+  reviewSession: {
+    isActive: false,
+    cards: [],
+    currentIndex: 0,
+    isFlipped: false,
+    deckName: "",
+    reviewedCount: 0,
+    rememberedCount: 0,
+    hardCount: 0,
+    forgotCount: 0
+  },
+
+  init() {
+    // 绑定顶部复习与操作主按钮
+    document.getElementById("btn-start-daily-review")?.addEventListener("click", () => {
+      this.startReviewSession({ deckName: "" });
+    });
+
+    document.getElementById("btn-refresh-flashcards")?.addEventListener("click", () => {
+      this.refresh();
+      showToast("🔄 闪卡数据已刷新");
+    });
+
+    document.getElementById("btn-create-card-manual")?.addEventListener("click", () => {
+      this.openCardEditor("");
+    });
+
+    document.getElementById("btn-fc-go-kb")?.addEventListener("click", () => {
+      const kbTabBtn = document.getElementById("tab-nav-kb");
+      kbTabBtn?.click();
+    });
+
+    // 绑定筛选 Tabs
+    const segmentBtns = document.querySelectorAll(".fc-segment-btn");
+    segmentBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        segmentBtns.forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        this.currentFilter = btn.dataset.filter || "all";
+        this.loadCardList(true);
+      });
+    });
+
+    // 绑定卡包选择下拉
+    const deckSelect = document.getElementById("fc-filter-deck-select");
+    deckSelect?.addEventListener("change", (e) => {
+      this.currentDeck = e.target.value;
+      this.loadCardList(true);
+    });
+
+    // 绑定搜索框
+    let searchDebounce = null;
+    const searchInput = document.getElementById("fc-search-input");
+    searchInput?.addEventListener("input", (e) => {
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        this.searchQuery = e.target.value.trim();
+        this.loadCardList(true);
+      }, 300);
+    });
+
+    // 加载更多
+    document.getElementById("btn-fc-load-more")?.addEventListener("click", () => {
+      this.currentPage++;
+      this.loadCardList(false);
+    });
+
+    // 绑定复习弹窗事件
+    this.initReviewModalEvents();
+
+    // 绑定编辑弹窗事件
+    this.initEditModalEvents();
+
+    // 绑定笔记详情中的制卡按钮
+    document.getElementById("btn-modal-send-flashcard")?.addEventListener("click", () => {
+      if (state.activeDetailNote) {
+        this.sendNoteToFlashcards(state.activeDetailNote);
+      }
+    });
+
+    document.getElementById("btn-save-note-send-fc")?.addEventListener("click", () => {
+      if (state.activeDetailNote) {
+        this.sendNoteToFlashcards(state.activeDetailNote);
+      }
+    });
+
+    // 初始化时加载 due badge
+    this.updateDueBadge();
+  },
+
+  // 刷新全量数据
+  async refresh() {
+    await this.loadStats();
+    await this.loadCardList(true);
+    await this.updateDueBadge();
+  },
+
+  // 更新导航栏徽章
+  async updateDueBadge() {
+    try {
+      const res = await fetch(`/api/flashcards/stats?pin=${encodeURIComponent(state.pin || "")}`, {
+        headers: { "x-auth-pin": state.pin }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.success || !data.stats) return;
+
+      const badge = document.getElementById("flashcards-due-badge");
+      const dueCount = data.stats.due_count || 0;
+      if (badge) {
+        if (dueCount > 0) {
+          badge.textContent = dueCount > 99 ? "99+" : String(dueCount);
+          badge.style.display = "inline-flex";
+        } else {
+          badge.style.display = "none";
+        }
+      }
+
+      const dueBtnCount = document.getElementById("fc-due-btn-count");
+      if (dueBtnCount) {
+        dueBtnCount.textContent = String(dueCount);
+      }
+    } catch (err) {
+      console.warn("Update flashcard due badge error:", err);
+    }
+  },
+
+  // 加载统计看板与卡包列表
+  async loadStats() {
+    try {
+      const res = await fetch(`/api/flashcards/stats?pin=${encodeURIComponent(state.pin || "")}`, {
+        headers: { "x-auth-pin": state.pin }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.success || !data.stats) return;
+
+      this.stats = data.stats;
+      this.decks = data.stats.decks || [];
+
+      // 渲染 6 维指标
+      const s = data.stats;
+      const elDueVal = document.getElementById("fc-stat-due-val");
+      const elDueDesc = document.getElementById("fc-stat-due-desc");
+      if (elDueVal) elDueVal.textContent = s.due_count || 0;
+      if (elDueDesc) {
+        if (s.overdue_count > 0) {
+          elDueDesc.innerHTML = `<span style="color: var(--primary); font-weight: 700;">⚠️ 含 ${s.overdue_count} 张已逾期</span>`;
+        } else {
+          elDueDesc.textContent = "今日需完成复习的卡片";
+        }
+      }
+
+      const elNew = document.getElementById("fc-stat-new-val");
+      if (elNew) elNew.textContent = s.new_count || 0;
+
+      const elLearning = document.getElementById("fc-stat-learning-val");
+      if (elLearning) elLearning.textContent = s.learning_count || 0;
+
+      const elMastered = document.getElementById("fc-stat-mastered-val");
+      if (elMastered) elMastered.textContent = s.mastered_count || 0;
+
+      const elStreak = document.getElementById("fc-stat-streak-val");
+      if (elStreak) elStreak.textContent = s.streak_days || 0;
+
+      const elRetention = document.getElementById("fc-stat-retention-val");
+      if (elRetention) elRetention.textContent = s.retention_rate || 100;
+
+      const totalCount = document.getElementById("fc-cards-total-count");
+      if (totalCount) totalCount.textContent = s.total_count || 0;
+
+      // 渲染卡包列表
+      this.renderDecksGrid();
+
+      // 更新卡包下拉选项
+      this.updateDeckSelectOptions();
+    } catch (err) {
+      console.error("Load flashcard stats error:", err);
+    }
+  },
+
+  // 渲染分类卡包列表
+  renderDecksGrid() {
+    const grid = document.getElementById("fc-decks-grid");
+    if (!grid) return;
+
+    if (!this.decks || this.decks.length === 0) {
+      grid.innerHTML = `
+        <div style="grid-column: 1 / -1; background: #fff; border: 1px dashed var(--border); border-radius: 12px; padding: 30px; text-align: center; color: var(--text-muted); font-size: 13.5px;">
+          🏷️ 暂无卡包。在知识库笔记中添加标签后，高亮重点会自动按标签归类为对应卡包！
+        </div>
+      `;
+      return;
+    }
+
+    grid.innerHTML = this.decks.map(d => {
+      const total = d.total_count || 0;
+      const due = d.due_count || 0;
+      const mastered = d.mastered_count || 0;
+      const learning = d.learning_count || 0;
+      const newCount = d.new_count || 0;
+
+      const masteredPct = total > 0 ? (mastered / total) * 100 : 0;
+      const learningPct = total > 0 ? (learning / total) * 100 : 0;
+      const newPct = total > 0 ? (newCount / total) * 100 : 0;
+
+      return `
+        <div class="fc-deck-card" data-deck="${this.escapeHtml(d.deck_name)}">
+          <div>
+            <div class="fc-deck-card-top">
+              <div class="fc-deck-card-title" title="${this.escapeHtml(d.deck_name)}">
+                📁 ${this.escapeHtml(d.deck_name)}
+              </div>
+              <span class="fc-deck-due-badge ${due > 0 ? '' : 'is-zero'}">
+                ${due > 0 ? `⏰ 待复习 ${due}` : '今日已学完'}
+              </span>
+            </div>
+            <div class="fc-deck-stats-line">
+              共 <strong>${total}</strong> 张卡片 · 掌握率 <strong>${Math.round(masteredPct)}%</strong>
+            </div>
+            <div class="fc-deck-mini-progress" title="掌握: ${mastered} | 巩固: ${learning} | 新卡: ${newCount}">
+              <div class="prog-mastered" style="width: ${masteredPct}%;"></div>
+              <div class="prog-learning" style="width: ${learningPct}%;"></div>
+              <div class="prog-new" style="width: ${newPct}%;"></div>
+            </div>
+          </div>
+          <div class="fc-deck-action-row">
+            <button class="btn btn-secondary btn-sm btn-deck-review" data-deck="${this.escapeHtml(d.deck_name)}" type="button">
+              ${due > 0 ? `▶️ 复习 (${due})` : '🔍 浏览卡包'}
+            </button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    // 绑定卡包点击复习
+    grid.querySelectorAll(".btn-deck-review").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const deckName = btn.dataset.deck;
+        this.startReviewSession({ deckName });
+      });
+    });
+
+    grid.querySelectorAll(".fc-deck-card").forEach(card => {
+      card.addEventListener("click", () => {
+        const deckName = card.dataset.deck;
+        this.currentDeck = deckName;
+        const deckSelect = document.getElementById("fc-filter-deck-select");
+        if (deckSelect) deckSelect.value = deckName;
+        this.loadCardList(true);
+        document.getElementById("fc-cards-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  },
+
+  // 更新卡包下拉选项
+  updateDeckSelectOptions() {
+    const select = document.getElementById("fc-filter-deck-select");
+    if (!select) return;
+
+    const currentVal = this.currentDeck || select.value;
+    select.innerHTML = '<option value="">全部卡包</option>' + (this.decks || []).map(d => `
+      <option value="${this.escapeHtml(d.deck_name)}" ${d.deck_name === currentVal ? "selected" : ""}>
+        ${this.escapeHtml(d.deck_name)} (${d.total_count})
+      </option>
+    `).join("");
+  },
+
+  // 加载卡片管理列表
+  async loadCardList(reset = false) {
+    if (reset) {
+      this.currentPage = 1;
+      this.cards = [];
+    }
+    this.isLoading = true;
+
+    try {
+      const params = new URLSearchParams({
+        filter: this.currentFilter,
+        deckName: this.currentDeck || "",
+        search: this.searchQuery || "",
+        page: String(this.currentPage),
+        pageSize: String(this.pageSize),
+        pin: state.pin || ""
+      });
+
+      const res = await fetch(`/api/flashcards/list?${params.toString()}`, {
+        headers: { "x-auth-pin": state.pin }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (reset) {
+        this.cards = data.cards || [];
+      } else {
+        this.cards = this.cards.concat(data.cards || []);
+      }
+
+      this.hasMore = data.hasMore || false;
+      this.renderCardList();
+
+      const loadMoreWrap = document.getElementById("fc-load-more-wrap");
+      if (loadMoreWrap) {
+        loadMoreWrap.style.display = this.hasMore ? "block" : "none";
+      }
+    } catch (err) {
+      console.error("Load card list error:", err);
+    } finally {
+      this.isLoading = false;
+    }
+  },
+
+  // 渲染卡片列表
+  renderCardList() {
+    const container = document.getElementById("fc-cards-list");
+    const emptyState = document.getElementById("fc-empty-state");
+    if (!container) return;
+
+    if (!this.cards || this.cards.length === 0) {
+      container.innerHTML = "";
+      if (emptyState) emptyState.style.display = "block";
+      return;
+    }
+
+    if (emptyState) emptyState.style.display = "none";
+
+    const now = Date.now();
+    container.innerHTML = this.cards.map(c => {
+      const isDue = c.next_review_at <= now;
+      const dueDays = Math.round((c.next_review_at - now) / (24 * 3600 * 1000));
+      let dueText = "";
+      if (isDue) {
+        dueText = "⏰ 今日需复习";
+      } else if (dueDays === 1) {
+        dueText = "明天复习";
+      } else if (dueDays > 1) {
+        dueText = `${dueDays} 天后复习`;
+      } else {
+        dueText = "待复习";
+      }
+
+      let stageLabel = `Stage ${c.stage || 0}`;
+      let stageClass = "";
+      if (c.stage === 0 || !c.review_count) {
+        stageLabel = "新卡";
+        stageClass = "is-new";
+      } else if (c.stage >= 5) {
+        stageLabel = `🏆 长期记忆 (${c.interval_days}天)`;
+        stageClass = "is-mastered";
+      } else {
+        stageLabel = `Stage ${c.stage} · 间隔 ${c.interval_days}天`;
+      }
+
+      const formattedFront = this.renderClozeHighlight(c.front, false);
+
+      return `
+        <div class="fc-card-item" data-id="${c.id}">
+          <div class="fc-card-item-top">
+            <div class="fc-card-tags-group">
+              <span class="fc-badge-deck">📁 ${this.escapeHtml(c.deck_name || "默认卡包")}</span>
+              <span class="fc-badge-stage ${stageClass}">${stageLabel}</span>
+              <span class="fc-badge-due-hint ${isDue ? 'is-due' : ''}">${dueText}</span>
+            </div>
+            <div class="fc-card-item-actions">
+              <button class="btn btn-ghost btn-sm btn-single-review" data-id="${c.id}" type="button" title="单独复习这张卡片">
+                ▶️ 复习
+              </button>
+              <button class="btn btn-secondary btn-sm btn-edit-card" data-id="${c.id}" type="button">
+                ✏️ 编辑 / 拆分
+              </button>
+              <button class="btn btn-ghost btn-sm btn-delete-card-item" data-id="${c.id}" type="button" style="color: var(--primary);" title="删除卡片">
+                🗑️
+              </button>
+            </div>
+          </div>
+
+          <div class="fc-card-item-body">
+            <div class="fc-card-item-front">${formattedFront}</div>
+            <div class="fc-card-item-back">💡 ${this.escapeHtml(c.back || "")}</div>
+          </div>
+
+          <div class="fc-card-item-bottom">
+            <span>连续记住: <strong>${c.consecutive_correct || 0}</strong> 次 · 累计遗忘: <strong>${c.lapse_count || 0}</strong> 次</span>
+            ${c.source_title ? `<span style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">来源：${this.escapeHtml(c.source_title)}</span>` : ""}
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    // 绑定卡片内按钮事件
+    container.querySelectorAll(".btn-single-review").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        const card = this.cards.find(c => c.id === id);
+        if (card) {
+          this.startReviewSession({ cards: [card] });
+        }
+      });
+    });
+
+    container.querySelectorAll(".btn-edit-card").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        this.openCardEditor(id);
+      });
+    });
+
+    container.querySelectorAll(".btn-delete-card-item").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        if (!confirm("确定要删除这张闪卡吗？")) return;
+        await this.deleteCard(id);
+      });
+    });
+  },
+
+  // 渲染挖空标记 {{关键词}}
+  renderClozeHighlight(text = "", isRevealed = false) {
+    if (!text) return "";
+    const escaped = this.escapeHtml(text);
+    return escaped.replace(/\{\{(.*?)\}\}/g, (match, word) => {
+      if (isRevealed) {
+        return `<span class="cloze-revealed">${word}</span>`;
+      } else {
+        return `<span class="cloze-blank" title="点击偷看答案">[ ❓ 填空 ]</span>`;
+      }
+    });
+  },
+
+  // ========================================================================
+  // 复习会话 (Review Session)
+  // ========================================================================
+  async startReviewSession({ deckName = "", cards = null } = {}) {
+    let reviewCards = cards;
+
+    if (!reviewCards) {
+      try {
+        const params = new URLSearchParams({
+          deckName: deckName || "",
+          limit: "100",
+          pin: state.pin || ""
+        });
+        const res = await fetch(`/api/flashcards/due?${params.toString()}`, {
+          headers: { "x-auth-pin": state.pin }
+        });
+        if (!res.ok) throw new Error("获取待复习卡片失败");
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || "获取待复习卡片失败");
+        reviewCards = data.cards || [];
+      } catch (err) {
+        showToast(`❌ 加载复习队列失败: ${err.message}`);
+        return;
+      }
+    }
+
+    if (!reviewCards || reviewCards.length === 0) {
+      showToast("🎉 太棒了！今日暂无待复习闪卡！去知识库多添加几篇重点吧~");
+      return;
+    }
+
+    this.reviewSession = {
+      isActive: true,
+      cards: reviewCards,
+      currentIndex: 0,
+      isFlipped: false,
+      deckName: deckName || "全量复习",
+      reviewedCount: 0,
+      rememberedCount: 0,
+      hardCount: 0,
+      forgotCount: 0
+    };
+
+    const modal = document.getElementById("modal-flashcard-review");
+    if (modal) modal.classList.add("active");
+
+    const activeContainer = document.getElementById("review-active-card-container");
+    const completeContainer = document.getElementById("review-complete-container");
+    const footer = document.getElementById("review-modal-footer");
+    if (activeContainer) activeContainer.style.display = "flex";
+    if (completeContainer) completeContainer.style.display = "none";
+    if (footer) footer.style.display = "flex";
+
+    this.renderCurrentReviewCard();
+  },
+
+  renderCurrentReviewCard() {
+    const s = this.reviewSession;
+    if (!s.isActive || !s.cards || s.cards.length === 0) return;
+
+    if (s.currentIndex >= s.cards.length) {
+      this.showReviewCompletionScreen();
+      return;
+    }
+
+    const card = s.cards[s.currentIndex];
+    s.isFlipped = false;
+
+    const el3DCard = document.getElementById("review-3d-card");
+    if (el3DCard) el3DCard.classList.remove("is-flipped");
+
+    // 更新头部进度
+    const deckBadge = document.getElementById("review-deck-badge");
+    if (deckBadge) deckBadge.textContent = card.deck_name || s.deckName || "默认卡包";
+
+    const cardIndex = document.getElementById("review-card-index");
+    if (cardIndex) cardIndex.textContent = String(s.currentIndex + 1);
+
+    const cardTotal = document.getElementById("review-card-total");
+    if (cardTotal) cardTotal.textContent = String(s.cards.length);
+
+    const progressFill = document.getElementById("review-progress-fill");
+    if (progressFill) {
+      const pct = Math.round(((s.currentIndex) / s.cards.length) * 100);
+      progressFill.style.width = `${pct}%`;
+    }
+
+    // 正面渲染
+    const frontText = document.getElementById("review-front-text");
+    if (frontText) {
+      frontText.innerHTML = this.renderClozeHighlight(card.front, false);
+      frontText.querySelectorAll(".cloze-blank").forEach(el => {
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.flipReviewCard();
+        });
+      });
+    }
+
+    const frontStage = document.getElementById("review-front-stage");
+    if (frontStage) {
+      const stage = card.stage || 0;
+      frontStage.textContent = stage === 0 ? "新卡 · 今日初学" : `Stage ${stage} · 当前间隔 ${card.interval_days || 1} 天`;
+    }
+
+    // 背面渲染
+    const backText = document.getElementById("review-back-text");
+    if (backText) {
+      backText.innerHTML = this.escapeHtml(card.back || "");
+    }
+
+    const contextBox = document.getElementById("review-context-box");
+    const contextText = document.getElementById("review-context-text");
+    if (contextBox && contextText) {
+      if (card.context_sentence && card.context_sentence !== card.back) {
+        contextBox.style.display = "block";
+        contextText.innerHTML = this.renderClozeHighlight(card.context_sentence, true);
+      } else {
+        contextBox.style.display = "none";
+      }
+    }
+
+    // 来源笔记链接
+    const sourceLink = document.getElementById("review-source-note-link");
+    const sourceTitle = document.getElementById("review-source-note-title");
+    if (sourceLink && sourceTitle) {
+      if (card.source_title) {
+        sourceLink.style.display = "inline-flex";
+        sourceTitle.textContent = card.source_title;
+        sourceLink.onclick = (e) => {
+          e.preventDefault();
+          if (card.note_id) {
+            document.getElementById("modal-flashcard-review")?.classList.remove("active");
+            openNoteDetailModal({ id: card.note_id });
+          }
+        };
+      } else {
+        sourceLink.style.display = "none";
+      }
+    }
+
+    // 下次阶段预估
+    const rememberedSub = document.getElementById("rating-remembered-sub");
+    if (rememberedSub) {
+      const intervals = [0, 1, 3, 7, 15, 30, 60, 90];
+      const curStage = card.stage || 0;
+      const nextStage = Math.min(intervals.length - 1, curStage + 1);
+      const nextDays = intervals[nextStage] || 1;
+      rememberedSub.textContent = `进阶 · ${nextDays}天后`;
+    }
+  },
+
+  flipReviewCard() {
+    if (!this.reviewSession.isActive) return;
+    this.reviewSession.isFlipped = !this.reviewSession.isFlipped;
+    const el3DCard = document.getElementById("review-3d-card");
+    if (el3DCard) {
+      el3DCard.classList.toggle("is-flipped", this.reviewSession.isFlipped);
+    }
+  },
+
+  async submitReview(rating) {
+    const s = this.reviewSession;
+    if (!s.isActive || s.currentIndex >= s.cards.length) return;
+
+    const card = s.cards[s.currentIndex];
+    s.reviewedCount++;
+    if (rating === "remembered") s.rememberedCount++;
+    else if (rating === "hard") s.hardCount++;
+    else if (rating === "forgot") s.forgotCount++;
+
+    try {
+      fetch(`/api/flashcards/${card.id}/review`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({ rating })
+      }).catch(err => console.warn("Submit review background error:", err));
+    } catch {}
+
+    s.currentIndex++;
+    if (s.currentIndex >= s.cards.length) {
+      this.showReviewCompletionScreen();
+    } else {
+      this.renderCurrentReviewCard();
+    }
+  },
+
+  showReviewCompletionScreen() {
+    const s = this.reviewSession;
+    const activeContainer = document.getElementById("review-active-card-container");
+    const completeContainer = document.getElementById("review-complete-container");
+    const footer = document.getElementById("review-modal-footer");
+    const progressFill = document.getElementById("review-progress-fill");
+
+    if (progressFill) progressFill.style.width = "100%";
+    if (activeContainer) activeContainer.style.display = "none";
+    if (completeContainer) completeContainer.style.display = "block";
+    if (footer) footer.style.display = "none";
+
+    const countEl = document.getElementById("review-complete-count");
+    if (countEl) countEl.textContent = String(s.reviewedCount);
+
+    const rateEl = document.getElementById("review-complete-rate");
+    if (rateEl) {
+      const pct = s.reviewedCount > 0 ? Math.round((s.rememberedCount / s.reviewedCount) * 100) : 100;
+      rateEl.textContent = `${pct}%`;
+    }
+
+    const streakEl = document.getElementById("review-complete-streak");
+    if (streakEl) {
+      const streak = (this.stats?.streak_days || 0) + 1;
+      streakEl.textContent = `${streak} 天`;
+    }
+
+    this.refresh();
+  },
+
+  initReviewModalEvents() {
+    const modal = document.getElementById("modal-flashcard-review");
+    const btnClose = document.getElementById("btn-close-review-modal");
+    const el3DCard = document.getElementById("review-3d-card");
+    const btnFlip = document.getElementById("btn-review-flip-card");
+    const btnPrev = document.getElementById("btn-review-prev-card");
+    const btnNext = document.getElementById("btn-review-next-card");
+    const btnFinish = document.getElementById("btn-finish-review-session");
+
+    const closeReviewModal = () => {
+      this.reviewSession.isActive = false;
+      if (modal) modal.classList.remove("active");
+      this.refresh();
+    };
+
+    btnClose?.addEventListener("click", closeReviewModal);
+    btnFinish?.addEventListener("click", closeReviewModal);
+
+    el3DCard?.addEventListener("click", (e) => {
+      if (e.target.closest("a") || e.target.closest("button")) return;
+      this.flipReviewCard();
+    });
+
+    btnFlip?.addEventListener("click", () => this.flipReviewCard());
+
+    btnPrev?.addEventListener("click", () => {
+      if (this.reviewSession.currentIndex > 0) {
+        this.reviewSession.currentIndex--;
+        this.renderCurrentReviewCard();
+      }
+    });
+
+    btnNext?.addEventListener("click", () => {
+      if (this.reviewSession.currentIndex < this.reviewSession.cards.length - 1) {
+        this.reviewSession.currentIndex++;
+        this.renderCurrentReviewCard();
+      }
+    });
+
+    document.getElementById("btn-rating-forgot")?.addEventListener("click", () => this.submitReview("forgot"));
+    document.getElementById("btn-rating-hard")?.addEventListener("click", () => this.submitReview("hard"));
+    document.getElementById("btn-rating-remembered")?.addEventListener("click", () => this.submitReview("remembered"));
+
+    window.addEventListener("keydown", (e) => {
+      if (!modal || !modal.classList.contains("active")) return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        this.flipReviewCard();
+      } else if (e.key === "1") {
+        e.preventDefault();
+        this.submitReview("forgot");
+      } else if (e.key === "2") {
+        e.preventDefault();
+        this.submitReview("hard");
+      } else if (e.key === "3") {
+        e.preventDefault();
+        this.submitReview("remembered");
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (this.reviewSession.currentIndex > 0) {
+          this.reviewSession.currentIndex--;
+          this.renderCurrentReviewCard();
+        }
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        if (this.reviewSession.currentIndex < this.reviewSession.cards.length - 1) {
+          this.reviewSession.currentIndex++;
+          this.renderCurrentReviewCard();
+        }
+      } else if (e.key === "Escape") {
+        closeReviewModal();
+      }
+    });
+  },
+
+  // ========================================================================
+  // 编辑、智能建议挖空与拆分 (Editor & AI Cloze)
+  // ========================================================================
+  openCardEditor(cardId = "", initialData = {}) {
+    const modal = document.getElementById("modal-flashcard-edit");
+    if (!modal) return;
+
+    const idInput = document.getElementById("edit-fc-id");
+    const noteIdInput = document.getElementById("edit-fc-note-id");
+    const deckInput = document.getElementById("edit-fc-deck");
+    const frontInput = document.getElementById("edit-fc-front");
+    const backInput = document.getElementById("edit-fc-back");
+    const contextInput = document.getElementById("edit-fc-context");
+    const titleEl = document.getElementById("modal-fc-edit-title");
+    const deleteBtn = document.getElementById("btn-delete-fc");
+    const chipsWrap = document.getElementById("ai-cloze-chips-wrap");
+    const chipsContainer = document.getElementById("ai-cloze-chips-container");
+    const splitDetails = document.getElementById("fc-split-details");
+    const splitLines = document.getElementById("edit-fc-split-lines");
+
+    if (chipsWrap) chipsWrap.style.display = "none";
+    if (chipsContainer) chipsContainer.innerHTML = "";
+    if (splitDetails) splitDetails.open = false;
+    if (splitLines) splitLines.value = "";
+
+    if (cardId) {
+      const card = this.cards.find(c => c.id === cardId) || {};
+      if (idInput) idInput.value = cardId;
+      if (noteIdInput) noteIdInput.value = card.note_id || "";
+      if (deckInput) deckInput.value = card.deck_name || "默认卡包";
+      if (frontInput) frontInput.value = card.front || "";
+      if (backInput) backInput.value = card.back || "";
+      if (contextInput) contextInput.value = card.context_sentence || "";
+      if (titleEl) titleEl.textContent = "✏️ 编辑记忆闪卡";
+      if (deleteBtn) deleteBtn.style.display = "inline-block";
+    } else {
+      if (idInput) idInput.value = "";
+      if (noteIdInput) noteIdInput.value = initialData.noteId || (state.activeDetailNote?.id || "");
+      if (deckInput) deckInput.value = initialData.deckName || this.currentDeck || "默认卡包";
+      if (frontInput) frontInput.value = initialData.front || "";
+      if (backInput) backInput.value = initialData.back || "";
+      if (contextInput) contextInput.value = initialData.contextSentence || "";
+      if (titleEl) titleEl.textContent = "➕ 新建记忆闪卡";
+      if (deleteBtn) deleteBtn.style.display = "none";
+    }
+
+    modal.classList.add("active");
+  },
+
+  initEditModalEvents() {
+    const modal = document.getElementById("modal-flashcard-edit");
+    const btnClose = document.getElementById("btn-close-fc-edit");
+    const btnCancel = document.getElementById("btn-cancel-fc-edit");
+    const btnSave = document.getElementById("btn-save-fc");
+    const btnDelete = document.getElementById("btn-delete-fc");
+    const btnInsertCloze = document.getElementById("btn-insert-cloze-brackets");
+    const btnAiCloze = document.getElementById("btn-ai-cloze-suggest");
+    const btnConfirmSplit = document.getElementById("btn-confirm-split-card");
+
+    const closeEdit = () => {
+      if (modal) modal.classList.remove("active");
+    };
+
+    btnClose?.addEventListener("click", closeEdit);
+    btnCancel?.addEventListener("click", closeEdit);
+
+    btnInsertCloze?.addEventListener("click", () => {
+      const frontInput = document.getElementById("edit-fc-front");
+      if (!frontInput) return;
+      const start = frontInput.selectionStart;
+      const end = frontInput.selectionEnd;
+      const val = frontInput.value;
+      if (start === end) {
+        frontInput.value = val.slice(0, start) + "{{}}" + val.slice(end);
+        frontInput.focus();
+        frontInput.setSelectionRange(start + 2, start + 2);
+      } else {
+        const selected = val.slice(start, end);
+        frontInput.value = val.slice(0, start) + `{{${selected}}}` + val.slice(end);
+        frontInput.focus();
+        frontInput.setSelectionRange(start + 2, start + 2 + selected.length);
+      }
+    });
+
+    btnAiCloze?.addEventListener("click", async () => {
+      const frontInput = document.getElementById("edit-fc-front");
+      const text = (frontInput?.value || "").trim();
+      if (!text) {
+        showToast("请先在正面输入句子文案");
+        return;
+      }
+
+      const spinnerText = document.getElementById("btn-ai-cloze-text");
+      const spinner = document.getElementById("btn-ai-cloze-spinner");
+      const chipsWrap = document.getElementById("ai-cloze-chips-wrap");
+      const chipsContainer = document.getElementById("ai-cloze-chips-container");
+
+      if (spinner) spinner.style.display = "inline-block";
+      if (spinnerText) spinnerText.textContent = "AI 分析中...";
+
+      try {
+        const res = await fetch("/api/flashcards/ai-cloze", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({ text })
+        });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+          if (chipsWrap) chipsWrap.style.display = "block";
+          if (chipsContainer) {
+            chipsContainer.innerHTML = data.suggestions.map(s => `
+              <button type="button" class="btn btn-secondary btn-sm ai-cloze-chip" style="font-size: 12px; padding: 2px 8px; border-radius: 6px;">
+                + {{${this.escapeHtml(s.word)}}}
+              </button>
+            `).join("");
+
+            chipsContainer.querySelectorAll(".ai-cloze-chip").forEach((btn, idx) => {
+              btn.addEventListener("click", () => {
+                const targetWord = data.suggestions[idx].word;
+                if (!frontInput.value.includes(`{{${targetWord}}}`) && frontInput.value.includes(targetWord)) {
+                  frontInput.value = frontInput.value.replace(targetWord, `{{${targetWord}}}`);
+                  showToast(`✨ 已成功挖空「${targetWord}」`);
+                } else if (!frontInput.value.includes(`{{${targetWord}}}`)) {
+                  frontInput.value = `${frontInput.value} {{${targetWord}}}`;
+                  showToast(`✨ 已添加填空「${targetWord}」`);
+                }
+              });
+            });
+          }
+        } else {
+          showToast("AI 未发现显著挖空词，建议手工划词包裹");
+        }
+      } catch (err) {
+        console.warn("AI cloze error:", err);
+        showToast("AI 挖空分析失败");
+      } finally {
+        if (spinner) spinner.style.display = "none";
+        if (spinnerText) spinnerText.textContent = "🪄 AI 建议挖空词";
+      }
+    });
+
+    btnConfirmSplit?.addEventListener("click", async () => {
+      const cardId = document.getElementById("edit-fc-id")?.value;
+      const splitLinesVal = (document.getElementById("edit-fc-split-lines")?.value || "").trim();
+      if (!cardId) {
+        showToast("请先保存卡片后再进行拆分");
+        return;
+      }
+      if (!splitLinesVal) {
+        showToast("请输入拆分后的句子或知识点（每行一条）");
+        return;
+      }
+
+      const lines = splitLinesVal.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length <= 1) {
+        showToast("至少需输入 2 行内容进行拆分");
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/flashcards/${cardId}/split`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-pin": state.pin
+          },
+          body: JSON.stringify({
+            newCards: lines.map(line => ({ front: line, back: line }))
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`✂️ 成功拆分为 ${data.count} 张独立闪卡！`);
+          closeEdit();
+          this.refresh();
+        } else {
+          showToast(`拆分失败: ${data.message}`);
+        }
+      } catch (err) {
+        showToast(`拆分异常: ${err.message}`);
+      }
+    });
+
+    btnSave?.addEventListener("click", async () => {
+      const cardId = document.getElementById("edit-fc-id")?.value;
+      const noteId = document.getElementById("edit-fc-note-id")?.value;
+      const deckName = (document.getElementById("edit-fc-deck")?.value || "默认卡包").trim();
+      const front = (document.getElementById("edit-fc-front")?.value || "").trim();
+      const back = (document.getElementById("edit-fc-back")?.value || "").trim();
+      const contextSentence = (document.getElementById("edit-fc-context")?.value || "").trim();
+
+      if (!front) {
+        showToast("请填写卡片正面内容");
+        return;
+      }
+
+      try {
+        if (cardId) {
+          const res = await fetch(`/api/flashcards/${cardId}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({
+              deckName,
+              front,
+              back,
+              contextSentence
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast("💾 闪卡已保存！");
+            closeEdit();
+            this.refresh();
+          } else {
+            showToast(`保存失败: ${data.message}`);
+          }
+        } else {
+          const res = await fetch("/api/flashcards/import-from-note", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-pin": state.pin
+            },
+            body: JSON.stringify({
+              noteId: noteId || `manual_${Date.now()}`,
+              deckName,
+              cards: [{
+                front,
+                back: back || front,
+                contextSentence: contextSentence || back
+              }]
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast("✨ 新建闪卡成功！");
+            closeEdit();
+            this.refresh();
+          } else {
+            showToast(`新建失败: ${data.message}`);
+          }
+        }
+      } catch (err) {
+        showToast(`操作异常: ${err.message}`);
+      }
+    });
+
+    btnDelete?.addEventListener("click", async () => {
+      const cardId = document.getElementById("edit-fc-id")?.value;
+      if (!cardId) return;
+      if (!confirm("确定要删除这张闪卡吗？")) return;
+      await this.deleteCard(cardId);
+      closeEdit();
+    });
+  },
+
+  async deleteCard(cardId) {
+    try {
+      const res = await fetch(`/api/flashcards/${cardId}`, {
+        method: "DELETE",
+        headers: { "x-auth-pin": state.pin }
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast("🗑️ 闪卡已删除");
+        this.refresh();
+      } else {
+        showToast(`删除失败: ${data.message}`);
+      }
+    } catch (err) {
+      showToast(`删除异常: ${err.message}`);
+    }
+  },
+
+  // ========================================================================
+  // 从笔记详情提取重点并生成闪卡
+  // ========================================================================
+  async sendNoteToFlashcards(note) {
+    if (!note) return;
+
+    const modalDetail = document.getElementById("modal-note-detail");
+    const transcriptPanel = modalDetail?.querySelector("#modal-transcript-panel");
+    const cardsToImport = [];
+
+    // 1. 抓取划线高亮 <mark class="transcript-hl">
+    if (transcriptPanel) {
+      const paras = transcriptPanel.querySelectorAll(".transcript-para");
+      paras.forEach((p) => {
+        const contentEl = p.querySelector(".para-content");
+        if (!contentEl) return;
+
+        const isStarred = p.classList.contains("para-starred");
+        const marks = contentEl.querySelectorAll("mark.transcript-hl");
+
+        if (marks.length > 0) {
+          marks.forEach(m => {
+            const word = m.textContent.trim();
+            if (!word) return;
+
+            const fullText = (contentEl.innerText || contentEl.textContent || "").trim();
+            const frontCloze = fullText.replace(word, `{{${word}}}`);
+            cardsToImport.push({
+              front: frontCloze,
+              back: word,
+              contextSentence: fullText
+            });
+          });
+        } else if (isStarred) {
+          const paraText = (contentEl.innerText || contentEl.textContent || "").trim();
+          if (paraText) {
+            cardsToImport.push({
+              front: `重点回忆：${paraText.slice(0, 32)}...`,
+              back: paraText,
+              contextSentence: paraText
+            });
+          }
+        }
+      });
+    }
+
+    // 2. 如果文案中还没有标记高亮重点，尝试用笔记随笔感想或正文文案备选
+    if (cardsToImport.length === 0) {
+      const thoughts = (note.thoughts || "").trim();
+      const content = (note.content || "").trim();
+
+      if (thoughts) {
+        const lines = thoughts.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 5);
+        lines.forEach(l => {
+          cardsToImport.push({
+            front: l,
+            back: l,
+            contextSentence: l
+          });
+        });
+      } else if (content) {
+        const lines = content.split(/[\r\n。！？!?]+/).map(l => l.trim()).filter(l => l.length > 10).slice(0, 5);
+        lines.forEach(l => {
+          cardsToImport.push({
+            front: l,
+            back: l,
+            contextSentence: l
+          });
+        });
+      }
+    }
+
+    if (cardsToImport.length === 0) {
+      showToast("💡 提示：请先在文案中划选标记高亮重点或星标段落后再发送到闪卡！");
+      return;
+    }
+
+    let deckName = "默认卡包";
+    try {
+      const tags = Array.isArray(note.tags) ? note.tags : JSON.parse(note.tags_json || "[]");
+      if (tags.length > 0) deckName = tags[0];
+    } catch {}
+
+    try {
+      showToast("🗂️ 正在自动聚合重点并生成艾宾浩斯闪卡...");
+      const res = await fetch("/api/flashcards/import-from-note", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({
+          noteId: note.id,
+          deckName,
+          cards: cardsToImport
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`🎉 成功生成并导入 ${data.count} 张记忆闪卡到卡包「${deckName}」！`);
+        this.updateDueBadge();
+      } else {
+        showToast(`导入闪卡失败: ${data.message}`);
+      }
+    } catch (err) {
+      showToast(`导入闪卡异常: ${err.message}`);
+    }
+  },
+
+  // 从划词浮动气泡一键制卡
+  async sendSelectedTextToFlashcard(note, selectedText) {
+    if (!selectedText) return;
+    let deckName = "默认卡包";
+    try {
+      const tags = Array.isArray(note.tags) ? note.tags : JSON.parse(note.tags_json || "[]");
+      if (tags.length > 0) deckName = tags[0];
+    } catch {}
+
+    this.openCardEditor("", {
+      noteId: note.id,
+      deckName,
+      front: `{{${selectedText}}}`,
+      back: selectedText,
+      contextSentence: selectedText
+    });
+  },
+
+  escapeHtml(str = "") {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 };
 
@@ -6765,21 +7959,25 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 页面顶级标签页切换管理 (采集下载工具 vs 收藏知识库 vs 随身听电台)
+  // 页面顶级标签页切换管理 (采集下载工具 vs 收藏知识库 vs 随身听电台 vs 记忆闪卡)
   function switchPageTab(tabName) {
     const downloadTabBtn = document.getElementById("tab-nav-download");
     const kbTabBtn = document.getElementById("tab-nav-kb");
     const shuffleTabBtn = document.getElementById("tab-nav-shuffle");
+    const flashcardsTabBtn = document.getElementById("tab-nav-flashcards");
     const downloadView = document.getElementById("view-download");
     const kbView = document.getElementById("view-kb");
     const shuffleView = document.getElementById("view-shuffle");
+    const flashcardsView = document.getElementById("view-flashcards");
 
     if (tabName === "kb") {
       downloadTabBtn?.classList.remove("active");
       shuffleTabBtn?.classList.remove("active");
+      flashcardsTabBtn?.classList.remove("active");
       kbTabBtn?.classList.add("active");
       if (downloadView) downloadView.style.display = "none";
       if (shuffleView) shuffleView.style.display = "none";
+      if (flashcardsView) flashcardsView.style.display = "none";
       if (kbView) kbView.style.display = "block";
       if (window.location.hash !== "#kb") {
         window.location.hash = "kb";
@@ -6794,23 +7992,42 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (tabName === "shuffle") {
       downloadTabBtn?.classList.remove("active");
       kbTabBtn?.classList.remove("active");
+      flashcardsTabBtn?.classList.remove("active");
       shuffleTabBtn?.classList.add("active");
       if (downloadView) downloadView.style.display = "none";
       if (kbView) kbView.style.display = "none";
+      if (flashcardsView) flashcardsView.style.display = "none";
       if (shuffleView) shuffleView.style.display = "block";
       if (window.location.hash !== "#shuffle") {
         window.location.hash = "shuffle";
       }
       ShufflePlayer.loadPlaylist();
       window.scrollTo({ top: 0, behavior: "smooth" });
+    } else if (tabName === "flashcards") {
+      downloadTabBtn?.classList.remove("active");
+      kbTabBtn?.classList.remove("active");
+      shuffleTabBtn?.classList.remove("active");
+      flashcardsTabBtn?.classList.add("active");
+      if (downloadView) downloadView.style.display = "none";
+      if (kbView) kbView.style.display = "none";
+      if (shuffleView) shuffleView.style.display = "none";
+      if (flashcardsView) flashcardsView.style.display = "block";
+      if (window.location.hash !== "#flashcards") {
+        window.location.hash = "flashcards";
+      }
+      FlashcardManager.loadStats();
+      FlashcardManager.loadCardList(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } else {
       kbTabBtn?.classList.remove("active");
       shuffleTabBtn?.classList.remove("active");
+      flashcardsTabBtn?.classList.remove("active");
       downloadTabBtn?.classList.add("active");
       if (kbView) kbView.style.display = "none";
       if (shuffleView) shuffleView.style.display = "none";
+      if (flashcardsView) flashcardsView.style.display = "none";
       if (downloadView) downloadView.style.display = "block";
-      if (window.location.hash === "#kb" || window.location.hash === "#shuffle") {
+      if (window.location.hash === "#kb" || window.location.hash === "#shuffle" || window.location.hash === "#flashcards") {
         window.location.hash = "download";
       }
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -6820,6 +8037,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("tab-nav-download")?.addEventListener("click", () => switchPageTab("download"));
   document.getElementById("tab-nav-kb")?.addEventListener("click", () => switchPageTab("kb"));
   document.getElementById("tab-nav-shuffle")?.addEventListener("click", () => switchPageTab("shuffle"));
+  document.getElementById("tab-nav-flashcards")?.addEventListener("click", () => switchPageTab("flashcards"));
   document.getElementById("btn-shuffle-go-kb")?.addEventListener("click", () => switchPageTab("kb"));
   document.getElementById("brand-link")?.addEventListener("click", (e) => {
     e.preventDefault();
@@ -6832,6 +8050,8 @@ document.addEventListener("DOMContentLoaded", () => {
       switchPageTab("kb");
     } else if (window.location.hash === "#shuffle") {
       switchPageTab("shuffle");
+    } else if (window.location.hash === "#flashcards") {
+      switchPageTab("flashcards");
     } else {
       switchPageTab("download");
     }
@@ -6841,6 +8061,8 @@ document.addEventListener("DOMContentLoaded", () => {
     switchPageTab("kb");
   } else if (window.location.hash === "#shuffle") {
     switchPageTab("shuffle");
+  } else if (window.location.hash === "#flashcards") {
+    switchPageTab("flashcards");
   }
 
   // 知识库解锁 PIN
@@ -7772,6 +8994,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 初始化慢速字幕提取看板管理器
   ExtractionDashboardManager.init();
+
+  // 初始化艾宾浩斯记忆闪卡系统 (SRS)
+  FlashcardManager.init();
 
   // 初始化多端自动断点接力检查 (延迟 2.5 秒，避开首屏高并发)
   setTimeout(() => {

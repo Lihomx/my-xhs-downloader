@@ -35,6 +35,11 @@
             <span class="tab-text"><span class="tab-text-long">随身听电台</span><span class="tab-text-short">随身听</span></span>
             <span id="shuffle-badge" class="tab-badge" style="display: none;">0</span>
           </button>
+          <button id="tab-nav-flashcards" class="tab-item" type="button" title="基于艾宾浩斯遗忘曲线的科学记忆闪卡 (SRS)">
+            <span class="tab-icon">🗂️</span>
+            <span class="tab-text"><span class="tab-text-long">记忆闪卡</span><span class="tab-text-short">闪卡</span></span>
+            <span id="flashcards-due-badge" class="tab-badge" style="display: none;">0</span>
+          </button>
         </nav>
 
         <div class="nav-actions">
@@ -552,6 +557,154 @@
       </div>
     </div>
 
+    <!-- 标签页面 4：🗂️ 艾宾浩斯记忆闪卡 (Spaced Repetition & SRS) -->
+    <div id="view-flashcards" class="page-view" style="display: none;">
+      <div class="flashcards-main-layout">
+        <!-- 顶部 Hero 问候与快速操作条 -->
+        <div class="fc-hero-banner">
+          <div class="fc-hero-content">
+            <div class="fc-hero-badge">🧠 艾宾浩斯遗忘曲线 · 科学间隔重复算法 (SRS)</div>
+            <h1 class="fc-hero-title">记忆闪卡：把吸收新知做成每天的习惯</h1>
+            <p class="fc-hero-sub">通过科学复习周期（1天 → 3天 → 7天 → 15天 → 30天），将高亮重点与核心要点深度内化为长期记忆。</p>
+          </div>
+          <div class="fc-hero-actions">
+            <button id="btn-start-daily-review" class="btn btn-primary btn-fc-hero" type="button">
+              <span>🚀 开始今日全量复习</span>
+              <span id="fc-due-btn-count" class="fc-pill-count">0</span>
+            </button>
+            <button id="btn-create-card-manual" class="btn btn-secondary btn-fc-hero" type="button">
+              ➕ 新建卡片
+            </button>
+            <button id="btn-refresh-flashcards" class="btn btn-ghost" type="button" title="刷新闪卡与卡包数据">
+              🔄 刷新
+            </button>
+          </div>
+        </div>
+
+        <!-- 6维核心统计指标面板 -->
+        <div class="fc-stats-grid">
+          <div class="fc-stat-card fc-stat-due" id="card-stat-due">
+            <div class="fc-stat-top">
+              <span class="fc-stat-label">今日待复习</span>
+              <span class="fc-stat-icon">⏰</span>
+            </div>
+            <div class="fc-stat-val" id="fc-stat-due-val">0</div>
+            <div class="fc-stat-desc" id="fc-stat-due-desc">今日需完成复习的卡片</div>
+          </div>
+
+          <div class="fc-stat-card" id="card-stat-new">
+            <div class="fc-stat-top">
+              <span class="fc-stat-label">待学新卡</span>
+              <span class="fc-stat-icon">🌱</span>
+            </div>
+            <div class="fc-stat-val" id="fc-stat-new-val">0</div>
+            <div class="fc-stat-desc">已入库但尚未开始初次学习</div>
+          </div>
+
+          <div class="fc-stat-card" id="card-stat-learning">
+            <div class="fc-stat-top">
+              <span class="fc-stat-label">巩固记忆中</span>
+              <span class="fc-stat-icon">⚡</span>
+            </div>
+            <div class="fc-stat-val" id="fc-stat-learning-val">0</div>
+            <div class="fc-stat-desc">阶段 1~4 规律复习巩固期</div>
+          </div>
+
+          <div class="fc-stat-card" id="card-stat-mastered">
+            <div class="fc-stat-top">
+              <span class="fc-stat-label">已内化掌握</span>
+              <span class="fc-stat-icon">🏆</span>
+            </div>
+            <div class="fc-stat-val" id="fc-stat-mastered-val">0</div>
+            <div class="fc-stat-desc">阶段 5+ 已进入长期稳定记忆</div>
+          </div>
+
+          <div class="fc-stat-card" id="card-stat-streak">
+            <div class="fc-stat-top">
+              <span class="fc-stat-label">连续打卡</span>
+              <span class="fc-stat-icon">🔥</span>
+            </div>
+            <div class="fc-stat-val"><span id="fc-stat-streak-val">0</span> <span style="font-size: 15px; font-weight: normal; color: var(--text-muted);">天</span></div>
+            <div class="fc-stat-desc">每天保持复习习惯</div>
+          </div>
+
+          <div class="fc-stat-card" id="card-stat-retention">
+            <div class="fc-stat-top">
+              <span class="fc-stat-label">记忆留存率</span>
+              <span class="fc-stat-icon">📈</span>
+            </div>
+            <div class="fc-stat-val"><span id="fc-stat-retention-val">100</span><span style="font-size: 15px; font-weight: normal; color: var(--text-muted);">%</span></div>
+            <div class="fc-stat-desc">近期复习标记「记得」占比</div>
+          </div>
+        </div>
+
+        <!-- 分类卡包列表 (Decks) -->
+        <section class="fc-section">
+          <div class="fc-section-header">
+            <div class="fc-section-title-group">
+              <h2 class="fc-section-title">🏷️ 分类卡包 (继承笔记标签)</h2>
+              <span class="fc-section-sub">支持单卡包专注复习，或一览各学科/主题记忆进度</span>
+            </div>
+          </div>
+          <div id="fc-decks-grid" class="fc-decks-grid">
+            <!-- 动态卡包卡片 -->
+          </div>
+        </section>
+
+        <!-- 闪卡库与卡片管理列表 -->
+        <section class="fc-section">
+          <div class="fc-section-header">
+            <div class="fc-section-title-group">
+              <h2 class="fc-section-title">📋 闪卡库管理 (<span id="fc-cards-total-count">0</span>)</h2>
+              <span class="fc-section-sub">支持搜索卡片文案、快速编辑、智能挖空与卡片切分</span>
+            </div>
+          </div>
+
+          <!-- 筛选与搜索工具条 -->
+          <div class="fc-filter-toolbar">
+            <div class="fc-filter-left">
+              <div class="fc-filter-segmented">
+                <button class="fc-segment-btn active" data-filter="all" type="button">全部</button>
+                <button class="fc-segment-btn" data-filter="due" type="button">⏰ 今日待复习</button>
+                <button class="fc-segment-btn" data-filter="new" type="button">🌱 新卡</button>
+                <button class="fc-segment-btn" data-filter="learning" type="button">⚡ 记忆中</button>
+                <button class="fc-segment-btn" data-filter="mastered" type="button">🏆 已掌握</button>
+              </div>
+              <select id="fc-filter-deck-select" class="fc-deck-select" title="按分类卡包筛选">
+                <option value="">全部卡包</option>
+              </select>
+            </div>
+            <div class="fc-filter-right">
+              <div class="fc-search-box">
+                <span class="fc-search-icon">🔍</span>
+                <input type="text" id="fc-search-input" class="fc-search-input" placeholder="搜索卡片正面、背面答案或来源笔记..." />
+              </div>
+            </div>
+          </div>
+
+          <!-- 卡片列表容器 -->
+          <div id="fc-cards-list" class="fc-cards-list">
+            <!-- 动态渲染单张闪卡条目 -->
+          </div>
+
+          <!-- 空列表提示 -->
+          <div id="fc-empty-state" class="fc-empty-state" style="display: none;">
+            <div style="font-size: 42px; margin-bottom: 12px;">🗂️</div>
+            <h3 style="font-size: 16px; margin-bottom: 6px;">暂无符合条件的记忆闪卡</h3>
+            <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 14px;">
+              在「📚 收藏知识库」中打开任意笔记，在字幕文案中划词标记高亮，点击「🗂️ 发送到闪卡」即可自动生成科学记忆卡片！
+            </p>
+            <button id="btn-fc-go-kb" class="btn btn-primary" type="button">👉 前往知识库选笔记制卡</button>
+          </div>
+
+          <!-- 加载更多卡片按钮 -->
+          <div id="fc-load-more-wrap" style="text-align: center; margin-top: 18px; display: none;">
+            <button id="btn-fc-load-more" class="btn btn-secondary" type="button">加载更多卡片...</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
     <!-- 标签字典管理弹窗 -->
     <div id="modal-manage-tags" class="modal-overlay">
       <div class="modal" style="max-width: 440px;">
@@ -665,6 +818,9 @@
                   <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
                     📻 加入随身听
                   </button>
+                  <button id="btn-modal-send-flashcard" class="btn btn-secondary" type="button" title="将笔记高亮重点、带星段落或核心内容一键制作为记忆闪卡">
+                    🗂️ 发送到闪卡
+                  </button>
                   <button id="btn-modal-cleanup-media" class="btn btn-secondary btn-cleanup-pill" type="button" title="选择性删除视频或语音以腾出 Cloudflare 空间，文案与笔记完整保留">
                     ⚡ 释放媒体空间
                   </button>
@@ -704,9 +860,12 @@
           </section>
 
           <!-- 保存标题与正文操作栏 -->
-          <div class="detail-save-bar">
+          <div class="detail-save-bar" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
             <button id="btn-save-note-detail" class="btn btn-primary" type="button">
               💾 保存标题与正文修改
+            </button>
+            <button id="btn-save-note-send-fc" class="btn btn-secondary" type="button" title="提取本文高亮划选词句生成记忆闪卡">
+              🗂️ 重点生成闪卡
             </button>
           </div>
 
@@ -1141,6 +1300,9 @@
       <button type="button" id="btn-pill-thought" class="btn-pill-action" title="将选中重点存入随笔感想">
         📌 存入感想
       </button>
+      <button type="button" id="btn-pill-flashcard" class="btn-pill-action" title="将选中文字直接制成记忆闪卡">
+        🗂️ 做成闪卡
+      </button>
       <button type="button" id="btn-pill-copy" class="btn-pill-action" title="复制选中的文字">
         📋 复制
       </button>
@@ -1152,10 +1314,225 @@
       <span id="bg-subtitle-text">🐢 后台慢速字幕提取中...</span>
     </div>
 
+    <!-- 🗂️ 沉浸式 3D 翻转闪卡复习弹窗 -->
+    <div id="modal-flashcard-review" class="modal-overlay fc-review-overlay">
+      <div class="modal fc-review-modal">
+        <!-- 复习弹窗头部 -->
+        <div class="modal-header fc-review-header">
+          <div class="fc-review-header-left">
+            <span class="fc-review-deck-badge" id="review-deck-badge">默认卡包</span>
+            <div class="fc-review-progress-indicator">
+              第 <span id="review-card-index" style="font-weight: 700; color: var(--primary);">1</span> / <span id="review-card-total">10</span> 张
+            </div>
+          </div>
+          <div class="fc-review-progress-track">
+            <div class="fc-review-progress-fill" id="review-progress-fill" style="width: 10%;"></div>
+          </div>
+          <button id="btn-close-review-modal" class="drawer-close" title="退出复习 (Esc)">✕</button>
+        </div>
+
+        <!-- 复习卡片主体容器 -->
+        <div class="modal-body fc-review-body">
+          <!-- 活跃复习区域 (有卡片时) -->
+          <div id="review-active-card-container" class="fc-card-flipper-container">
+            <!-- 3D 翻转卡片核心组件 -->
+            <div class="fc-card-3d" id="review-3d-card">
+              <!-- 卡片正面 -->
+              <div class="fc-card-side fc-card-front">
+                <div class="fc-card-side-header">
+                  <span class="fc-card-type-pill" id="review-front-type">🔲 填空记忆卡</span>
+                  <span class="fc-card-stage-pill" id="review-front-stage">Stage 1 · 间隔 1 天</span>
+                </div>
+                <div class="fc-card-side-body">
+                  <div class="fc-card-content-text" id="review-front-text">卡片正面内容加载中...</div>
+                </div>
+                <div class="fc-card-side-footer">
+                  <span class="fc-card-flip-hint">💡 点击卡片或按【空格键 Space】翻转卡片看答案</span>
+                </div>
+              </div>
+
+              <!-- 卡片背面 -->
+              <div class="fc-card-side fc-card-back">
+                <div class="fc-card-side-header">
+                  <span class="fc-card-type-pill back-pill">💡 答案与原文语境</span>
+                  <span class="fc-card-stage-pill" id="review-back-stage">Stage 1</span>
+                </div>
+                <div class="fc-card-side-body">
+                  <div class="fc-card-answer-label">【记忆要点 / 挖空答案】</div>
+                  <div class="fc-card-content-text answer-highlight" id="review-back-text">答案加载中...</div>
+                  <div class="fc-card-context-box" id="review-context-box">
+                    <div class="fc-card-context-label">📖 原文完整语境与例句：</div>
+                    <div class="fc-card-context-text" id="review-context-text"></div>
+                  </div>
+                </div>
+                <div class="fc-card-side-footer">
+                  <a href="#" id="review-source-note-link" class="fc-source-link" target="_blank">🔗 来源笔记：<span id="review-source-note-title">小红书精选</span> ↗</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 本轮复习完成恭喜界面 (初始隐藏) -->
+          <div id="review-complete-container" class="fc-review-complete" style="display: none;">
+            <div class="fc-complete-trophy">🎉</div>
+            <h2 class="fc-complete-title">今日复习已全部搞定！</h2>
+            <p class="fc-complete-subtitle">恭喜你！间隔重复算法已自动为你更新好下一次复习时间。</p>
+            <div class="fc-complete-stats-row">
+              <div class="fc-complete-stat">
+                <div class="val" id="review-complete-count">0</div>
+                <div class="lbl">本次复习卡片</div>
+              </div>
+              <div class="fc-complete-stat">
+                <div class="val" id="review-complete-rate">100%</div>
+                <div class="lbl">正确记住率</div>
+              </div>
+              <div class="fc-complete-stat">
+                <div class="val" id="review-complete-streak">1 天</div>
+                <div class="lbl">连续打卡</div>
+              </div>
+            </div>
+            <div style="margin-top: 24px;">
+              <button id="btn-finish-review-session" class="btn btn-primary" type="button" style="padding: 10px 24px; font-size: 15px;">
+                👏 返回闪卡看板
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 复习操作工具栏 (三键 SRS 打分 + 翻转与导航) -->
+        <div class="modal-footer fc-review-footer" id="review-modal-footer">
+          <div class="fc-review-rating-bar">
+            <button id="btn-rating-forgot" class="fc-rating-btn btn-forgot" type="button" title="完全想不起来，重置到1天后重新复习 (快捷键 1)">
+              <span class="rating-icon">🔴</span>
+              <span class="rating-title">忘了</span>
+              <span class="rating-sub">重置为1天后</span>
+              <span class="rating-key">1</span>
+            </button>
+            <button id="btn-rating-hard" class="fc-rating-btn btn-hard" type="button" title="有印象但不够清晰，保持当前间隔天数 (快捷键 2)">
+              <span class="rating-icon">🟡</span>
+              <span class="rating-title">模糊</span>
+              <span class="rating-sub">保持当前间隔</span>
+              <span class="rating-key">2</span>
+            </button>
+            <button id="btn-rating-remembered" class="fc-rating-btn btn-remembered" type="button" title="准确回忆起含义，升级进入下一阶段巩固 (快捷键 3)">
+              <span class="rating-icon">🟢</span>
+              <span class="rating-title">记得</span>
+              <span class="rating-sub" id="rating-remembered-sub">进入下阶段</span>
+              <span class="rating-key">3</span>
+            </button>
+          </div>
+          <div class="fc-review-nav-bar">
+            <button id="btn-review-prev-card" class="btn btn-secondary btn-sm" type="button" title="上一张 (快捷键 ←)">
+              ← 上一张
+            </button>
+            <button id="btn-review-flip-card" class="btn btn-primary btn-sm" type="button" title="翻转卡片 (快捷键 Space)">
+              🔄 翻转卡片 (空格)
+            </button>
+            <button id="btn-review-next-card" class="btn btn-secondary btn-sm" type="button" title="下一张 (快捷键 →)">
+              下一张 →
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 🗂️ 闪卡编辑、智能挖空与卡片切分弹窗 -->
+    <div id="modal-flashcard-edit" class="modal-overlay">
+      <div class="modal" style="max-width: 600px;">
+        <div class="modal-header">
+          <h3 id="modal-fc-edit-title" style="font-size: 16px;">✏️ 编辑记忆闪卡</h3>
+          <button id="btn-close-fc-edit" class="drawer-close" type="button">✕</button>
+        </div>
+        <div class="modal-body" style="padding: 18px 24px;">
+          <input type="hidden" id="edit-fc-id" value="" />
+          <input type="hidden" id="edit-fc-note-id" value="" />
+
+          <!-- 所属卡包 -->
+          <div style="margin-bottom: 14px;">
+            <label style="display: block; font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px;">
+              🏷️ 所属分类卡包
+            </label>
+            <input type="text" id="edit-fc-deck" class="search-input" placeholder="输入卡包名称（如：英语听力、心理学、投资要点）" />
+          </div>
+
+          <!-- 卡片正面 -->
+          <div style="margin-bottom: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <label style="font-size: 12.5px; font-weight: 600; color: var(--text-muted);">
+                正面：提问或完形填空句（用 <code style="background: #f1f5f9; padding: 2px 4px; border-radius: 4px; color: var(--primary);">{{关键词}}</code> 挖空）
+              </label>
+              <div style="display: flex; gap: 6px;">
+                <button id="btn-insert-cloze-brackets" class="btn btn-ghost btn-sm" type="button" title="选中一段文字后点击，快速包裹成填空 {{选中文本}}">
+                  🔲 插入填空 {{ }}
+                </button>
+                <button id="btn-ai-cloze-suggest" class="btn btn-secondary btn-sm" type="button" title="AI 智能分析句子，自动提取推荐挖空关键词">
+                  <span id="btn-ai-cloze-text">🪄 AI 建议挖空词</span>
+                  <span id="btn-ai-cloze-spinner" class="spinner" style="display: none; width: 12px; height: 12px;"></span>
+                </button>
+              </div>
+            </div>
+            <textarea id="edit-fc-front" class="textarea-field" rows="3" placeholder="例如：The key to success is {{consistency}} and hard work. 或 直接输入需要回忆的问题"></textarea>
+
+            <!-- AI 建议挖空词点击快速采用区 -->
+            <div id="ai-cloze-chips-wrap" style="display: none; margin-top: 8px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 8px 12px;">
+              <div style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px;">
+                ✨ AI 智能推荐核心挖空词（点击即可直接一键挖空）：
+              </div>
+              <div id="ai-cloze-chips-container" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+            </div>
+          </div>
+
+          <!-- 卡片背面 -->
+          <div style="margin-bottom: 14px;">
+            <label style="display: block; font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px;">
+              背面：答案、释义或翻译解析
+            </label>
+            <textarea id="edit-fc-back" class="textarea-field" rows="3" placeholder="填写填空词的标准答案、核心记忆点或中文释义..."></textarea>
+          </div>
+
+          <!-- 原文语境/例句 -->
+          <div style="margin-bottom: 14px;">
+            <label style="display: block; font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px;">
+              完整原句语境（复习翻转时辅助强化理解）
+            </label>
+            <textarea id="edit-fc-context" class="textarea-field" rows="2" placeholder="可选填原笔记例句..."></textarea>
+          </div>
+
+          <!-- ✂️ 长卡片拆分工具 (可选折叠/展开) -->
+          <details class="fc-split-details" id="fc-split-details" style="background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px;">
+            <summary style="font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text-main); user-select: none;">
+              ✂️ 拆分卡片（若本卡内容太长，可按行或标点快速拆成多张新闪卡）
+            </summary>
+            <div style="margin-top: 10px;">
+              <p style="font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 8px;">
+                在下方每行输入一个分句或知识点，点击拆分后将自动生成多张独立闪卡：
+              </p>
+              <textarea id="edit-fc-split-lines" class="textarea-field" rows="4" placeholder="每行一个知识点或分句..."></textarea>
+              <div style="text-align: right; margin-top: 8px;">
+                <button id="btn-confirm-split-card" class="btn btn-secondary btn-sm" type="button">
+                  ✂️ 确认拆分为独立闪卡
+                </button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="modal-footer" style="display: flex; justify-content: space-between;">
+          <button id="btn-delete-fc" class="btn btn-secondary" style="color: var(--primary);" type="button">
+            🗑️ 删除此卡
+          </button>
+          <div style="display: flex; gap: 8px;">
+            <button id="btn-cancel-fc-edit" class="btn btn-ghost" type="button">取消</button>
+            <button id="btn-save-fc" class="btn btn-primary" type="button">💾 保存闪卡</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 底部轻提示 Toast -->
     <div id="toast-bar" class="toast-bar">操作提示</div>
 
     <!-- 核心驱动脚本 -->
-    <script type="module" src="/app.js?v=2.0.36"></script>
+    <script type="module" src="/app.js?v=2.0.37"></script>
   </body>
 </html>
