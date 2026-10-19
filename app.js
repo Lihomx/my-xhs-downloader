@@ -1372,47 +1372,62 @@ function correctSpeechTypos(text) {
   return s;
 }
 
+// 修复由于过激正则历史残留导致的错拆词语（如 “对！\n方” -> “对方”）
+function healBrokenTranscript(text) {
+  if (!text) return "";
+  let s = String(text);
+  // 1. 修复被误切的 '对方'、'对于'、'对手'、'对象' 等
+  s = s.replace(/(对[！!])\s*[\r\n]+\s*(方|于|手|象|应|策|待|话|立|比|照|称|准|面|付|等|流|账|阵|劲|抗|此|这|那|外|内|上|下)/g, '对$2');
+  // 2. 修复被误切的 '错误'、'错过'、'错觉'、'错开'、'错乱'、'错题' 等
+  s = s.replace(/(错[！!])\s*[\r\n]+\s*(误|过|觉|开|乱|题|字|位|杂|失|怪|爱|案|车)/g, '错$2');
+  // 3. 修复被误切的 '第三方'、'第一名'、'第一次'、'第一时间' 等
+  s = s.replace(/(第[一二三四五六七八九十])、\s*[\r\n]+\s*(名|次|方|步|位|眼|代|种|关|期|轮|卷|句|天|时间|阶段|季度)/g, '$1$2');
+  // 4. 修复被误切的 '行，动'、'行，政'、'行，业' 等
+  s = s.replace(/行，\s*[\r\n]+\s*(动|政|业|程|李|情|当|使|径|为|驶)/g, '行$1');
+  return s;
+}
+
 // 智能中文启发式标点恢复与精准断句引擎
 function autoPunctuateChinese(raw) {
   let s = correctSpeechTypos(String(raw || "").trim());
   if (!s) return "";
+  s = healBrokenTranscript(s);
 
-  // 1. 独立感叹与强调词（如：错！、对！、绝对不行！）
-  s = s.replace(/([^\n，。！？]+?)(错|对)(?=只讲|不是|不讲|必须|我们|大家|其实|管理者|很多人)/g, '$1。\n$2！\n');
-  s = s.replace(/(^|[^\u4e00-\u9fa5a-zA-Z0-9])(错|对|绝对不行|当然)(?=[\u4e00-\u9fa5])/g, '$1$2！\n');
+  // 1. 独立感叹与强调词（仅匹配句首或句尾独立成词且带逗号/停顿的“对/错”，绝不在“对方/对手/对于/错误/面对/绝对”中间断句）
+  s = s.replace(/(^|[。！？\n])\s*(错|对|没错)[，,、\s]+(?=[\u4e00-\u9fa5])/g, '$1$2！\n');
 
   // 2. 序数词与列表列点断句（如：第一点、第二点、首先、其次、另外）
   s = s.replace(/([^\n，。！？]{3,})(第一点|第二点|第三点|第四点|首先|其次|另外|此外|最后)(就是要|就是|是|要)/g, '$1。\n$2$3，');
-  s = s.replace(/([^\n，。！？]{3,})(第一(?!点)|第二(?!点)|第三(?!点)|第四(?!点))(?=[，、：:\u4e00-\u9fa5])/g, '$1。\n$2、');
+  // 列表序号仅在明确带有顿号时断句，严防拆分“第三方/第一名/第一次/第一时间/第二代”等专有名词
+  s = s.replace(/([^\n，。！？]{3,})(第[一二三四五六七八九十]、)/g, '$1。\n$2');
 
   // 3. 疑问句识别与问号
-  // 3.1 句尾疑问助词（了吗、对不对、对吗、是不是）
-  s = s.replace(/([^\n，。！？]+?(?:了吗|了吗\?|对吗|行吗|好吗|对不对|好不好|是不是))(?=$|[\u4e00-\u9fa5])/g, '$1？\n');
+  // 3.1 句尾疑问助词（了吗、对不对、对吗、是不是）——仅在句末或紧邻标点/换行时才判定为问句，严防拆分“是不是真的/好不好用/对不对称”
+  s = s.replace(/([^\n，。！？\s]+?(?:了吗|对吗|行吗|好吗|对不对|好不好|是不是))(?=[，,、\s]*($|\n))/g, '$1？\n');
   // 3.2 为什么、怎么、如何开头的疑问意群
-  s = s.replace(/(为什么[^\n，。！？\?]{4,28}?)(?=很多|大家|我们|有人|因为|所以|其实|如果|新手|第一)/g, '$1？\n');
+  s = s.replace(/(为什么[^\n，。！？\?]{4,28}?)(?=[，,、\s]*(?:很多|大家|我们|有人|因为|所以|其实|如果|新手|第一))/g, '$1？\n');
 
   // 4. 常见四字成语与固定总结词断句
-  s = s.replace(/(缺一不可|显而易见|至关重要|由此可见|以此类推)(?=[\u4e00-\u9fa5])/g, '$1。\n');
+  s = s.replace(/(缺一不可|显而易见|至关重要|由此可见|以此类推)(?=[，,、\s]*[\u4e00-\u9fa5])/g, '$1。\n');
 
   // 5. 条件与时间从句结尾后置逗号（...的时候、...之前、...之后）
-  s = s.replace(/([^\n，。！？]+?(?:的时候|之前|之后|以后|此时此刻|那一刻))([^\n，。！？、；：!?;:\s])/g, '$1，$2');
+  s = s.replace(/([^\n，。！？]+?(?:的时候|之前|之后|以后|此时此刻|那一刻))(?=[^\n，。！？、；：!?;:\s])/g, '$1，');
 
-  // 6. 前置加逗号的关联词（转折/因果/假设/递进/从句引导）
+  // 6. 前置加逗号的关联词（转折/因果/假设/递进等纯复句连接词，排除“不能/不要/等于”等谓语动词）
   const preComma = [
     '而是', '但是', '可是', '不过', '然而', '所以', '因此', '因为', 
-    '如果', '要是', '假如', '只要', '只有', '等于', '意味着', '相当于', 
-    '让他们', '使他们', '导致', '都是在', '就是在', '不讲检查', '而且', 
-    '并且', '同时', '甚至', '不能', '不要'
+    '如果', '要是', '假如', '只要', '只有', '意味着', '相当于', 
+    '让他们', '使他们', '导致', '而且', '并且', '同时', '甚至'
   ];
   for (const w of preComma) {
     const reg = new RegExp('([^\n，。！？、；：!?;:\\s]{2,}?)(' + w + ')', 'g');
     s = s.replace(reg, '$1，$2');
   }
 
-  // 7. 后置加逗号的时间状语与引导认知动词
+  // 7. 后置加逗号的时间状语与引导认知动词（排除“以为/觉得/认为”以防误伤“自以为是”或主谓宾完整句）
   const postComma = [
     '那一刻我才明白', '我才明白', '我明白', '我发现', '新手管理者以为', 
-    '管理者以为', '以为', '觉得', '认为', '记住', '事实上', '换句话说'
+    '管理者以为', '记住', '事实上', '换句话说'
   ];
   for (const w of postComma) {
     const reg = new RegExp('(' + w + ')([^\n，。！？、；：!?;:\\s])', 'g');
@@ -1428,33 +1443,17 @@ function autoPunctuateChinese(raw) {
   // 9. 核心并列短句：'信任是底色检查是机制'
   s = s.replace(/([^\n，。！？]+?是底色)([^\n，。！？]+?是机制)/g, '$1，$2，');
 
-  // 10. 句号与换行断句标志（动宾/补语收尾）
-  s = s.replace(/(我以前也不是这样|以前也不是这样)(?=[，,、\s]*(?:刚当|那时候|当时))/g, '$1。\n');
-  s = s.replace(/(下属也烦的|下属也烦|把自己累死)(?=[，,、\s]*(?:我要么|我彻底))/g, '$1。\n');
-  s = s.replace(/(用人不疑|用人疑人)(?=[，,、\s]*(?:结果))/g, '$1。\n');
-  s = s.replace(/(烂的一塌糊涂|一塌糊涂)(?=[，,、\s]*(?:后来))/g, '$1。\n');
-  s = s.replace(/(彻底点响了我|彻底点醒了我)(?=[，,、\s]*(?:你的问题))/g, '$1。\n');
-  s = s.replace(/(交代当成的结果|交代当成了结果|工作当成结果)(?=[，,、\s]*(?:授权|如果|所以|但是|并且))/g, '$1。\n');
-  s = s.replace(/(等于直接汽权|等于直接气权|等于直接弃权)(?=[，,、\s]*(?:那一刻|这个时候|后来|从此|所以|管理者的检查力度|管理者))/g, '$1。\n');
-  s = s.replace(/(缺一不可|至关重要|显而易见)(?=[，,、\s]*(?:为什么|很多|大家))/g, '$1。\n');
-  s = s.replace(/(自由发挥)(?=[，,、\s]*(?:错|对|但是|然而|所以|很多人|很多))/g, '$1。\n');
-  s = s.replace(/(不知道自己要做什么)(?=[，,、\s]*(?:第二|其次|另外))/g, '$1。\n');
-  s = s.replace(/(三天打鱼两天晒网)(?=[，,、\s]*(?:第三|其次|最后))/g, '$1。\n');
+  // 10. 口语发问与反问词断句转为问号
+  s = s.replace(/([^，。！？\n]{2,}?(?:多少钱|为啥|凭啥|怎么|咋|什么|啥|能优惠不|能[^\n，。！？]{1,4}不|行不|好不|对不|在哪|几点))([，\s]+|$)/g, '$1？\n');
 
-  // 10.1 口语发问与反问词断句转为问号
-  s = s.replace(/([^，。！？\n]{2,}?(?:多少钱|多少|为啥|凭啥|怎么|咋|什么|啥|能优惠不|能[^\n，。！？]{1,4}不|行不|好不|对不|是不是|在哪|几点))([，\s]+|$)/g, '$1？\n');
+  // 10.1 呼语与应答对话切分 (例如：老板来份、好嘞、都听你的、大叔、师傅，绝不误伤“行动/行政/行业/行程/行李”)
+  s = s.replace(/([，\s]*)(好好好|好嘞|都听你的|老板来份|大叔|师傅|小伙子|小哥)[，,、\s]+(?=[\u4e00-\u9fa5])/g, '。\n$2，');
 
-  // 10.2 呼语与应答对话切分 (例如：老板来份、好嘞、行、奶奶、小伙子、小娃子)
-  s = s.replace(/([，\s]*)(好好好|好嘞|行|都听你的|老板来份|老板|奶奶|大叔|师傅|小伙子|小娃子|小叔|小哥)(?=[，\s\u4e00-\u9fa5])/g, '。\n$2，');
+  // 10.2 强烈语气与感叹
+  s = s.replace(/([^，。！？\n]{2,}?(?:太厉害了|真棒|干得漂亮))([，\s]+|$)/g, '$1！\n');
 
-  // 10.3 强烈语气与感叹
-  s = s.replace(/([^，。！？\n]{2,}?(?:太厉害了|好嘞|都听你的|错|真棒|干得漂亮))([，\s]+|$)/g, '$1！\n');
-
-  // 10.4 动宾完结短句切分标志
-  s = s.replace(/(卖给你|买下来|分两堆|卖完了|你去吧|先留个[^\n，。！？]+?)(?=[，,、\s])/g, '$1。\n');
-
-  // 11. 韵律长度分段保底：如果一个长子句在逗号之间超过 18 个字且已有停顿，将过长的逗号升级为句号换行
-  s = s.replace(/([^\n。！？]{15,30})[，,](?=[^\n。！？]{6,})/g, '$1。\n');
+  // 11. 韵律长度分段保底：如果一个长子句在逗号之间超过 20 个字且已有停顿，将过长的逗号升级为句号换行
+  s = s.replace(/([^\n。！？]{18,35})[，,](?=[^\n。！？]{8,})/g, '$1。\n');
 
   // 12. 清理多余标点
   s = s.replace(/，+/g, '，')
@@ -1511,8 +1510,11 @@ function splitHtmlIntoSentences(html) {
 function formatBySentences(rawText) {
   if (!rawText) return [];
 
+  // 0. 自愈修复可能因切片或历史切词被撕裂的词组
+  const healed = healBrokenTranscript(rawText);
+
   // 1. 全文合并为单一连续文本，消除原有切片换行干扰，清除已有 ¶ 编号标记，并将全角半角标点统一规范
-  let s = String(rawText)
+  let s = String(healed)
     .replace(/¶\s*\d+[:：\s]*/g, "")
     .replace(/\r\n/g, "\n")
     .replace(/[，,、]\s*\n/g, "，")
@@ -1614,6 +1616,85 @@ function seekAllMediaTo(seconds) {
   }
 }
 
+// 自动愈合并合并历史笔记或分段切片中被错误拆分的段落卡片
+function mergeBrokenParagraphs(paras) {
+  if (!Array.isArray(paras) || paras.length <= 1) return paras || [];
+  const merged = [];
+
+  const duiTargets = '方|于|手|象|应|策|待|话|立|比|照|称|准|面|付|等|流|账|阵|劲|抗|此|这|那|外|内|上|下';
+  const duiReg = new RegExp(`^(?:<mark[^>]*>)?(?:${duiTargets})`);
+
+  const cuoTargets = '误|过|觉|开|乱|题|字|位|杂|失|怪|爱|案|车';
+  const cuoReg = new RegExp(`^(?:<mark[^>]*>)?(?:${cuoTargets})`);
+
+  const diTargets = '名|次|方|步|位|眼|代|种|关|期|轮|卷|句|天|时间|阶段|季度';
+  const diReg = new RegExp(`^(?:<mark[^>]*>)?(?:${diTargets})`);
+
+  const xingTargets = '动|政|业|程|李|情|当|使|径|为|驶';
+  const xingReg = new RegExp(`^(?:<mark[^>]*>)?(?:${xingTargets})`);
+
+  for (let i = 0; i < paras.length; i++) {
+    const cur = paras[i];
+    if (i === paras.length - 1) {
+      merged.push(cur);
+      break;
+    }
+
+    const next = paras[i + 1];
+    const isHtml = typeof cur.html === 'string';
+    const curContent = isHtml ? cur.html : (cur.text || '');
+    const nextContent = typeof next.html === 'string' ? next.html : (next.text || '');
+
+    let shouldMerge = false;
+    let newCurContent = curContent;
+
+    // 检查规则 1：对！ + 方...
+    if (/对[！!](?:<\/mark>)?\s*$/i.test(curContent) && duiReg.test(nextContent)) {
+      newCurContent = curContent.replace(/对[！!](<\/mark>)?\s*$/i, '对$1');
+      shouldMerge = true;
+    }
+    // 检查规则 2：错！ + 误...
+    else if (/错[！!](?:<\/mark>)?\s*$/i.test(curContent) && cuoReg.test(nextContent)) {
+      newCurContent = curContent.replace(/错[！!](<\/mark>)?\s*$/i, '错$1');
+      shouldMerge = true;
+    }
+    // 检查规则 3：第X、 + 名/次/方...
+    else if (/(第[一二三四五六七八九十])、(?:<\/mark>)?\s*$/i.test(curContent) && diReg.test(nextContent)) {
+      newCurContent = curContent.replace(/(第[一二三四五六七八九十])、(<\/mark>)?\s*$/i, '$1$2');
+      shouldMerge = true;
+    }
+    // 检查规则 4：行， + 动/政/业...
+    else if (/行，(?:<\/mark>)?\s*$/i.test(curContent) && xingReg.test(nextContent)) {
+      newCurContent = curContent.replace(/行，(<\/mark>)?\s*$/i, '行$1');
+      shouldMerge = true;
+    }
+
+    if (shouldMerge) {
+      const combined = {
+        isStarred: Boolean(cur.isStarred || next.isStarred),
+        timeStr: cur.timeStr || next.timeStr || '',
+        timeSec: (cur.timeSec !== undefined && cur.timeSec !== null) ? cur.timeSec : next.timeSec,
+      };
+      if (isHtml) {
+        combined.html = newCurContent + nextContent;
+      }
+      if (typeof cur.text === 'string' || typeof next.text === 'string') {
+        const curTextFixed = (cur.text || curContent)
+          .replace(/对[！!]\s*$/i, '对')
+          .replace(/错[！!]\s*$/i, '错')
+          .replace(/(第[一二三四五六七八九十])、\s*$/i, '$1')
+          .replace(/行，\s*$/i, '行');
+        combined.text = curTextFixed + (next.text || nextContent);
+      }
+      paras[i + 1] = combined;
+    } else {
+      merged.push(cur);
+    }
+  }
+
+  return merged;
+}
+
 // 解析语音文案为段落列表 [{ isStarred: boolean, html: string, timeStr: string, timeSec: number|null }]
 // 核心规则：全文自然分段，一个句号/问号/感叹号为一个段落卡片显示，支持时间戳
 function parseTranscriptParagraphs(raw) {
@@ -1656,7 +1737,7 @@ function parseTranscriptParagraphs(raw) {
           results.push({ isStarred, html, timeStr, timeSec });
         }
       });
-      if (results.length > 0) return results;
+      if (results.length > 0) return mergeBrokenParagraphs(results);
     }
   }
 
@@ -1700,16 +1781,16 @@ function parseTranscriptParagraphs(raw) {
     }
   }
 
-  if (results.length > 0) return results;
+  if (results.length > 0) return mergeBrokenParagraphs(results);
 
   // 保底纯文本
   const sentences = formatBySentences(raw);
-  return sentences.map((sent) => ({
+  return mergeBrokenParagraphs(sentences.map((sent) => ({
     isStarred: false,
     timeStr: "",
     timeSec: null,
     html: escapeHtml(sent)
-  }));
+  })));
 }
 
 // 序列化段落列表为可持久化的 HTML 字符串
@@ -2428,7 +2509,8 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
             }
           }
 
-          const serialized = formattedParas.map(p => {
+          const mergedParas = mergeBrokenParagraphs(formattedParas);
+          const serialized = mergedParas.map(p => {
             const timeAttr = (p.timeSec !== null && p.timeStr) ? ` data-time="${p.timeSec}" data-timestr="${p.timeStr}"` : '';
             const starAttr = p.isStarred ? ' class="para-starred"' : '';
             return `<p${starAttr}${timeAttr}>${p.html}</p>`;
@@ -2928,6 +3010,8 @@ async function transcribeAudio(
     }
 
     updateProgress(100, totalChunks, totalChunks, "语音识别完成");
+
+    collectedItems = mergeBrokenParagraphs(collectedItems);
 
     const fullTranscript = collectedItems.map(it => `[${it.timeStr}] ${it.text}`).join("\n\n").trim();
     if (!fullTranscript || collectedItems.length === 0) {
