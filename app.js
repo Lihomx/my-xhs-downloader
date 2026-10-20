@@ -2284,6 +2284,9 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
         <button type="button" class="transcript-btn btn-send-flashcards" title="将高亮重点与核心要点一键制作成记忆闪卡">
           🗂️ 重点生成闪卡
         </button>
+        <button type="button" class="transcript-btn btn-transcript-ai-summary" title="类似小红书“点点”官方精读助手，深度萃取核心观点、方法论公式与落地清单">
+          ✨ AI 深度总结
+        </button>
         <button type="button" class="transcript-btn btn-copy-transcript" title="复制纯文本格式文案">
           📋 复制文案
         </button>
@@ -2423,6 +2426,16 @@ function renderTranscriptBox(container, rawText, noteId, detectedProvider) {
       } else {
         const fullPlain = getTranscriptPlainText(container);
         FlashcardManager.openCardEditor("", { front: fullPlain.slice(0, 50), back: fullPlain, contextSentence: fullPlain });
+      }
+    });
+  }
+
+  // 4.6 「✨ AI 深度总结」
+  const summaryBtn = container.querySelector(".btn-transcript-ai-summary");
+  if (summaryBtn) {
+    summaryBtn.addEventListener("click", () => {
+      if (state.activeDetailNote) {
+        AiSummaryManager.generate(state.activeDetailNote);
       }
     });
   }
@@ -5946,6 +5959,316 @@ export const FlashcardManager = {
   }
 };
 
+// ========================================================
+// ✨ AI 深度精读总结与复习闪卡一键转化系统 (点点智囊加强版)
+// ========================================================
+function renderAiSummaryMarkdown(md) {
+  if (!md) return "";
+  const lines = md.split(/\r?\n/);
+  const html = [];
+  let inUl = false;
+  let inOl = false;
+
+  for (let rawLine of lines) {
+    let line = rawLine.trim();
+    if (!line) {
+      if (inUl) { html.push("</ul>"); inUl = false; }
+      if (inOl) { html.push("</ol>"); inOl = false; }
+      continue;
+    }
+
+    // 处理三级标题 ###
+    if (line.startsWith("### ")) {
+      if (inUl) { html.push("</ul>"); inUl = false; }
+      if (inOl) { html.push("</ol>"); inOl = false; }
+      html.push(`<h4 class="ai-summary-h3">${escapeHtml(line.replace(/^###\s+/, ''))}</h4>`);
+      continue;
+    }
+
+    // 处理二级标题 ##
+    if (line.startsWith("## ")) {
+      if (inUl) { html.push("</ul>"); inUl = false; }
+      if (inOl) { html.push("</ol>"); inOl = false; }
+      html.push(`<h3 class="ai-summary-h2">${escapeHtml(line.replace(/^##\s+/, ''))}</h3>`);
+      continue;
+    }
+
+    // 有序列表: 1. 2. 3. ...
+    const numMatch = line.match(/^(\d+)[\.、]\s+(.+)$/);
+    if (numMatch) {
+      if (inUl) { html.push("</ul>"); inUl = false; }
+      if (!inOl) { html.push("<ol class=\"ai-summary-ol\">"); inOl = true; }
+      let content = escapeHtml(numMatch[2]);
+      content = content.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      content = content.replace(/→/g, '<span class="ai-arrow">→</span>');
+      html.push(`<li>${content}</li>`);
+      continue;
+    }
+
+    // 无序列表: - 或 *
+    const bulletMatch = line.match(/^[-*]\s+(.+)$/);
+    if (bulletMatch) {
+      if (inOl) { html.push("</ol>"); inOl = false; }
+      if (!inUl) { html.push("<ul class=\"ai-summary-ul\">"); inUl = true; }
+      let content = escapeHtml(bulletMatch[1]);
+      content = content.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      content = content.replace(/→/g, '<span class="ai-arrow">→</span>');
+      html.push(`<li>${content}</li>`);
+      continue;
+    }
+
+    if (inUl) { html.push("</ul>"); inUl = false; }
+    if (inOl) { html.push("</ol>"); inOl = false; }
+
+    let pContent = escapeHtml(line);
+    pContent = pContent.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    pContent = pContent.replace(/→/g, '<span class="ai-arrow">→</span>');
+    html.push(`<p class="ai-summary-p">${pContent}</p>`);
+  }
+  if (inUl) html.push("</ul>");
+  if (inOl) html.push("</ol>");
+  return html.join("");
+}
+
+function extractFlashcardsFromSummary(summaryText, noteTitle = "") {
+  const cards = [];
+  if (!summaryText) return cards;
+  const lines = summaryText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    // 匹配如: 1. **SCQA汇报法**（讲清复杂问题）：... 或 1. **SCQA汇报法（讲清复杂问题）**：... 或 1. SCQA汇报法：... 或 - **...**：...
+    const m = line.match(/^(?:(?:\d+[\.、]|\-|\*)\s*)?(?:\*\*)?([^\*：:\n]{2,40}?)(?:\*\*)?(?:[(（]([^()（）\n]+)[)）])?[:：]\s*(.+)$/);
+    if (m) {
+      let topic = m[1].replace(/^[#\s\d\.、\-*]+/, '').trim();
+      const scene = (m[2] || "").trim();
+      const content = m[3].replace(/\*\*/g, '').trim();
+
+      // 如果 topic 内部还包含括号（如 SCQA汇报法（讲清复杂问题）），拆分出纯名称与场景
+      const subM = topic.match(/^(.+?)[(（](.+?)[)）]$/);
+      let effectiveScene = scene;
+      if (subM) {
+        topic = subM[1].trim();
+        if (!effectiveScene) effectiveScene = subM[2].trim();
+      }
+
+      // 排除章节标题如 "核心观点"、"知识框架"
+      if (topic.includes('核心观点') || topic.includes('知识框架') || topic.includes('实操落地') || topic.includes('避坑') || topic.includes('练习21天')) {
+        continue;
+      }
+
+      if (topic.length >= 2 && content.length >= 5) {
+        // Front: 包含主动回忆挖空
+        const sceneLabel = effectiveScene ? `（适用：${effectiveScene}）` : '';
+        const smartFront = `【{{${topic}}}】${sceneLabel}\n${content}`;
+        const back = `【核心概念/公式】：${topic}${effectiveScene ? `\n【适用场景】：${effectiveScene}` : ''}\n\n【详解与落地实操】：\n${content}`;
+
+        cards.push({
+          front: smartFront,
+          back: back,
+          contextSentence: `${topic}${sceneLabel}：${content}`
+        });
+      }
+    }
+  }
+
+  // 若没有匹配到冒号结构，退化为段落提取
+  if (cards.length === 0) {
+    for (const line of lines) {
+      if (line.startsWith('#') || line.length < 15) continue;
+      const clean = line.replace(/^\d+[\.、\-*]\s*/, '').replace(/\*\*/g, '').trim();
+      if (clean.includes('核心观点') || clean.includes('知识框架')) continue;
+
+      const smart = FlashcardManager.extractSmartClozeKeywords(clean);
+      cards.push({
+        front: smart.clozeFront,
+        back: smart.answerBack + `\n\n完整内容：${clean}`,
+        contextSentence: clean
+      });
+    }
+  }
+
+  return cards;
+}
+
+const AiSummaryManager = {
+  isGenerating: false,
+
+  render(summaryText, provider = "") {
+    const section = document.getElementById("modal-ai-summary-section");
+    const contentEl = document.getElementById("ai-summary-content");
+    const badgeEl = document.getElementById("ai-summary-model-badge");
+    if (!section || !contentEl) return;
+
+    if (!summaryText || !String(summaryText).trim()) {
+      section.style.display = "none";
+      contentEl.innerHTML = "";
+      return;
+    }
+
+    if (badgeEl) {
+      badgeEl.textContent = provider || "Groq Llama-3.3-70b";
+      badgeEl.style.display = "inline-block";
+    }
+
+    contentEl.innerHTML = renderAiSummaryMarkdown(summaryText);
+    section.style.display = "block";
+  },
+
+  async generate(note, force = false) {
+    if (!note) return;
+    if (this.isGenerating) {
+      showToast("⏳ 正在生成 AI 深度总结中，请稍候...");
+      return;
+    }
+
+    const section = document.getElementById("modal-ai-summary-section");
+    const contentEl = document.getElementById("ai-summary-content");
+    const badgeEl = document.getElementById("ai-summary-model-badge");
+
+    // 若已经有总结且不是强制重新生成，则直接显示
+    if (note.aiSummary && !force) {
+      this.render(note.aiSummary, note.aiSummaryProvider || "Groq Llama-3.3-70b");
+      section?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+
+    this.isGenerating = true;
+    if (section) section.style.display = "block";
+    if (contentEl) {
+      contentEl.innerHTML = `
+        <div class="ai-summary-skeleton">
+          <div class="spinner"></div>
+          <div>✨ 正在调用 70B 大模型进行知识脱水萃取与思维模型拆解...</div>
+          <div style="font-size: 12px; color: var(--text-sub); font-weight: normal;">智能分析标题、正文及音视频逐字稿，提取核心观点与实操公式</div>
+        </div>
+      `;
+    }
+    section?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    try {
+      showToast("✨ 正在深度总结笔记核心内容...");
+      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}/ai-summary`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({
+          noteId: note.id,
+          title: note.title,
+          content: note.content,
+          transcript: note.transcript,
+          tags: note.tags
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || "总结生成失败");
+      }
+
+      note.aiSummary = data.summary;
+      note.aiSummaryProvider = data.provider || "Groq Llama-3.3-70b";
+      this.render(data.summary, data.provider);
+      showToast("🎉 AI 深度知识总结已生成！");
+    } catch (err) {
+      if (contentEl) {
+        contentEl.innerHTML = `
+          <div style="padding: 16px; color: #dc2626; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; font-size: 13.5px;">
+            ❌ AI 总结生成失败：${escapeHtml(err.message)}
+            <div style="margin-top: 8px;">
+              <button id="btn-retry-ai-summary" class="btn btn-secondary btn-sm" type="button">🔄 重新尝试</button>
+            </div>
+          </div>
+        `;
+        document.getElementById("btn-retry-ai-summary")?.addEventListener("click", () => {
+          this.generate(note, true);
+        });
+      }
+      showToast(`AI 总结失败: ${err.message}`, { isError: true });
+    } finally {
+      this.isGenerating = false;
+    }
+  },
+
+  async convertToFlashcards(note) {
+    if (!note) return;
+    const summaryText = note.aiSummary || "";
+    if (!summaryText) {
+      showToast("💡 提示：请先点击【✨ AI 深度总结】生成总结后再转为闪卡！");
+      return;
+    }
+
+    const cardsToImport = extractFlashcardsFromSummary(summaryText, note.title);
+    if (!cardsToImport || cardsToImport.length === 0) {
+      showToast("⚠️ 未能从当前总结中解析出有效公式或知识要点", { isError: true });
+      return;
+    }
+
+    let deckName = "默认卡包";
+    try {
+      const tags = Array.isArray(note.tags) ? note.tags : JSON.parse(note.tags_json || "[]");
+      if (tags.length > 0) deckName = tags[0];
+    } catch {}
+
+    try {
+      showToast(`🗂️ 正在将 ${cardsToImport.length} 个核心公式/知识要点一键转为艾宾浩斯复习闪卡...`);
+      const res = await fetch("/api/flashcards/import-from-note", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({
+          noteId: note.id,
+          deckName,
+          cards: cardsToImport
+        })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        showToast(`🎉 成功将 ${data.count} 个核心公式/知识模型生成艾宾浩斯复习闪卡，已存入卡包「${deckName}」！`);
+        FlashcardManager.updateDueBadge();
+      } else {
+        showToast(`导入闪卡失败: ${data.message}`, { isError: true });
+      }
+    } catch (err) {
+      showToast(`导入闪卡异常: ${err.message}`, { isError: true });
+    }
+  },
+
+  copySummary(note) {
+    const text = note?.aiSummary || "";
+    if (!text) {
+      showToast("暂无可复制的总结内容");
+      return;
+    }
+    navigator.clipboard.writeText(text).then(() => {
+      showToast("📋 已复制 AI 深度总结 Markdown 内容到剪贴板");
+    }).catch(() => {
+      showToast("复制失败，请手工选中复制");
+    });
+  },
+
+  appendToThoughts(note) {
+    const text = note?.aiSummary || "";
+    if (!text) {
+      showToast("暂无可追加的总结内容");
+      return;
+    }
+    const thoughtsInput = document.getElementById("modal-thoughts-input");
+    if (!thoughtsInput) return;
+
+    const existing = thoughtsInput.value.trim();
+    const divider = existing ? "\n\n---\n【AI 深度精读提炼】：\n" : "【AI 深度精读提炼】：\n";
+    thoughtsInput.value = existing + divider + text;
+    thoughtsInput.scrollIntoView({ behavior: "smooth", block: "center" });
+    thoughtsInput.focus();
+    showToast("📝 已将 AI 总结要点追加至下方「我的笔记感想」，请记得点击保存感想！");
+  }
+};
+
 // 语音提取字幕文案主入口：原生软字幕 -> AI 语音转写 (Whisper Large-v3)
 async function extractVideoSubtitlesOrAudio(mediaUrl, containerSelector, noteId, videoEl) {
   const container = document.querySelector(containerSelector);
@@ -6772,6 +7095,11 @@ async function openNoteDetail(noteId) {
     if (inputTitle) inputTitle.value = note.title || "";
     if (inputContent) inputContent.value = note.content || "";
     document.getElementById("modal-thoughts-input").value = note.thoughts || "";
+
+    // 渲染已有 AI 深度精读总结 (若已有缓存)
+    if (typeof AiSummaryManager !== "undefined") {
+      AiSummaryManager.render(note.aiSummary, note.aiSummaryProvider);
+    }
 
     // 渲染原始采集链接
     const sourceBar = document.getElementById("modal-source-bar");
@@ -8862,6 +9190,41 @@ document.addEventListener("DOMContentLoaded", () => {
     } finally {
       if (btn) btn.disabled = false;
     }
+  });
+
+  // ========================================================
+  // ✨ AI 深度精读总结与一键转闪卡交互绑定
+  // ========================================================
+  const handleAiSummaryTrigger = () => {
+    if (state.activeDetailNote) {
+      AiSummaryManager.generate(state.activeDetailNote);
+    } else {
+      showToast("请先打开一篇笔记后再进行 AI 总结", { isError: true });
+    }
+  };
+
+  document.getElementById("btn-modal-ai-summary")?.addEventListener("click", handleAiSummaryTrigger);
+  document.getElementById("btn-save-note-ai-summary")?.addEventListener("click", handleAiSummaryTrigger);
+  document.getElementById("btn-regenerate-ai-summary")?.addEventListener("click", () => {
+    if (state.activeDetailNote) {
+      AiSummaryManager.generate(state.activeDetailNote, true);
+    }
+  });
+
+  const handleConvertToFlashcards = () => {
+    if (state.activeDetailNote) {
+      AiSummaryManager.convertToFlashcards(state.activeDetailNote);
+    }
+  };
+  document.getElementById("btn-summary-to-flashcards")?.addEventListener("click", handleConvertToFlashcards);
+  document.getElementById("btn-summary-to-flashcards-bottom")?.addEventListener("click", handleConvertToFlashcards);
+
+  document.getElementById("btn-copy-ai-summary")?.addEventListener("click", () => {
+    AiSummaryManager.copySummary(state.activeDetailNote);
+  });
+
+  document.getElementById("btn-append-summary-to-thoughts")?.addEventListener("click", () => {
+    AiSummaryManager.appendToThoughts(state.activeDetailNote);
   });
 
   // 详情页 ZIP 打包

@@ -818,6 +818,9 @@
                   <button id="btn-modal-toggle-shuffle" class="btn btn-secondary" type="button" title="勾选加入随身听随机播放库，随时在电台页面畅听">
                     📻 加入随身听
                   </button>
+                  <button id="btn-modal-ai-summary" class="btn btn-secondary btn-ai-summary-pill" type="button" title="类似小红书“点点”官方精读助手，深度萃取核心观点、方法论公式与落地清单">
+                    ✨ AI 深度总结
+                  </button>
                   <button id="btn-modal-send-flashcard" class="btn btn-secondary" type="button" title="将笔记高亮重点、带星段落或核心内容一键制作为记忆闪卡">
                     🗂️ 发送到闪卡
                   </button>
@@ -836,6 +839,42 @@
               <div id="modal-transcript-panel" class="transcript-box" style="display: none;"></div>
             </div>
           </div>
+
+          <!-- AI 深度精读总结卡片 (类似点点智囊) -->
+          <section id="modal-ai-summary-section" class="ai-summary-card" style="display: none;">
+            <div class="ai-summary-header">
+              <div class="ai-summary-header-left">
+                <span class="ai-summary-badge-icon">✨</span>
+                <span class="ai-summary-title">AI 深度精读总结</span>
+                <span id="ai-summary-model-badge" class="ai-summary-model-badge">Groq Llama-3.3-70b</span>
+              </div>
+              <div class="ai-summary-header-actions">
+                <button id="btn-summary-to-flashcards" class="btn btn-sm btn-summary-to-fc" type="button" title="将提取的核心方法论、公式模型一键生成智能挖空艾宾浩斯复习闪卡">
+                  🗂️ 转为复习闪卡
+                </button>
+                <button id="btn-copy-ai-summary" class="btn btn-ghost btn-sm" type="button" title="复制完整总结 Markdown 内容">
+                  📋 复制总结
+                </button>
+                <button id="btn-append-summary-to-thoughts" class="btn btn-ghost btn-sm" type="button" title="将提炼的公式与建议追加至下方「我的笔记感想」">
+                  📝 追加到感想
+                </button>
+                <button id="btn-regenerate-ai-summary" class="btn btn-ghost btn-sm" type="button" title="重新调用大模型精读萃取">
+                  🔄 重新生成
+                </button>
+              </div>
+            </div>
+            <div id="ai-summary-content" class="ai-summary-content">
+              <!-- AI 生成的 Markdown 内容将动态渲染在此 -->
+            </div>
+            <div class="ai-summary-footer">
+              <div class="ai-summary-footer-tip">
+                💡 <strong>智能知识复盘：</strong>已将上述结构化公式与方法论提取就绪，点击即可一键加入每日艾宾浩斯间隔复习！
+              </div>
+              <button id="btn-summary-to-flashcards-bottom" class="btn btn-primary btn-summary-to-fc" type="button">
+                🗂️ 将总结要点一键转为复习闪卡
+              </button>
+            </div>
+          </section>
 
           <!-- 笔记标题编辑区 -->
           <section class="detail-edit-section">
@@ -863,6 +902,9 @@
           <div class="detail-save-bar" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
             <button id="btn-save-note-detail" class="btn btn-primary" type="button">
               💾 保存标题与正文修改
+            </button>
+            <button id="btn-save-note-ai-summary" class="btn btn-secondary btn-ai-summary-pill" type="button" title="类似小红书“点点”官方精读助手，深度萃取核心观点、方法论公式与落地清单">
+              ✨ AI 深度总结
             </button>
             <button id="btn-save-note-send-fc" class="btn btn-secondary" type="button" title="提取本文高亮划选词句生成记忆闪卡">
               🗂️ 重点生成闪卡

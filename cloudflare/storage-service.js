@@ -103,6 +103,9 @@ export async function initDb(db) {
     try {
       await db.prepare("ALTER TABLE notes ADD COLUMN extraction_error_log TEXT DEFAULT '[]'").run();
     } catch {}
+    try {
+      await db.prepare("ALTER TABLE notes ADD COLUMN ai_summary TEXT DEFAULT ''").run();
+    } catch {}
 
     // 闪卡表与艾宾浩斯复习记录表初始化
     try {
@@ -647,9 +650,23 @@ export async function getNote(db, id) {
     extractionDurationMs: Number(row.extraction_duration_ms || 0),
     extractedAt: Number(row.extracted_at || 0),
     extractionMethod: row.extraction_method || "",
+    aiSummary: row.ai_summary || "",
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+/**
+ * 保存/更新笔记 AI 深度精读总结
+ */
+export async function updateAiSummary(db, id, aiSummary) {
+  if (!db) throw new Error("数据库未绑定");
+  await initDb(db);
+  const now = Date.now();
+  await db.prepare("UPDATE notes SET ai_summary = ?, updated_at = ? WHERE id = ?")
+    .bind(String(aiSummary ?? "").trim(), now, id)
+    .run();
+  return { id, aiSummary, updatedAt: now };
 }
 
 /**

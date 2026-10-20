@@ -23,6 +23,7 @@ import {
   deleteCustomTag,
   updateNoteTags,
   updateTranscript,
+  updateAiSummary,
   recordExtractionFailure,
   updateNoteDetail,
   deleteNoteMedia,
@@ -539,6 +540,168 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
           return json({
             success: true,
             text: punctuatedText || rawText
+          });
+        }
+
+        // 4.2.1 AI 深度精读总结接口: POST /api/ai-summarize 或 POST /api/notes/:id/ai-summary
+        if ((path === '/api/ai-summarize' || /^\/api\/notes\/[^\/]+\/ai-summary$/.test(path)) && request.method === 'POST') {
+          const pin = request.headers.get('x-auth-pin');
+          const isAuthed = await verifyPin(env.DB, pin);
+          if (!isAuthed) return json({ success: false, message: "PIN 码验证失败" }, 401);
+
+          const body = await request.json().catch(() => ({}));
+          const noteIdMatch = path.match(/^\/api\/notes\/([^\/]+)\/ai-summary$/);
+          const noteId = noteIdMatch ? noteIdMatch[1] : (body.noteId || "");
+
+          let title = body.title || "";
+          let content = body.content || "";
+          let transcript = body.transcript || "";
+          let tags = Array.isArray(body.tags) ? body.tags : [];
+
+          // 若缺少部分字段且有 noteId，从数据库补全
+          if (noteId && env.DB && (!title || !transcript)) {
+            try {
+              const row = await env.DB.prepare("SELECT title, content, transcript, tags_json FROM notes WHERE id = ?").bind(noteId).first();
+              if (row) {
+                if (!title) title = row.title || "";
+                if (!content) content = row.content || "";
+                if (!transcript) transcript = row.transcript || "";
+                if (!tags.length && row.tags_json) {
+                  try { tags = JSON.parse(row.tags_json); } catch {}
+                }
+              }
+            } catch (e) {
+              console.warn("Load note for summary failed:", e);
+            }
+          }
+
+          // 净化逐字稿文本（去除内部 HTML 标签、时间戳与多余空行）
+          const cleanTranscript = (transcript || "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\[\d{1,2}:\d{2}(?::\d{2})?\]/g, "")
+            .replace(/⏱️\s*\d{1,2}:\d{2}/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 12000);
+
+          if (!title && !content && !cleanTranscript) {
+            return json({ success: false, message: "缺少笔记正文或语音文案" }, 400);
+          }
+
+          const systemPrompt = `你是一位世界顶级的知识萃取与思维模型专家（类似小红书“点点”官方精读助手的强化进化版）。
+你的任务是对用户提供的笔记标题、正文及音视频逐字稿进行“深度脱水与结构化萃取”。
+
+请严格遵循以下输出规范，输出高信息密度、逻辑极强、排版优美优雅的 Markdown：
+
+### 💡 核心观点
+- 用 1~2 句话直接点出本质认知与核心论点，直击本质，拒绝废话。
+
+### 📌 核心知识框架与公式拆解
+- 提炼出内容中的核心方法论、公式模型、思维步骤或关键维度（如：1. SCQA 汇报法、2. FAB 说服法、3. BACC 反馈法、4. PREP 表达法 等）。
+- 每个要点均必须包含：【名称 + 适用场景】、【核心逻辑链条（如 A→B→C）】、【关键实操要领】。
+- 格式统一使用标准编号列表（1. 2. 3. ...），要点名称使用加粗 **名称**，务必条理分明，方便读者理解与一键转为复习闪卡。
+
+### 🎯 实操落地建议与避坑复盘
+- 给出 2~3 条可直接落地执行的行动清单、注意事项或刻意练习复盘法则。
+`;
+
+          const userPrompt = `【笔记标题】：${title || '未命名笔记'}
+${tags && tags.length ? `【标签分类】：${tags.join('、')}\n` : ''}【正文描述】：
+${content || '（无附带正文）'}
+
+【视频/音频完整文案逐字稿】：
+${cleanTranscript || '（暂无音频文案，请基于正文与标题提炼）'}
+
+请为我进行深度知识萃取，生成高品质结构化总结。`;
+
+          let summaryText = "";
+          let modelUsed = "";
+
+          // 策略 1: 优先使用 Groq 70B 大模型 (速度极快，知识整理能力顶级)
+          let thirdPartyKey = '';
+          if (env.DB) thirdPartyKey = await getSetting(env.DB, 'whisper_api_key', '');
+
+          if (thirdPartyKey) {
+            const modelsToTry = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+            for (const m of modelsToTry) {
+              try {
+                const groqChatRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${thirdPartyKey.trim()}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    model: m,
+                    messages: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: userPrompt }
+                    ],
+                    temperature: 0.2,
+                    max_tokens: 3500
+                  })
+                });
+                if (groqChatRes.ok) {
+                  const groqData = await groqChatRes.json();
+                  const reply = groqData.choices?.[0]?.message?.content?.trim();
+                  if (reply && reply.length >= 30) {
+                    summaryText = reply;
+                    modelUsed = `Groq (${m})`;
+                    break;
+                  }
+                }
+              } catch (err) {
+                console.warn(`Groq summary model ${m} error:`, err);
+              }
+            }
+          }
+
+          // 策略 2: 降级使用 Cloudflare Workers AI 原生大语言模型
+          if (!summaryText && env.AI) {
+            const cfModels = [
+              '@cf/meta/llama-3.3-70b-instruct',
+              '@cf/qwen/qwen3-30b-a3b-fp8',
+              '@cf/meta/llama-3.2-3b-instruct'
+            ];
+            for (const cfM of cfModels) {
+              try {
+                const aiRes = await env.AI.run(cfM, {
+                  messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                  ],
+                  max_tokens: 3000,
+                  temperature: 0.2
+                });
+                const reply = (aiRes && (aiRes.response || aiRes.text || ''))?.trim();
+                if (reply && reply.length >= 30) {
+                  summaryText = reply;
+                  modelUsed = `Cloudflare AI (${cfM.split('/').pop()})`;
+                  break;
+                }
+              } catch (e) {
+                console.warn(`CF summary model ${cfM} error:`, e.message);
+              }
+            }
+          }
+
+          if (!summaryText) {
+            return json({ success: false, message: "AI 总结服务生成超时或未响应，请稍后重试" }, 500);
+          }
+
+          // 持久化缓存至数据库
+          if (noteId && env.DB) {
+            try {
+              await updateAiSummary(env.DB, noteId, summaryText);
+            } catch (e) {
+              console.warn("Save ai_summary failed:", e);
+            }
+          }
+
+          return json({
+            success: true,
+            summary: summaryText,
+            provider: modelUsed
           });
         }
 
