@@ -1619,6 +1619,7 @@ function seekAllMediaTo(seconds) {
 // 自动愈合并合并历史笔记或分段切片中被错误拆分的段落卡片
 function mergeBrokenParagraphs(paras) {
   if (!Array.isArray(paras) || paras.length <= 1) return paras || [];
+  const list = [...paras];
   const merged = [];
 
   const duiTargets = '方|于|手|象|应|策|待|话|立|比|照|称|准|面|付|等|流|账|阵|劲|抗|此|这|那|外|内|上|下';
@@ -1633,14 +1634,14 @@ function mergeBrokenParagraphs(paras) {
   const xingTargets = '动|政|业|程|李|情|当|使|径|为|驶';
   const xingReg = new RegExp(`^(?:<mark[^>]*>)?(?:${xingTargets})`);
 
-  for (let i = 0; i < paras.length; i++) {
-    const cur = paras[i];
-    if (i === paras.length - 1) {
+  for (let i = 0; i < list.length; i++) {
+    const cur = list[i];
+    if (i === list.length - 1) {
       merged.push(cur);
       break;
     }
 
-    const next = paras[i + 1];
+    const next = list[i + 1];
     const isHtml = typeof cur.html === 'string';
     const curContent = isHtml ? cur.html : (cur.text || '');
     const nextContent = typeof next.html === 'string' ? next.html : (next.text || '');
@@ -1686,7 +1687,7 @@ function mergeBrokenParagraphs(paras) {
           .replace(/行，\s*$/i, '行');
         combined.text = curTextFixed + (next.text || nextContent);
       }
-      paras[i + 1] = combined;
+      list[i + 1] = combined;
     } else {
       merged.push(cur);
     }
@@ -2836,7 +2837,7 @@ async function transcribeAudio(
         : `音频共 ${durationStr}，正在通过 AI 进行精准转写...`;
     }
 
-    const collectedItems = [];
+    let collectedItems = [];
     let detectedProvider = state.whisperProvider || "cloudflare";
     let lastChunkSentence = "";
 
