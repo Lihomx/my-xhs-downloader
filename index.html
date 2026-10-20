@@ -534,7 +534,12 @@
               <div class="shuffle-playlist-title">
                 <span>🎵 播放库音频 (<span id="shuffle-list-badge">0</span>)</span>
               </div>
-              <span style="font-size: 11px; color: var(--text-muted);">点击播放 · 拖拽左侧 ⋮⋮ 可重新排序</span>
+              <div class="shuffle-playlist-header-actions">
+                <button id="btn-shuffle-sort-least-played" class="btn-sort-least-played" type="button" title="将未播放和播放次数最少的音频一键排至最前">
+                  🌱 低播放优先排前
+                </button>
+                <span style="font-size: 11px; color: var(--text-muted);">拖拽 ⋮⋮ 排序</span>
+              </div>
             </div>
 
             <div id="shuffle-playlist-wrap" class="shuffle-playlist-scroll">

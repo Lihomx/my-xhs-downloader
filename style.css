@@ -6737,3 +6737,53 @@ mark.transcript-hl:hover {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* ========================================================
+   📻 随身听智能随机播放、播放次数与低播放优先样式
+   ======================================================== */
+.shuffle-play-count-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shuffle-play-count-badge.unplayed {
+  background: #ecfdf5;
+  color: #059669;
+  border-color: #a7f3d0;
+  font-weight: 600;
+}
+
+.shuffle-playlist-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-sort-least-played {
+  font-size: 11px;
+  padding: 3px 8px;
+  color: #059669;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-sort-least-played:hover {
+  background: #d1fae5;
+  color: #047857;
+  border-color: #6ee7b7;
+  transform: translateY(-1px);
+}
+

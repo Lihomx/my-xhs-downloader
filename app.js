@@ -7670,6 +7670,10 @@ export const ShufflePlayer = {
   audioEl: null,
   isScrubbing: false,
   cachedUrls: new Set(),
+  playStats: {}, // { [noteId]: { count: 0, lastPlayed: 0 } }
+  playHistory: [], // 播放历史栈 [id1, id2, ...]
+  shufflePool: [], // 智能无重复洗牌池（低播放量优先排前）
+  hasRecordedCurrentPlay: false,
   _dragSourceIndex: null,
   _touchDragSourceIndex: null,
   _touchOverIndex: null,
@@ -7679,6 +7683,7 @@ export const ShufflePlayer = {
     this.audioEl = document.getElementById("shuffle-audio-element");
     if (!this.audioEl) return;
 
+    this.playStats = this.getPlayStats();
     this.updateModeBtnUI();
 
     // 播放/暂停
@@ -7689,7 +7694,12 @@ export const ShufflePlayer = {
     document.getElementById("btn-shuffle-prev-track")?.addEventListener("click", () => this.playPrev());
     document.getElementById("btn-shuffle-next-track")?.addEventListener("click", () => this.playNext());
 
-    // 播放模式切换 (顺序播放 / 列表循环 / 随机播放 / 单曲循环)
+    // 绑定 "🌱 低播放优先排前" 快捷重排按钮
+    document.getElementById("btn-shuffle-sort-least-played")?.addEventListener("click", () => {
+      this.sortByLeastPlayed();
+    });
+
+    // 播放模式切换 (顺序播放 / 列表循环 / 智能随机 / 单曲循环)
     const modeBtn = document.getElementById("btn-shuffle-mode-toggle");
     modeBtn?.addEventListener("click", () => {
       if (this.mode === "order") {
@@ -7697,7 +7707,8 @@ export const ShufflePlayer = {
         showToast("已切换为：列表循环");
       } else if (this.mode === "loop") {
         this.mode = "shuffle";
-        showToast("已切换为：随机播放");
+        this.initShufflePool();
+        showToast("已切换为：🔀 智能随机 (冷门/低播放优先，整轮不重复)");
       } else if (this.mode === "shuffle") {
         this.mode = "single";
         showToast("已切换为：单曲循环");
@@ -7751,6 +7762,11 @@ export const ShufflePlayer = {
       if (curTimeEl) curTimeEl.textContent = this.formatTimeSec(cur);
       if (durTimeEl) durTimeEl.textContent = this.formatTimeSec(dur);
       if (slider) slider.value = ((cur / dur) * 100).toFixed(1);
+
+      // 听满 20 秒或进度达到 70% 视为一次有效播放，记入低频优先算法
+      if (!this.hasRecordedCurrentPlay && (cur >= 20 || (dur > 0 && cur / dur >= 0.7))) {
+        this.recordPlayCurrent();
+      }
     });
 
     this.audioEl.addEventListener("loadedmetadata", () => {
@@ -7768,6 +7784,7 @@ export const ShufflePlayer = {
     });
 
     this.audioEl.addEventListener("ended", () => {
+      this.recordPlayCurrent();
       if (this.mode === "single") {
         this.audioEl.currentTime = 0;
         this.audioEl.play().catch(() => {});
@@ -7833,12 +7850,143 @@ export const ShufflePlayer = {
       modeBtn.innerHTML = "🔁 循环";
       modeBtn.title = "列表循环模式";
     } else if (this.mode === "shuffle") {
-      modeBtn.innerHTML = "🔀 随机";
-      modeBtn.title = "随机播放模式";
+      modeBtn.innerHTML = "🔀 智能随机";
+      modeBtn.title = "智能随机播放模式 (低播放优先，整轮不重复)";
     } else if (this.mode === "single") {
       modeBtn.innerHTML = "🔂 单曲";
       modeBtn.title = "单曲循环模式";
     }
+  },
+
+  getPlayStats() {
+    try {
+      const raw = localStorage.getItem("shuffle_play_stats");
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  },
+
+  savePlayStats() {
+    try {
+      localStorage.setItem("shuffle_play_stats", JSON.stringify(this.playStats));
+    } catch (e) {
+      console.warn("Failed to save shuffle_play_stats:", e);
+    }
+  },
+
+  getPlayCount(noteId) {
+    if (!noteId) return 0;
+    return this.playStats[String(noteId)]?.count || 0;
+  },
+
+  recordPlayCurrent() {
+    if (this.hasRecordedCurrentPlay) return;
+    if (this.currentIndex < 0 || !this.playlist[this.currentIndex]) return;
+
+    this.hasRecordedCurrentPlay = true;
+    const track = this.playlist[this.currentIndex];
+    const strId = String(track.id);
+    const cur = this.playStats[strId] || { count: 0, lastPlayed: 0 };
+    cur.count = (cur.count || 0) + 1;
+    cur.lastPlayed = Date.now();
+    this.playStats[strId] = cur;
+    this.savePlayStats();
+    this.updateCardPlayCountBadge(strId, cur.count);
+  },
+
+  updateCardPlayCountBadge(noteId, count) {
+    const card = document.querySelector(`.shuffle-item-card[data-id="${noteId}"]`);
+    if (!card) return;
+    const badge = card.querySelector(".shuffle-play-count-badge");
+    if (badge) {
+      badge.className = `shuffle-play-count-badge ${count === 0 ? "unplayed" : ""}`;
+      badge.title = `已累计播放 ${count} 次`;
+      badge.innerHTML = count === 0 ? "🌱 未播放" : `🎧 ${count}次`;
+    }
+  },
+
+  initShufflePool() {
+    if (!this.playlist || this.playlist.length === 0) {
+      this.shufflePool = [];
+      return;
+    }
+
+    // Fisher-Yates 随机打乱
+    const shuffleArray = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+
+    // 按播放次数分组：播放量越少（未听过、低播放）排在越前面
+    const tierMap = new Map();
+    this.playlist.forEach((track, idx) => {
+      const c = this.getPlayCount(track.id);
+      if (!tierMap.has(c)) tierMap.set(c, []);
+      tierMap.get(c).push(idx);
+    });
+
+    const sortedCounts = Array.from(tierMap.keys()).sort((a, b) => a - b);
+    const newPool = [];
+    sortedCounts.forEach((c) => {
+      const tierIndices = shuffleArray([...tierMap.get(c)]);
+      newPool.push(...tierIndices);
+    });
+
+    // 避免刚好首项与当前正在播放的曲目重复
+    if (newPool.length > 1 && newPool[0] === this.currentIndex) {
+      const swapIdx = Math.floor(Math.random() * (newPool.length - 1)) + 1;
+      [newPool[0], newPool[swapIdx]] = [newPool[swapIdx], newPool[0]];
+    }
+
+    this.shufflePool = newPool;
+  },
+
+  getNextShuffleIndex() {
+    if (this.playlist.length === 0) return 0;
+    if (this.playlist.length === 1) return 0;
+
+    // 当池子里的曲目全部播放过一遍后，自动开启新一轮按播放量加权洗牌
+    if (this.shufflePool.length === 0) {
+      this.initShufflePool();
+    }
+
+    let nextIdx = this.shufflePool.shift();
+    if (nextIdx === this.currentIndex && this.shufflePool.length > 0) {
+      this.shufflePool.push(nextIdx);
+      nextIdx = this.shufflePool.shift();
+    }
+
+    if (typeof nextIdx !== "number" || nextIdx < 0 || nextIdx >= this.playlist.length) {
+      this.initShufflePool();
+      nextIdx = this.shufflePool.shift() ?? 0;
+    }
+
+    return nextIdx;
+  },
+
+  sortByLeastPlayed() {
+    if (this.playlist.length <= 1) {
+      showToast("随身听播放库曲目较少，无需重排");
+      return;
+    }
+    const currentId = this.currentIndex >= 0 && this.playlist[this.currentIndex] ? this.playlist[this.currentIndex].id : null;
+    this.playlist.sort((a, b) => {
+      const countA = this.getPlayCount(a.id);
+      const countB = this.getPlayCount(b.id);
+      if (countA !== countB) return countA - countB;
+      return 0;
+    });
+    if (currentId) {
+      this.currentIndex = this.playlist.findIndex((t) => t.id === currentId);
+    }
+    this.saveCustomOrder();
+    this.initShufflePool();
+    this.renderPlaylist();
+    showToast("🌱 已将未播放及低播放量音频排在最前！");
   },
 
   getSavedCustomOrder() {
@@ -7962,15 +8110,21 @@ export const ShufflePlayer = {
       // 应用自定义排序
       this.playlist = this.applyCustomOrder(items);
       this.updateBadgeCounts();
+      this.initShufflePool();
       this.renderPlaylist();
 
       if (showNotify) {
         showToast(`已同步随身听播放库，共 ${this.playlist.length} 首音频`);
       }
 
-      // 如果当前没有正在播放的音频且列表不为空，预载第一首
+      // 如果当前没有正在播放的音频且列表不为空，预载曲目 (随机模式下优先选冷门/低播放量曲目)
       if (this.playlist.length > 0 && this.currentIndex === -1) {
-        this.prepareTrack(0, false);
+        if (this.mode === "shuffle") {
+          const firstIdx = this.getNextShuffleIndex() ?? 0;
+          this.prepareTrack(firstIdx, false);
+        } else {
+          this.prepareTrack(0, false);
+        }
       }
     } catch (err) {
       console.error("loadPlaylist error:", err);
@@ -8029,10 +8183,12 @@ export const ShufflePlayer = {
     this.playlist.forEach((track, index) => {
       const isCached = this.cachedUrls.has(track.mediaUrl);
       const isActive = index === this.currentIndex;
+      const playCount = this.getPlayCount(track.id);
 
       const card = document.createElement("div");
       card.className = `shuffle-item-card ${isActive ? "active" : ""}`;
       card.dataset.index = index;
+      card.dataset.id = track.id;
       card.setAttribute("draggable", "true");
 
       const tagsHtml = (track.tags || []).slice(0, 2).map((t) => `<span class="kb-chip-small">${t}</span>`).join("");
@@ -8054,6 +8210,9 @@ export const ShufflePlayer = {
           <div class="shuffle-item-title clickable" title="点击查看笔记详情与文案">${escapeHtml(track.title || "无标题音频")}</div>
           <div class="shuffle-item-meta">
             ${isCached ? '<span class="shuffle-item-cached-pill">💾 已离线</span>' : '<span style="color:#94a3b8;">☁️ 在线</span>'}
+            <span class="shuffle-play-count-badge ${playCount === 0 ? 'unplayed' : ''}" title="已累计播放 ${playCount} 次">
+              ${playCount === 0 ? '🌱 未播放' : `🎧 ${playCount}次`}
+            </span>
             ${tagsHtml}
           </div>
         </div>
@@ -8280,6 +8439,14 @@ export const ShufflePlayer = {
     this.currentIndex = index;
     const track = this.playlist[index];
 
+    this.hasRecordedCurrentPlay = false;
+    if (track?.id) {
+      if (this.playHistory[this.playHistory.length - 1] !== track.id) {
+        this.playHistory.push(track.id);
+        if (this.playHistory.length > 50) this.playHistory.shift();
+      }
+    }
+
     this.renderCurrentTrackInfo(track);
     this.highlightActiveCard(index);
 
@@ -8429,10 +8596,8 @@ export const ShufflePlayer = {
 
     let nextIndex;
     if (this.mode === "shuffle") {
-      // 随机选取不同的曲目
-      do {
-        nextIndex = Math.floor(Math.random() * this.playlist.length);
-      } while (nextIndex === this.currentIndex && this.playlist.length > 1);
+      // 智能无重复洗牌池 (未播/低播优先，整轮不重复)
+      nextIndex = this.getNextShuffleIndex();
     } else if (this.mode === "order") {
       // 顺序播放：到达末尾时停止并提示
       if (this.currentIndex >= this.playlist.length - 1) {
@@ -8457,11 +8622,20 @@ export const ShufflePlayer = {
       return;
     }
 
+    // 优先通过历史栈回退到上一首真实听过的音频 (避免上一首又随机跳歌)
+    if (this.playHistory.length > 1) {
+      this.playHistory.pop(); // 弹出当前播放项
+      const prevId = this.playHistory[this.playHistory.length - 1];
+      const prevIdx = this.playlist.findIndex((t) => t.id === prevId);
+      if (prevIdx !== -1) {
+        this.playIndex(prevIdx);
+        return;
+      }
+    }
+
     let prevIndex;
     if (this.mode === "shuffle") {
-      do {
-        prevIndex = Math.floor(Math.random() * this.playlist.length);
-      } while (prevIndex === this.currentIndex && this.playlist.length > 1);
+      prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
     } else if (this.mode === "order") {
       // 顺序播放：到达第一首时回退到开头并提示
       if (this.currentIndex <= 0) {
