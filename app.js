@@ -3356,13 +3356,24 @@ async function extractVideoHardSubtitles(
 
         if (ocrText && !ocrText.includes("NONE") && !ocrText.includes("无字幕")) {
           const lines = ocrText.split(/\r?\n+/).map(l => l.trim()).filter(Boolean);
-          for (const line of lines) {
+          for (let rawLine of lines) {
+            // 剥离 Markdown 序号（如 1. 、- 、* ）以及加粗 **
+            let cleanLine = rawLine
+              .replace(/^\d+[\.、\s\-*#:]+/, '')
+              .replace(/\*\*/g, '')
+              .trim();
+            if (!cleanLine || cleanLine.includes("NONE") || cleanLine.includes("无字幕")) continue;
+
             // 解析出 [00:10] 字幕文本
-            const m = line.match(/^(?:\[|⏱️\s*)(\d{1,2}:\d{2})(?:\]|\s+)(.*)$/);
+            const m = cleanLine.match(/^(?:\[|⏱️\s*)(\d{1,2}:\d{2})(?:\]|\s+)(.+)$/);
             if (m) {
               const tStr = m[1];
-              const tText = m[2].trim();
+              let tText = m[2].trim().replace(/\*\*/g, '');
               if (/(?:女性在|她在|身穿|握手的|红色礼服|图[片中]是|一[位名]人)/.test(tText)) continue;
+              // 过滤单字或只有标点的残缺片段
+              const hanziCount = (tText.match(/[\u4e00-\u9fa5]/g) || []).length;
+              if (hanziCount < 2 && tText.length < 3) continue;
+
               if (tText && (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== tText)) {
                 collectedSubs.push({
                   timeStr: tStr,
@@ -3370,14 +3381,19 @@ async function extractVideoHardSubtitles(
                   text: tText
                 });
               }
-            } else if (line.length > 1 && !line.includes("NONE")) {
-              if (/(?:女性在|她在|身穿|握手的|红色礼服|图[片中]是|一[位名]人)/.test(line)) continue;
+            } else if (cleanLine.length >= 2 && !cleanLine.includes("NONE")) {
+              if (/(?:女性在|她在|身穿|握手的|红色礼服|图[片中]是|一[位名]人)/.test(cleanLine)) continue;
+              // 纯时间戳如 [00:00] 跳过
+              if (/^(?:\[|⏱️\s*)?\d{1,2}:\d{2}\]?$/.test(cleanLine)) continue;
+              const hanziCount = (cleanLine.match(/[\u4e00-\u9fa5]/g) || []).length;
+              if (hanziCount < 2 && cleanLine.length < 3) continue;
+
               const approxTime = Math.floor(batchTimes[0]);
-              if (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== line) {
+              if (!collectedSubs.length || collectedSubs[collectedSubs.length - 1].text !== cleanLine) {
                 collectedSubs.push({
                   timeStr: formatTimestamp(approxTime),
                   timeSec: approxTime,
-                  text: line
+                  text: cleanLine
                 });
               }
             }
@@ -3403,11 +3419,21 @@ async function extractVideoHardSubtitles(
     if (progressBar) progressBar.style.width = "100%";
     notifyProgress(100, totalBatches, totalBatches, "字幕提取完成，正在整理保存...");
 
-    if (collectedSubs.length === 0) {
+    // 质量校验：计算识别到的有效中文字数
+    const totalChineseChars = collectedSubs.reduce((acc, cur) => {
+      return acc + (cur.text.match(/[\u4e00-\u9fa5]/g) || []).length;
+    }, 0);
+    const avgCharsPerSub = collectedSubs.length > 0 ? (totalChineseChars / collectedSubs.length) : 0;
+    const isOcrGarbage = collectedSubs.length === 0 || totalChineseChars < 15 || avgCharsPerSub < 2.5;
+
+    if (isOcrGarbage) {
+      console.warn(`[OCR质量校验未通过] 识别结果疑似画面杂质 (条数: ${collectedSubs.length}, 总汉字: ${totalChineseChars}, 平均字数: ${avgCharsPerSub.toFixed(1)})`);
       if (fallbackToSpeech) {
+        if (statusText) statusText.textContent = "画面未检测到清晰连贯字幕，自动平滑启用 AI 语音转写引擎...";
+        await new Promise(r => setTimeout(r, 600));
         return false;
       }
-      throw new Error("视频画面未检测到清晰文字字幕");
+      throw new Error("视频画面未检测到清晰连贯的字幕文字");
     }
 
     const finalLines = collectedSubs.map(s => `[${s.timeStr}] ${s.text}`);
@@ -3850,7 +3876,9 @@ const BackgroundSubtitleQueue = {
           visionError = vErr.message || String(vErr);
         }
 
-        const isVisionOk = Boolean(ocrResult && (ocrResult.success || (typeof ocrResult === 'object' && ocrResult.transcript)));
+        const visionText = (ocrResult && typeof ocrResult === 'object') ? (ocrResult.transcript || '') : '';
+        const visionHanziCount = (visionText.match(/[\u4e00-\u9fa5]/g) || []).length;
+        const isVisionOk = Boolean(ocrResult && (ocrResult.success || visionText) && visionHanziCount >= 15);
 
         if (isVisionOk) {
           showToast(`✅ 后台已完成「${noteTitle.substring(0, 10)}」画面慢速精细字幕提取！`);
@@ -5917,7 +5945,7 @@ export const FlashcardManager = {
   }
 };
 
-// 智能字幕与文案提取总入口：原生软字幕 -> 画面硬字幕 OCR -> AI 语音转写 (Whisper)
+// 语音提取字幕文案主入口：原生软字幕 -> AI 语音转写 (Whisper Large-v3)
 async function extractVideoSubtitlesOrAudio(mediaUrl, containerSelector, noteId, videoEl) {
   const container = document.querySelector(containerSelector);
   if (!container) return;
@@ -5934,13 +5962,7 @@ async function extractVideoSubtitlesOrAudio(mediaUrl, containerSelector, noteId,
     return;
   }
 
-  // 2. 尝试探测并提取画面硬字幕 (Vision OCR)
-  const ocrSuccess = await extractVideoHardSubtitles(mediaUrl, containerSelector, noteId, { fallbackToSpeech: true });
-  if (ocrSuccess) {
-    return;
-  }
-
-  // 3. 画面无字幕时，平滑自动启用 AI 语音转写引擎 (Whisper Large-v3 / Cloudflare)
+  // 2. 语音提取主引擎 (Whisper Large-v3 极速高精转写原声说话)
   await transcribeAudio(mediaUrl, containerSelector, noteId);
 }
 

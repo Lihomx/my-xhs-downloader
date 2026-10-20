@@ -582,7 +582,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                         content: [
                           {
                             type: 'text',
-                            text: '请仔细识别图片中显示的视频中文字幕。如果图片包含带时间戳标签如 [00:10] 的条目，请按行输出：[时间戳] 字幕文字。如果画面中没有制作字幕或只有背景，跳过该条或回复 NONE。严禁输出任何多余废话或解释说明。'
+                            text: '请仔细识别图片中显示的视频中文字幕。如果图片包含带时间戳标签如 [00:10] 的条目，请严格按行输出：[时间戳] 字幕文字。严禁输出数字列表编号（不要以 1. 2. 开头），严禁使用加粗符（不要使用 **），直接输出原文字幕。如果画面中没有制作字幕或只有背景，直接回复 NONE。严禁输出任何多余废话或解释说明。'
                           },
                           {
                             type: 'image_url',
@@ -598,7 +598,9 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
 
                 if (groqRes.ok) {
                   const groqData = await groqRes.json();
-                  const text = (groqData.choices?.[0]?.message?.content || '').trim();
+                  let text = (groqData.choices?.[0]?.message?.content || '').trim();
+                  // 剥离可能生成的 markdown 数字列表前缀与加粗符号
+                  text = text.replace(/^\d+[\.、\s\-*#:]+/gm, '').replace(/\*\*/g, '').trim();
                   const cleaned = (text.includes('NONE') || text.includes('无字幕')) && text.length < 15 ? '' : text;
                   return json({
                     success: true,
@@ -639,7 +641,7 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                 try {
                   aiRes = await env.AI.run(cfModel, {
                     image: imageBytes,
-                    prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
+                    prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。不要输出数字列表编号，不要使用加粗符号。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
                   });
                 } catch (firstErr) {
                   // 针对 Meta Llama 3.2 首次调用需授权 'agree' 握手的错误码 5016 自动处理
@@ -648,15 +650,16 @@ export function createWorker({ nodeRoutes = NODE_ROUTES } = {}) {
                     await env.AI.run(cfModel, { prompt: 'agree' }).catch(() => {});
                     aiRes = await env.AI.run(cfModel, {
                       image: imageBytes,
-                      prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
+                      prompt: '仔细识别图片中的所有中文字幕，按行输出字幕内容。不要输出数字列表编号，不要使用加粗符号。如果画面没有字幕文字请回复 NONE。不要输出多余解释。'
                     });
                   } else {
                     throw firstErr;
                   }
                 }
 
-                const text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
+                let text = (aiRes && (aiRes.response || aiRes.description || ''))?.trim();
                 if (!text) continue;
+                text = text.replace(/^\d+[\.、\s\-*#:]+/gm, '').replace(/\*\*/g, '').trim();
                 // 过滤画面描述类幻觉（如“女性在台上发言”、“握手的女孩”、“红色礼服”等非字幕内容）
                 if (/(?:女性在|她在|身穿|握手的|红色礼服|图[片中]是|一[位名]人)/.test(text)) {
                   console.warn("Filtered out image caption hallucination:", text);

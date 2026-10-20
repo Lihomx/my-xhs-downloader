@@ -193,7 +193,7 @@
               <span class="media-count">🎬 视频播放与下载</span>
               <div class="media-btn-group">
                 <button id="btn-toggle-audio-mode" class="btn btn-secondary" type="button" title="收起视频画面，仅播放纯音频磨耳朵">🎧 纯听音频</button>
-                <button id="btn-transcribe-video" class="btn btn-secondary" type="button" title="优先扫描视频字幕，无字幕则自动启用 AI 语音转写">🎙️ 提取字幕与文案</button>
+                <button id="btn-transcribe-video" class="btn btn-secondary" type="button" title="通过 AI Whisper Large-v3 极速高精识别原声音频，生成连贯分段文案与精准时间戳">🎙️ 语音提取字幕</button>
                 <button id="btn-ocr-video" class="btn btn-secondary" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">🔍 画面字幕提取</button>
                 <button id="btn-slow-ocr-video" class="btn btn-secondary" type="button" title="放慢节奏逐帧精细扫描，配合智能重试，确保100%不漏掉任何中间文案">🐢 慢速精细提取</button>
                 <button id="btn-dual-extract-video" class="btn btn-secondary" type="button" title="同时进行慢速精细画面字幕提取与语音识别转写，并排预览对比后手工确定采纳版本">⚖️ 双模对比提取</button>
@@ -803,8 +803,8 @@
                   <button id="btn-modal-toggle-audio" class="btn btn-secondary" type="button">
                     🎧 纯听音频
                   </button>
-                  <button id="btn-modal-transcribe" class="btn btn-secondary" type="button" title="智能识别：优先提取视频字幕，无字幕则自动启用 AI 语音转写">
-                    🎙️ 提取字幕与文案
+                  <button id="btn-modal-transcribe" class="btn btn-secondary" type="button" title="通过 AI Whisper Large-v3 极速高精识别原声音频，生成连贯分段文案与精准时间戳">
+                    🎙️ 语音提取字幕
                   </button>
                   <button id="btn-modal-ocr-subtitles" class="btn btn-secondary" style="display: none;" type="button" title="通过 AI 视觉大模型直接从视频画面底部的硬字幕提取文字">
                     🔍 画面字幕提取
