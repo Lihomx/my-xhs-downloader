@@ -7726,9 +7726,16 @@ export const ShufflePlayer = {
 
     // 绑定 🎚️ 智能音量动态均衡开关
     document.getElementById("btn-shuffle-equalizer-toggle")?.addEventListener("click", () => {
-      this.resumeAudioContext();
       this.toggleEqualizer();
     });
+
+    // 挂载系统级后台音频会话 (iOS / Android 熄屏保活核心)
+    this.setupAudioSession();
+    this.initMediaSessionHandlers();
+    this.initVisibilityAndStateWatchers();
+
+    // 挂载音频核心事件监听
+    this.attachAudioElementListeners();
 
     // 播放模式切换 (顺序播放 / 列表循环 / 智能随机 / 单曲循环)
     const modeBtn = document.getElementById("btn-shuffle-mode-toggle");
@@ -7784,59 +7791,6 @@ export const ShufflePlayer = {
       this.isScrubbing = false;
     });
 
-    // 音频核心事件监听
-    this.audioEl.addEventListener("timeupdate", () => {
-      if (this.isScrubbing) return;
-      if (!this.audioEl.duration) return;
-      const cur = this.audioEl.currentTime;
-      const dur = this.audioEl.duration;
-      if (curTimeEl) curTimeEl.textContent = this.formatTimeSec(cur);
-      if (durTimeEl) durTimeEl.textContent = this.formatTimeSec(dur);
-      if (slider) slider.value = ((cur / dur) * 100).toFixed(1);
-
-      // 听满 20 秒或进度达到 70% 视为一次有效播放，记入低频优先算法
-      if (!this.hasRecordedCurrentPlay && (cur >= 20 || (dur > 0 && cur / dur >= 0.7))) {
-        this.recordPlayCurrent();
-      }
-    });
-
-    this.audioEl.addEventListener("loadedmetadata", () => {
-      if (durTimeEl && this.audioEl.duration) {
-        durTimeEl.textContent = this.formatTimeSec(this.audioEl.duration);
-      }
-    });
-
-    this.audioEl.addEventListener("play", () => {
-      this.resumeAudioContext();
-      this.updatePlayStateUI(true);
-    });
-
-    this.audioEl.addEventListener("pause", () => {
-      this.updatePlayStateUI(false);
-    });
-
-    this.audioEl.addEventListener("ended", () => {
-      this.recordPlayCurrent();
-      if (this.mode === "single") {
-        this.audioEl.currentTime = 0;
-        this.audioEl.play().catch(() => {});
-      } else if (this.mode === "order") {
-        if (this.currentIndex < this.playlist.length - 1) {
-          this.playNext();
-        } else {
-          this.stop();
-          showToast("已播放完列表全部音频");
-        }
-      } else {
-        this.playNext();
-      }
-    });
-
-    this.audioEl.addEventListener("error", (e) => {
-      console.warn("Shuffle audio error:", e);
-      this.updatePlayStateUI(false);
-    });
-
     // 顶部操作栏事件
     document.getElementById("btn-shuffle-reload")?.addEventListener("click", () => {
       this.loadPlaylist(true);
@@ -7890,11 +7844,250 @@ export const ShufflePlayer = {
     }
   },
 
+  // 1. 设置系统级后台媒体会话 (通知 iOS Safari / Android 保持后台流媒体常驻，熄屏绝不冻结)
+  setupAudioSession() {
+    if ("audioSession" in navigator) {
+      try {
+        navigator.audioSession.type = "playback";
+      } catch (e) {
+        console.warn("navigator.audioSession setup failed:", e);
+      }
+    }
+  },
+
+  // 2. 注册系统锁屏媒体控制中心 (MediaSession API：锁屏控制卡片、蓝牙/耳机线控)
+  initMediaSessionHandlers() {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.setActionHandler("play", () => {
+        this.setupAudioSession();
+        if (this.isEqualizerEnabled) this.resumeAudioContext();
+        if (this.audioEl?.paused) {
+          this.audioEl.play().catch(() => {});
+        }
+      });
+      navigator.mediaSession.setActionHandler("pause", () => {
+        if (this.audioEl && !this.audioEl.paused) {
+          this.audioEl.pause();
+        }
+      });
+      navigator.mediaSession.setActionHandler("previoustrack", () => {
+        this.playPrev();
+      });
+      navigator.mediaSession.setActionHandler("nexttrack", () => {
+        this.playNext();
+      });
+      navigator.mediaSession.setActionHandler("seekto", (details) => {
+        if (details.seekTime !== undefined && this.audioEl && !isNaN(details.seekTime)) {
+          this.audioEl.currentTime = details.seekTime;
+          if ("setPositionState" in navigator.mediaSession && this.audioEl.duration) {
+            try {
+              navigator.mediaSession.setPositionState({
+                duration: this.audioEl.duration,
+                playbackRate: this.playbackRate || 1.0,
+                position: details.seekTime
+              });
+            } catch {}
+          }
+        }
+      });
+    } catch (e) {
+      console.warn("MediaSession action handler error:", e);
+    }
+  },
+
+  // 3. 更新系统锁屏媒体卡片元数据（封面、标题、博主/标签）
+  updateMediaSession(track) {
+    if (!("mediaSession" in navigator)) return;
+    if (!track) {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = "none";
+      return;
+    }
+
+    const artistName = track.authorName || (track.tags && track.tags[0]) || "小红书随身听";
+    const artworkList = [];
+    if (track.coverUrl) {
+      artworkList.push({
+        src: track.coverUrl,
+        sizes: "512x512",
+        type: "image/jpeg"
+      });
+    }
+    artworkList.push({
+      src: `${window.location.origin}/favicon.svg`,
+      sizes: "192x192",
+      type: "image/svg+xml"
+    });
+
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title || "随身听音频",
+        artist: artistName,
+        album: "知识库随身听播客",
+        artwork: artworkList
+      });
+      navigator.mediaSession.playbackState = this.audioEl && !this.audioEl.paused ? "playing" : "paused";
+    } catch (e) {
+      console.warn("Failed to update mediaSession:", e);
+    }
+  },
+
+  // 4. 息屏唤醒与 Web Audio 状态自愈监听
+  initVisibilityAndStateWatchers() {
+    document.addEventListener("visibilitychange", async () => {
+      if (!document.hidden) {
+        // 用户切回前台或点亮屏幕，若 AudioContext 曾被系统中断，自动拉起
+        if (this.isEqualizerEnabled && this.audioCtx && this.audioCtx.state !== "running") {
+          try {
+            await this.audioCtx.resume();
+          } catch {}
+        }
+      }
+    });
+  },
+
+  // 5. 挂载音频核心事件监听（单点收敛，供初始与重构解耦时复用）
+  attachAudioElementListeners() {
+    if (!this.audioEl) return;
+
+    const slider = document.getElementById("shuffle-scrub-slider");
+    const curTimeEl = document.getElementById("shuffle-time-current");
+    const durTimeEl = document.getElementById("shuffle-time-duration");
+
+    this.audioEl.addEventListener("timeupdate", () => {
+      if (this.isScrubbing) return;
+      if (!this.audioEl || !this.audioEl.duration) return;
+      const cur = this.audioEl.currentTime;
+      const dur = this.audioEl.duration;
+      if (curTimeEl) curTimeEl.textContent = this.formatTimeSec(cur);
+      if (durTimeEl) durTimeEl.textContent = this.formatTimeSec(dur);
+      if (slider) slider.value = ((cur / dur) * 100).toFixed(1);
+
+      // 同步系统锁屏时间条
+      if ("mediaSession" in navigator && "setPositionState" in navigator.mediaSession && dur > 0) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: dur,
+            playbackRate: this.playbackRate || 1.0,
+            position: cur
+          });
+        } catch {}
+      }
+
+      // 听满 20 秒或进度达到 70% 视为一次有效播放，记入低频优先算法
+      if (!this.hasRecordedCurrentPlay && (cur >= 20 || (dur > 0 && cur / dur >= 0.7))) {
+        this.recordPlayCurrent();
+      }
+    });
+
+    this.audioEl.addEventListener("loadedmetadata", () => {
+      if (durTimeEl && this.audioEl.duration) {
+        durTimeEl.textContent = this.formatTimeSec(this.audioEl.duration);
+      }
+      if ("mediaSession" in navigator && "setPositionState" in navigator.mediaSession && this.audioEl.duration > 0) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: this.audioEl.duration,
+            playbackRate: this.playbackRate || 1.0,
+            position: this.audioEl.currentTime || 0
+          });
+        } catch {}
+      }
+    });
+
+    this.audioEl.addEventListener("play", () => {
+      this.setupAudioSession();
+      if (this.isEqualizerEnabled) {
+        this.resumeAudioContext();
+      }
+      this.updatePlayStateUI(true);
+    });
+
+    this.audioEl.addEventListener("pause", () => {
+      this.updatePlayStateUI(false);
+    });
+
+    this.audioEl.addEventListener("ended", () => {
+      this.recordPlayCurrent();
+      if (this.mode === "single") {
+        this.audioEl.currentTime = 0;
+        this.audioEl.play().catch(() => {});
+      } else if (this.mode === "order") {
+        if (this.currentIndex < this.playlist.length - 1) {
+          this.playNext();
+        } else {
+          this.stop();
+          showToast("已播放完列表全部音频");
+        }
+      } else {
+        this.playNext();
+      }
+    });
+
+    this.audioEl.addEventListener("error", (e) => {
+      console.warn("Shuffle audio error:", e);
+      this.updatePlayStateUI(false);
+    });
+  },
+
+  // 6. 动态解耦/重构音频节点（关闭均衡时切回 100% 纯原生音频，彻底脱离 Web Audio 劫持）
+  rebindAudioElement(freshCleanNative = false) {
+    if (!this.audioEl) return;
+    const parent = this.audioEl.parentNode;
+    if (!parent) return;
+
+    const oldEl = this.audioEl;
+    const currentSrc = oldEl.src;
+    const currentTime = oldEl.currentTime;
+    const isPaused = oldEl.paused;
+    const rate = this.playbackRate;
+
+    try { oldEl.pause(); } catch {}
+
+    // 创建全新未被 Web Audio 绑定的原生 <audio> 节点
+    const newEl = document.createElement("audio");
+    newEl.id = "shuffle-audio-element";
+    newEl.preload = "auto";
+    newEl.crossOrigin = "anonymous";
+    newEl.style.display = "none";
+    newEl.playbackRate = rate;
+
+    parent.replaceChild(newEl, oldEl);
+    this.audioEl = newEl;
+
+    // 清理 Web Audio 上下文与节点
+    if (freshCleanNative) {
+      if (this.audioCtx) {
+        try { this.audioCtx.close(); } catch {}
+      }
+      this.audioCtx = null;
+      this.audioSourceNode = null;
+      this.compressorNode = null;
+      this.gainNode = null;
+    }
+
+    // 重新挂载核心事件
+    this.attachAudioElementListeners();
+
+    if (currentSrc) {
+      newEl.src = currentSrc;
+      newEl.currentTime = currentTime;
+      if (!isPaused) {
+        this.setupAudioSession();
+        newEl.play().catch(() => {});
+      }
+    }
+  },
+
   initAudioEqualizer() {
+    if (!this.isEqualizerEnabled) return;
     if (this.audioCtx) return;
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass || !this.audioEl) return;
+
+      this.setupAudioSession();
 
       this.audioCtx = new AudioContextClass();
       this.audioSourceNode = this.audioCtx.createMediaElementSource(this.audioEl);
@@ -7910,6 +8103,17 @@ export const ShufflePlayer = {
       this.compressorNode.connect(this.gainNode);
       this.gainNode.connect(this.audioCtx.destination);
 
+      // 监听 Web Audio 状态自愈
+      this.audioCtx.onstatechange = async () => {
+        if (this.isEqualizerEnabled && (this.audioCtx.state === "interrupted" || this.audioCtx.state === "suspended")) {
+          if (this.audioEl && !this.audioEl.paused) {
+            try {
+              await this.audioCtx.resume();
+            } catch {}
+          }
+        }
+      };
+
       this.applyEqualizerSettings();
     } catch (e) {
       console.warn("Web Audio Equalizer init error:", e);
@@ -7922,13 +8126,6 @@ export const ShufflePlayer = {
       const now = this.audioCtx.currentTime || 0;
 
       if (this.isEqualizerEnabled) {
-        // 人声播客优化模式:
-        // threshold: -24dB 触发压限
-        // knee: 30dB 平滑过渡软拐点，无抽吸杂音
-        // ratio: 6:1 稳健压缩比，抹平不同博主大落差
-        // attack: 3ms 极速压制刺耳爆音
-        // release: 250ms 人声衰减自然释放
-        // gain: +4dB (约 1.58x) 平滑提亮低声细语
         this.compressorNode.threshold.setValueAtTime(-24, now);
         this.compressorNode.knee.setValueAtTime(30, now);
         this.compressorNode.ratio.setValueAtTime(6, now);
@@ -7936,7 +8133,6 @@ export const ShufflePlayer = {
         this.compressorNode.release.setValueAtTime(0.25, now);
         this.gainNode.gain.setValueAtTime(1.58, now);
       } else {
-        // 完全旁路直通 (1:1 零压缩，1.0x 原始增益)
         this.compressorNode.threshold.setValueAtTime(0, now);
         this.compressorNode.ratio.setValueAtTime(1, now);
         this.gainNode.gain.setValueAtTime(1.0, now);
@@ -7947,6 +8143,7 @@ export const ShufflePlayer = {
   },
 
   async resumeAudioContext() {
+    if (!this.isEqualizerEnabled) return;
     if (!this.audioCtx) {
       this.initAudioEqualizer();
     }
@@ -7962,13 +8159,17 @@ export const ShufflePlayer = {
   toggleEqualizer() {
     this.isEqualizerEnabled = !this.isEqualizerEnabled;
     localStorage.setItem("shuffle_audio_equalizer", String(this.isEqualizerEnabled));
-    this.applyEqualizerSettings();
-    this.updateEqualizerBtnUI();
 
     if (this.isEqualizerEnabled) {
+      this.initAudioEqualizer();
+      this.applyEqualizerSettings();
+      this.updateEqualizerBtnUI();
       showToast("🎚️ 已开启智能音量均衡（人声提亮 +4dB，自动防刺耳爆音）");
     } else {
-      showToast("🎚️ 已关闭智能音量均衡（恢复原音频音量动态）");
+      // 彻底切回 100% 纯原生硬件直通播放（解耦 Web Audio，全机型熄屏绝不断播）
+      this.rebindAudioElement(true);
+      this.updateEqualizerBtnUI();
+      showToast("🎚️ 已恢复纯原生硬件直通（已解耦 Web Audio，全机型熄屏绝不断播）");
     }
   },
 
@@ -7979,11 +8180,11 @@ export const ShufflePlayer = {
 
     if (this.isEqualizerEnabled) {
       btn.classList.add("active");
-      btn.title = "智能音量动态均衡：已开启。自动提升微弱说话声(+4dB)并平抑刺耳爆音（点击关闭）";
+      btn.title = "智能音量动态均衡：已开启。自动提升微弱说话声(+4dB)并平抑刺耳爆音（点击关闭切换为纯原生熄屏直通）";
       if (textEl) textEl.textContent = "智能音量均衡 · 开";
     } else {
       btn.classList.remove("active");
-      btn.title = "智能音量动态均衡：已关闭。当前为原音频动态（点击开启）";
+      btn.title = "智能音量动态均衡：已关闭。当前为 100% 纯原生硬件直通模式，全机型熄屏防断播兜底（点击开启）";
       if (textEl) textEl.textContent = "智能音量均衡 · 关";
     }
   },
@@ -8214,6 +8415,9 @@ export const ShufflePlayer = {
     if (coverWrap) {
       if (isPlaying) coverWrap.classList.add("playing");
       else coverWrap.classList.remove("playing");
+    }
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
     }
   },
 
@@ -8582,35 +8786,52 @@ export const ShufflePlayer = {
 
     if (!this.audioEl) return;
 
-    // 获取离线 Blob 或流式 URL (支持 0 延迟拖拽快进快退与断网畅听)
-    const { src, isOffline } = await OfflineMediaManager.getPlayableSource(track.mediaUrl, {
+    this.setupAudioSession();
+    if (this.isEqualizerEnabled) {
+      this.resumeAudioContext();
+    }
+
+    // 先同步设置媒体源并立即起播，避免 iOS/Android 在切歌的异步微任务中丢失系统后台会话
+    if (track.mediaUrl && (!this.audioEl.src || !this.audioEl.src.includes(track.mediaUrl))) {
+      this.audioEl.src = track.mediaUrl;
+    }
+    this.audioEl.playbackRate = this.playbackRate;
+
+    if (autoPlay) {
+      this.audioEl.play().catch((err) => {
+        console.warn("Audio auto-play blocked or failed:", err);
+      });
+    }
+
+    // 异步查询本地离线 Blob (若已离线则秒速平滑替换为 ObjectURL)
+    OfflineMediaManager.getPlayableSource(track.mediaUrl, {
       noteId: track.id,
       title: track.title,
       coverUrl: track.coverUrl,
       transcript: track.transcript,
       tags: track.tags
-    });
+    }).then(({ src, isOffline }) => {
+      if (src && this.audioEl && this.currentIndex === index) {
+        if (isOffline && this.audioEl.src !== src) {
+          const curTime = this.audioEl.currentTime;
+          const wasPlaying = !this.audioEl.paused;
+          this.audioEl.src = src;
+          this.audioEl.currentTime = curTime;
+          if (wasPlaying) this.audioEl.play().catch(() => {});
+        }
 
-    this.audioEl.src = src;
-    this.audioEl.playbackRate = this.playbackRate;
-
-    const pill = document.getElementById("shuffle-offline-pill");
-    if (pill) {
-      if (isOffline) {
-        pill.className = "shuffle-offline-pill offline";
-        pill.textContent = "📥 本地离线播放 (0延迟秒切)";
-      } else {
-        pill.className = "shuffle-offline-pill online";
-        pill.textContent = "☁️ 云端流式播放 (支持断点拖拽)";
+        const pill = document.getElementById("shuffle-offline-pill");
+        if (pill) {
+          if (isOffline) {
+            pill.className = "shuffle-offline-pill offline";
+            pill.textContent = "📥 本地离线播放 (0延迟秒切)";
+          } else {
+            pill.className = "shuffle-offline-pill online";
+            pill.textContent = "☁️ 云端流式播放 (支持断点拖拽)";
+          }
+        }
       }
-    }
-
-    if (autoPlay) {
-      this.resumeAudioContext();
-      this.audioEl.play().catch((err) => {
-        console.warn("Audio auto-play blocked or failed:", err);
-      });
-    }
+    });
   },
 
   renderCurrentTrackInfo(track) {
@@ -8635,8 +8856,12 @@ export const ShufflePlayer = {
       if (lyricsEl) {
         lyricsEl.innerHTML = `<div class="shuffle-lyrics-empty">在「📚 收藏知识库」勾选音频进入播放库后即可在此畅听并同步展现精读文案。</div>`;
       }
+      this.updateMediaSession(null);
       return;
     }
+
+    // 触发系统锁屏媒体卡片更新 (封面、标题、博主/标签)
+    this.updateMediaSession(track);
 
     if (titleEl) {
       titleEl.textContent = track.title || "无标题音频";
@@ -8794,6 +9019,10 @@ export const ShufflePlayer = {
     this.currentIndex = -1;
     this.updatePlayStateUI(false);
     this.renderCurrentTrackInfo(null);
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = "none";
+    }
   }
 };
 
