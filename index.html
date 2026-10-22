@@ -487,7 +487,7 @@
             </div>
 
             <!-- 音频元素 -->
-            <audio id="shuffle-audio-element" preload="auto" style="display: none;"></audio>
+            <audio id="shuffle-audio-element" preload="auto" crossorigin="anonymous" style="display: none;"></audio>
 
             <!-- 自定义可拖拽高精进度条 -->
             <div class="shuffle-scrubber-area">
@@ -516,6 +516,14 @@
               </button>
               <button id="btn-shuffle-speed-toggle" class="btn-shuffle-ctrl" type="button" title="切换播放倍速">
                 1.0x
+              </button>
+            </div>
+
+            <!-- 辅助功能行：智能音量动态均衡 -->
+            <div class="shuffle-audio-enhancer-row">
+              <button id="btn-shuffle-equalizer-toggle" class="btn-equalizer-pill active" type="button" title="智能音量动态均衡：自动提升微弱说话声(+4dB)，并平抑突发刺耳爆音，保护耳膜（点击切换）">
+                <span class="equalizer-pill-icon">🎚️</span>
+                <span id="shuffle-equalizer-text">智能音量均衡 · 开</span>
               </button>
             </div>
 

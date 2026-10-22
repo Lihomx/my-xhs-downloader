@@ -1042,6 +1042,7 @@ export async function serveMedia(r2, key, request) {
   headers.set("etag", object.httpEtag);
   headers.set("cache-control", "public, max-age=31536000, immutable");
   headers.set("accept-ranges", "bytes");
+  headers.set("access-control-allow-origin", "*");
 
   // 如果客户端发起了 Range 请求且 R2 返回了对应切片
   if (rangeHeader && object.range) {

@@ -7695,13 +7695,21 @@ export const ShufflePlayer = {
   _touchDragSourceIndex: null,
   _touchOverIndex: null,
   _touchIsBottom: false,
+  // 智能音量动态均衡 (Web Audio API 实时动态压限与人声提亮)
+  isEqualizerEnabled: localStorage.getItem("shuffle_audio_equalizer") !== "false", // 默认开启
+  audioCtx: null,
+  audioSourceNode: null,
+  compressorNode: null,
+  gainNode: null,
 
   init() {
     this.audioEl = document.getElementById("shuffle-audio-element");
     if (!this.audioEl) return;
+    this.audioEl.crossOrigin = "anonymous";
 
     this.playStats = this.getPlayStats();
     this.updateModeBtnUI();
+    this.updateEqualizerBtnUI();
 
     // 播放/暂停
     const playPauseBtn = document.getElementById("btn-shuffle-play-pause");
@@ -7714,6 +7722,12 @@ export const ShufflePlayer = {
     // 绑定 "🌱 低播放优先排前" 快捷重排按钮
     document.getElementById("btn-shuffle-sort-least-played")?.addEventListener("click", () => {
       this.sortByLeastPlayed();
+    });
+
+    // 绑定 🎚️ 智能音量动态均衡开关
+    document.getElementById("btn-shuffle-equalizer-toggle")?.addEventListener("click", () => {
+      this.resumeAudioContext();
+      this.toggleEqualizer();
     });
 
     // 播放模式切换 (顺序播放 / 列表循环 / 智能随机 / 单曲循环)
@@ -7793,6 +7807,7 @@ export const ShufflePlayer = {
     });
 
     this.audioEl.addEventListener("play", () => {
+      this.resumeAudioContext();
       this.updatePlayStateUI(true);
     });
 
@@ -7872,6 +7887,104 @@ export const ShufflePlayer = {
     } else if (this.mode === "single") {
       modeBtn.innerHTML = "🔂 单曲";
       modeBtn.title = "单曲循环模式";
+    }
+  },
+
+  initAudioEqualizer() {
+    if (this.audioCtx) return;
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass || !this.audioEl) return;
+
+      this.audioCtx = new AudioContextClass();
+      this.audioSourceNode = this.audioCtx.createMediaElementSource(this.audioEl);
+
+      // 动态压缩器 (平抑尖锐爆音、缩小各博主动态范围差距)
+      this.compressorNode = this.audioCtx.createDynamicsCompressor();
+
+      // 补偿增益节点 (人声播客专属补偿，使微弱低语清晰丰满)
+      this.gainNode = this.audioCtx.createGain();
+
+      // 连接音频处理链路: audioEl -> compressor -> gain -> destination
+      this.audioSourceNode.connect(this.compressorNode);
+      this.compressorNode.connect(this.gainNode);
+      this.gainNode.connect(this.audioCtx.destination);
+
+      this.applyEqualizerSettings();
+    } catch (e) {
+      console.warn("Web Audio Equalizer init error:", e);
+    }
+  },
+
+  applyEqualizerSettings() {
+    if (!this.audioCtx || !this.compressorNode || !this.gainNode) return;
+    try {
+      const now = this.audioCtx.currentTime || 0;
+
+      if (this.isEqualizerEnabled) {
+        // 人声播客优化模式:
+        // threshold: -24dB 触发压限
+        // knee: 30dB 平滑过渡软拐点，无抽吸杂音
+        // ratio: 6:1 稳健压缩比，抹平不同博主大落差
+        // attack: 3ms 极速压制刺耳爆音
+        // release: 250ms 人声衰减自然释放
+        // gain: +4dB (约 1.58x) 平滑提亮低声细语
+        this.compressorNode.threshold.setValueAtTime(-24, now);
+        this.compressorNode.knee.setValueAtTime(30, now);
+        this.compressorNode.ratio.setValueAtTime(6, now);
+        this.compressorNode.attack.setValueAtTime(0.003, now);
+        this.compressorNode.release.setValueAtTime(0.25, now);
+        this.gainNode.gain.setValueAtTime(1.58, now);
+      } else {
+        // 完全旁路直通 (1:1 零压缩，1.0x 原始增益)
+        this.compressorNode.threshold.setValueAtTime(0, now);
+        this.compressorNode.ratio.setValueAtTime(1, now);
+        this.gainNode.gain.setValueAtTime(1.0, now);
+      }
+    } catch (e) {
+      console.warn("applyEqualizerSettings error:", e);
+    }
+  },
+
+  async resumeAudioContext() {
+    if (!this.audioCtx) {
+      this.initAudioEqualizer();
+    }
+    if (this.audioCtx && this.audioCtx.state === "suspended") {
+      try {
+        await this.audioCtx.resume();
+      } catch (err) {
+        console.warn("AudioContext resume failed:", err);
+      }
+    }
+  },
+
+  toggleEqualizer() {
+    this.isEqualizerEnabled = !this.isEqualizerEnabled;
+    localStorage.setItem("shuffle_audio_equalizer", String(this.isEqualizerEnabled));
+    this.applyEqualizerSettings();
+    this.updateEqualizerBtnUI();
+
+    if (this.isEqualizerEnabled) {
+      showToast("🎚️ 已开启智能音量均衡（人声提亮 +4dB，自动防刺耳爆音）");
+    } else {
+      showToast("🎚️ 已关闭智能音量均衡（恢复原音频音量动态）");
+    }
+  },
+
+  updateEqualizerBtnUI() {
+    const btn = document.getElementById("btn-shuffle-equalizer-toggle");
+    const textEl = document.getElementById("shuffle-equalizer-text");
+    if (!btn) return;
+
+    if (this.isEqualizerEnabled) {
+      btn.classList.add("active");
+      btn.title = "智能音量动态均衡：已开启。自动提升微弱说话声(+4dB)并平抑刺耳爆音（点击关闭）";
+      if (textEl) textEl.textContent = "智能音量均衡 · 开";
+    } else {
+      btn.classList.remove("active");
+      btn.title = "智能音量动态均衡：已关闭。当前为原音频动态（点击开启）";
+      if (textEl) textEl.textContent = "智能音量均衡 · 关";
     }
   },
 
@@ -8493,6 +8606,7 @@ export const ShufflePlayer = {
     }
 
     if (autoPlay) {
+      this.resumeAudioContext();
       this.audioEl.play().catch((err) => {
         console.warn("Audio auto-play blocked or failed:", err);
       });
@@ -8582,11 +8696,13 @@ export const ShufflePlayer = {
   },
 
   playIndex(index) {
+    this.resumeAudioContext();
     this.prepareTrack(index, true);
   },
 
   togglePlay() {
     if (!this.audioEl) return;
+    this.resumeAudioContext();
     if (this.playlist.length === 0) {
       showToast("随身听播放库暂无音频，请先在知识库中勾选！");
       return;

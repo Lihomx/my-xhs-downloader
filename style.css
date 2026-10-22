@@ -4091,6 +4091,53 @@ mark.transcript-hl:hover {
   box-shadow: 0 6px 18px rgba(255, 36, 66, 0.45);
 }
 
+/* 智能音量动态均衡控制行 */
+.shuffle-audio-enhancer-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.btn-equalizer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
+  color: var(--text-sub);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.btn-equalizer-pill:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.btn-equalizer-pill.active {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(34, 197, 94, 0.15);
+}
+
+.btn-equalizer-pill.active:hover {
+  background: #dcfce7;
+  border-color: #4ade80;
+  color: #15803d;
+}
+
+.equalizer-pill-icon {
+  font-size: 13px;
+}
+
 /* 文案歌词同步卡片 */
 .shuffle-lyrics-card {
   width: 100%;
