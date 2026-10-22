@@ -239,6 +239,7 @@ const state = {
   currentAuthor: "__all__",
   authors: [],
   unknownAuthorCount: 0,
+  notesSortOrder: localStorage.getItem("kb_notes_sort_order") || "created_desc",
   // 批量采集队列状态
   batchQueue: [],
   isBatchRunning: false,
@@ -6955,6 +6956,22 @@ function switchAuthor(author, label) {
   loadNotes(searchVal);
 }
 
+function updateSortBtnUI() {
+  const btn = document.getElementById("btn-kb-sort-toggle");
+  const textEl = document.getElementById("kb-sort-toggle-text");
+  if (!btn) return;
+  const isAsc = state.notesSortOrder === "created_asc";
+  if (isAsc) {
+    btn.classList.add("asc");
+    btn.title = "当前：最早收藏优先（从旧到新），点击切换为最新收藏优先";
+    if (textEl) textEl.textContent = "最早收藏 ↑";
+  } else {
+    btn.classList.remove("asc");
+    btn.title = "当前：最新收藏优先（从新到旧），点击切换为最早收藏优先";
+    if (textEl) textEl.textContent = "最新收藏 ↓";
+  }
+}
+
 async function loadNotes(search = "") {
   const gridContainer = document.getElementById("kb-notes-grid");
   const emptyHint = document.getElementById("kb-empty-hint");
@@ -6963,7 +6980,7 @@ async function loadNotes(search = "") {
   gridContainer.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding: 40px; color: var(--text-sub);">正在加载知识库笔记...</div>`;
 
   try {
-    let url = `/api/notes?limit=100&q=${encodeURIComponent(search)}`;
+    let url = `/api/notes?limit=100&q=${encodeURIComponent(search)}&sort=${encodeURIComponent(state.notesSortOrder || "created_desc")}`;
     if (state.currentCategory && state.currentCategory !== "__all__") {
       url += `&tag=${encodeURIComponent(state.currentCategory)}`;
     }
@@ -8956,6 +8973,22 @@ document.addEventListener("DOMContentLoaded", () => {
     kbSearchTimer = setTimeout(() => {
       loadNotes(e.target.value);
     }, 300);
+  });
+
+  // 知识库收藏时间正倒序切换 (新到旧 / 旧到新)
+  updateSortBtnUI();
+  document.getElementById("btn-kb-sort-toggle")?.addEventListener("click", () => {
+    if (state.notesSortOrder === "created_desc") {
+      state.notesSortOrder = "created_asc";
+      showToast("已切换为：最早收藏优先 ↑");
+    } else {
+      state.notesSortOrder = "created_desc";
+      showToast("已切换为：最新收藏优先 ↓");
+    }
+    localStorage.setItem("kb_notes_sort_order", state.notesSortOrder);
+    updateSortBtnUI();
+    const searchVal = document.getElementById("kb-search-input")?.value || "";
+    loadNotes(searchVal);
   });
 
   // 分类模式切换：🏷️ 标签分类 vs 👤 博主分类

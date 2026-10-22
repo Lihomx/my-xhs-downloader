@@ -535,7 +535,7 @@ export async function archiveNote(env, noteData) {
 /**
  * 分页与关键词、分类、博主检索笔记列表
  */
-export async function listNotes(db, { search = "", tag = "", author = "", limit = 20, offset = 0 } = {}) {
+export async function listNotes(db, { search = "", tag = "", author = "", sort = "created_desc", limit = 20, offset = 0 } = {}) {
   if (!db) return { total: 0, items: [] };
   await initDb(db);
 
@@ -570,7 +570,8 @@ export async function listNotes(db, { search = "", tag = "", author = "", limit 
     countQuery += whereClause;
   }
 
-  query += " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+  const sortDirection = sort === "created_asc" ? "ASC" : "DESC";
+  query += ` ORDER BY created_at ${sortDirection} LIMIT ? OFFSET ?`;
 
   const totalRow = await db.prepare(countQuery).bind(...params).first();
   const total = totalRow?.total || 0;

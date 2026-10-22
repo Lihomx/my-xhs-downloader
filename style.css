@@ -6787,3 +6787,42 @@ mark.transcript-hl:hover {
   transform: translateY(-1px);
 }
 
+/* 知识库收藏时间正倒序切换按钮 */
+.kb-sort-pill-btn {
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-main);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.kb-sort-pill-btn:hover {
+  background: var(--surface-alt);
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.kb-sort-pill-btn.asc {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.kb-sort-pill-btn.asc:hover {
+  background: #dcfce7;
+  border-color: #4ade80;
+  color: #15803d;
+}
+
+
