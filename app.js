@@ -1584,6 +1584,47 @@ function parseTimestampToSeconds(str) {
   return 0;
 }
 
+// 时间戳批量平移微调 (解决音画/原声音频与提取字幕对不上的时差偏置)
+function shiftTranscriptTimestamps(rawTranscript, offsetSeconds) {
+  if (!rawTranscript || typeof rawTranscript !== "string" || !offsetSeconds) {
+    return rawTranscript;
+  }
+
+  let result = rawTranscript;
+
+  // 1. 平移 HTML 属性 data-time="..."
+  result = result.replace(/data-time=(["'])(\d+(?:\.\d+)?)\1/g, (match, quote, val) => {
+    const oldSec = parseFloat(val);
+    if (isNaN(oldSec)) return match;
+    const newSec = Math.max(0, oldSec + offsetSeconds);
+    const rounded = Math.round(newSec * 100) / 100;
+    return `data-time=${quote}${rounded}${quote}`;
+  });
+
+  // 2. 平移 HTML 属性 data-timestr="..."
+  result = result.replace(/data-timestr=(["'])(\d{1,2}:\d{2}(?::\d{2})?)\1/g, (match, quote, val) => {
+    const oldSec = parseTimestampToSeconds(val);
+    const newSec = Math.max(0, oldSec + offsetSeconds);
+    return `data-timestr=${quote}${formatTimestamp(newSec)}${quote}`;
+  });
+
+  // 3. 平移文案中方括号时间戳 [00:15]
+  result = result.replace(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g, (match, timeStr) => {
+    const oldSec = parseTimestampToSeconds(timeStr);
+    const newSec = Math.max(0, Math.round(oldSec + offsetSeconds));
+    return `[${formatTimestamp(newSec)}]`;
+  });
+
+  // 4. 平移文案中秒表符号时间戳 ⏱️ 00:15
+  result = result.replace(/(⏱️\s*)(\d{1,2}:\d{2}(?::\d{2})?)/g, (match, prefix, timeStr) => {
+    const oldSec = parseTimestampToSeconds(timeStr);
+    const newSec = Math.max(0, Math.round(oldSec + offsetSeconds));
+    return `${prefix}${formatTimestamp(newSec)}`;
+  });
+
+  return result;
+}
+
 // 同步跳转播放页面或弹窗中的媒体 (视频或音频)
 function seekAllMediaTo(seconds) {
   if (typeof seconds !== "number" || isNaN(seconds) || seconds < 0) return;
@@ -7709,6 +7750,10 @@ export const ShufflePlayer = {
   isTheaterOpen: false,
   isUserScrollingTheater: false,
   userScrollTheaterTimer: null,
+  // ⏱️ 语音字幕校对同步偏置与状态
+  calibrateOffset: 0,
+  originalTranscriptBeforeCalibrate: null,
+  isCalibrateBarOpen: false,
 
   init() {
     this.audioEl = document.getElementById("shuffle-audio-element");
@@ -7751,6 +7796,9 @@ export const ShufflePlayer = {
 
     // 绑定开启全屏大字幕剧场
     document.getElementById("btn-shuffle-open-theater")?.addEventListener("click", () => this.openTheater());
+
+    // 绑定卡片「🎙️ 语音重提」
+    document.getElementById("btn-shuffle-retranscribe")?.addEventListener("click", () => this.retranscribeCurrentTrack());
 
     // 绑定全屏大字幕剧场内部所有事件
     this.initTheaterEvents();
@@ -8021,8 +8069,10 @@ export const ShufflePlayer = {
         const theaterCurTime = document.getElementById("theater-time-current");
         const theaterDurTime = document.getElementById("theater-time-duration");
         const theaterSlider = document.getElementById("theater-scrub-slider");
+        const calCurTime = document.getElementById("cal-cur-time-display");
         if (theaterCurTime) theaterCurTime.textContent = this.formatTimeSec(cur);
         if (theaterDurTime) theaterDurTime.textContent = this.formatTimeSec(dur);
+        if (calCurTime) calCurTime.textContent = this.formatTimeSec(cur);
         if (theaterSlider && !this.isScrubbing) theaterSlider.value = ((cur / dur) * 100).toFixed(1);
         this.syncTheaterFollow();
       }
@@ -8368,6 +8418,22 @@ export const ShufflePlayer = {
     // 退出全屏大字幕
     document.getElementById("btn-theater-close")?.addEventListener("click", () => this.closeTheater());
 
+    // 剧场顶部操作：🎙️ 语音重提 (快捷键: T)
+    document.getElementById("btn-theater-retranscribe")?.addEventListener("click", () => this.retranscribeCurrentTrack());
+
+    // 剧场顶部操作：⏱️ 校对同步 (快捷键: C)
+    document.getElementById("btn-theater-calibrate")?.addEventListener("click", () => this.toggleCalibrateBar());
+
+    // 校准条操作按钮
+    document.getElementById("btn-cal-dec-large")?.addEventListener("click", () => this.stepCalibrateOffset(-0.5));
+    document.getElementById("btn-cal-dec-small")?.addEventListener("click", () => this.stepCalibrateOffset(-0.2));
+    document.getElementById("btn-cal-inc-small")?.addEventListener("click", () => this.stepCalibrateOffset(0.2));
+    document.getElementById("btn-cal-inc-large")?.addEventListener("click", () => this.stepCalibrateOffset(0.5));
+    document.getElementById("btn-cal-align-current")?.addEventListener("click", () => this.alignCurrentSentenceToAudio());
+    document.getElementById("btn-cal-reset")?.addEventListener("click", () => this.resetCalibrateOffset());
+    document.getElementById("btn-cal-save")?.addEventListener("click", () => this.saveCalibrateOffset());
+    document.getElementById("btn-cal-close")?.addEventListener("click", () => this.toggleCalibrateBar());
+
     // 剧场字号微调
     document.getElementById("btn-theater-font-dec")?.addEventListener("click", () => this.adjustTheaterFontSize(-2));
     document.getElementById("btn-theater-font-inc")?.addEventListener("click", () => this.adjustTheaterFontSize(2));
@@ -8441,10 +8507,31 @@ export const ShufflePlayer = {
       this.syncTheaterFollow(true);
     });
 
-    // Esc 按键退出
+    // 全屏大字幕快捷键 (T: 语音重提, C: 校对同步, [: 提前0.2s, ]: 延后0.2s, Space: 播放/暂停, Esc: 退出剧场)
     window.addEventListener("keydown", (e) => {
-      if (this.isTheaterOpen && e.key === "Escape") {
+      if (!this.isTheaterOpen) return;
+      const activeTag = document.activeElement ? document.activeElement.tagName : "";
+      if (["INPUT", "TEXTAREA"].includes(activeTag) || document.activeElement?.isContentEditable) {
+        return;
+      }
+
+      if (e.key === "Escape") {
         this.closeTheater();
+      } else if (e.key === "t" || e.key === "T") {
+        e.preventDefault();
+        this.retranscribeCurrentTrack();
+      } else if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        this.toggleCalibrateBar();
+      } else if (e.key === "[") {
+        e.preventDefault();
+        this.stepCalibrateOffset(-0.2);
+      } else if (e.key === "]") {
+        e.preventDefault();
+        this.stepCalibrateOffset(0.2);
+      } else if (e.code === "Space") {
+        e.preventDefault();
+        this.togglePlay();
       }
     });
   },
@@ -8456,11 +8543,17 @@ export const ShufflePlayer = {
     modal.style.display = "flex";
     document.body.style.overflow = "hidden";
 
+    // 初始化校准基准状态
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    this.originalTranscriptBeforeCalibrate = track ? (track.transcript || "") : null;
+    this.calibrateOffset = 0;
+    this.isCalibrateBarOpen = false;
+    this.updateCalibrateUI();
+
     // 同步字号与播放器状态
     this.applyTheaterFontSize();
     this.syncTheaterPlaybackUI();
 
-    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
     this.renderTheaterTrackInfo(track);
     this.renderTheaterLyrics(track);
 
@@ -8476,6 +8569,328 @@ export const ShufflePlayer = {
     document.body.style.overflow = "";
     this.isUserScrollingTheater = false;
     clearTimeout(this.userScrollTheaterTimer);
+    if (this.isCalibrateBarOpen) {
+      this.isCalibrateBarOpen = false;
+      this.updateCalibrateUI();
+    }
+  },
+
+  toggleCalibrateBar() {
+    this.isCalibrateBarOpen = !this.isCalibrateBarOpen;
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    if (this.isCalibrateBarOpen && track && this.originalTranscriptBeforeCalibrate === null) {
+      this.originalTranscriptBeforeCalibrate = track.transcript || "";
+    }
+    this.updateCalibrateUI();
+  },
+
+  updateCalibrateUI() {
+    const valEl = document.getElementById("calibrate-offset-val");
+    const bar = document.getElementById("theater-calibrate-bar");
+    const btnCalibrate = document.getElementById("btn-theater-calibrate");
+    const curTimeDisplay = document.getElementById("cal-cur-time-display");
+
+    if (valEl) {
+      const sign = this.calibrateOffset > 0 ? "+" : "";
+      valEl.textContent = `${sign}${this.calibrateOffset.toFixed(1)}s`;
+      if (this.calibrateOffset !== 0) {
+        valEl.style.color = "#ec4899";
+      } else {
+        valEl.style.color = "var(--primary, #ea2c43)";
+      }
+    }
+
+    if (curTimeDisplay && this.audioEl) {
+      curTimeDisplay.textContent = this.formatTimeSec(this.audioEl.currentTime || 0);
+    }
+
+    if (btnCalibrate) {
+      if (this.isCalibrateBarOpen) {
+        btnCalibrate.classList.add("active");
+      } else {
+        btnCalibrate.classList.remove("active");
+      }
+    }
+
+    if (bar) {
+      bar.style.display = this.isCalibrateBarOpen ? "flex" : "none";
+    }
+  },
+
+  stepCalibrateOffset(delta) {
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    if (!track || !track.transcript) {
+      showToast("当前音频暂无文案，无法校对");
+      return;
+    }
+
+    if (this.originalTranscriptBeforeCalibrate === null) {
+      this.originalTranscriptBeforeCalibrate = track.transcript || "";
+    }
+
+    this.calibrateOffset = Math.round((this.calibrateOffset + delta) * 10) / 10;
+    this.updateCalibrateUI();
+    this.applyCalibrateOffsetPreview();
+  },
+
+  applyCalibrateOffsetPreview() {
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    if (!track) return;
+
+    // 重新渲染剧场大字幕与卡片字幕以立即应用预览偏置
+    if (this.isTheaterOpen) {
+      this.renderTheaterLyrics(track);
+      this.syncTheaterFollow(true);
+    }
+    this.renderCurrentTrackInfo(track);
+    if (this.isLyricsFollowEnabled) {
+      this.syncLyricsFollow(true);
+    }
+  },
+
+  alignCurrentSentenceToAudio() {
+    if (!this.audioEl) return;
+    const curAudioSec = this.audioEl.currentTime;
+
+    const scroller = document.getElementById("theater-lyrics-scroller");
+    if (!scroller) return;
+
+    const lines = Array.from(scroller.querySelectorAll(".theater-lyrics-line[data-time]"));
+    if (lines.length === 0) {
+      showToast("当前文案中未检测到时间戳，无法对齐");
+      return;
+    }
+
+    // 1. 优先获取当前高亮朗读的句子
+    let targetLine = scroller.querySelector(".theater-lyrics-line.active-speaking[data-time]");
+
+    // 2. 若无高亮，取时间戳最接近当前发音点的句子
+    if (!targetLine) {
+      let closestDiff = Infinity;
+      for (const l of lines) {
+        const t = parseFloat(l.dataset.time);
+        if (!isNaN(t)) {
+          const diff = Math.abs(t - curAudioSec);
+          if (diff < closestDiff) {
+            closestDiff = diff;
+            targetLine = l;
+          }
+        }
+      }
+    }
+
+    if (!targetLine) {
+      showToast("未找到可对齐的句子");
+      return;
+    }
+
+    const lineTimeSec = parseFloat(targetLine.dataset.time);
+    if (isNaN(lineTimeSec)) return;
+
+    const delta = curAudioSec - lineTimeSec;
+    if (Math.abs(delta) < 0.05) {
+      showToast(`🎯 当前句发音已与时间戳 (${this.formatTimeSec(curAudioSec)}) 完美对齐`);
+      return;
+    }
+
+    this.stepCalibrateOffset(delta);
+    showToast(`🎯 已将当前句对齐发音点 (${this.formatTimeSec(curAudioSec)})！偏置: ${this.calibrateOffset >= 0 ? '+' : ''}${this.calibrateOffset.toFixed(1)}s`);
+  },
+
+  resetCalibrateOffset() {
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    this.calibrateOffset = 0;
+    this.updateCalibrateUI();
+
+    if (this.originalTranscriptBeforeCalibrate !== null && track) {
+      track.transcript = this.originalTranscriptBeforeCalibrate;
+    }
+
+    if (this.isTheaterOpen) {
+      this.renderTheaterLyrics(track);
+      this.syncTheaterFollow(true);
+    }
+    this.renderCurrentTrackInfo(track);
+    if (this.isLyricsFollowEnabled) {
+      this.syncLyricsFollow(true);
+    }
+    showToast("🔄 已恢复原始时间戳");
+  },
+
+  async saveCalibrateOffset() {
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    if (!track || !track.id) {
+      showToast("当前暂无播放中的音频笔记");
+      return;
+    }
+    if (!track.transcript) {
+      showToast("当前音频暂无文案，无法保存校准");
+      return;
+    }
+    if (this.calibrateOffset === 0) {
+      showToast("当前偏置为 0，时间戳无需保存");
+      return;
+    }
+
+    const btnSave = document.getElementById("btn-cal-save");
+    const originalHtml = btnSave ? btnSave.innerHTML : "";
+    if (btnSave) {
+      btnSave.disabled = true;
+      btnSave.innerHTML = `<span>⏳ 保存中...</span>`;
+    }
+
+    try {
+      // 永久重写时间戳文本
+      const baseTranscript = this.originalTranscriptBeforeCalibrate || track.transcript;
+      const newTranscript = shiftTranscriptTimestamps(baseTranscript, this.calibrateOffset);
+
+      const res = await fetch(`/api/notes/${track.id}/transcript`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-auth-pin": state.pin
+        },
+        body: JSON.stringify({
+          transcript: newTranscript,
+          extractedAt: Date.now()
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || `HTTP ${res.status}`);
+      }
+
+      // 更新内存与离线缓存
+      track.transcript = newTranscript;
+      this.originalTranscriptBeforeCalibrate = newTranscript;
+      const savedOffset = this.calibrateOffset;
+      this.calibrateOffset = 0;
+      this.updateCalibrateUI();
+
+      if (state.activeDetailNote && state.activeDetailNote.id === track.id) {
+        state.activeDetailNote.transcript = newTranscript;
+      }
+
+      OfflineMediaManager.cacheUrl(track.mediaUrl, {
+        noteId: track.id,
+        title: track.title,
+        coverUrl: track.coverUrl,
+        transcript: newTranscript,
+        tags: track.tags
+      }).catch(() => {});
+
+      if (this.isTheaterOpen) {
+        this.renderTheaterLyrics(track);
+        this.syncTheaterFollow(true);
+      }
+      this.renderCurrentTrackInfo(track);
+      if (this.isLyricsFollowEnabled) {
+        this.syncLyricsFollow(true);
+      }
+
+      showToast(`🎉 校准已永久保存至云端数据库！(偏置 ${savedOffset >= 0 ? '+' : ''}${savedOffset.toFixed(1)}s 已重写时间戳)`);
+    } catch (err) {
+      console.error("Save calibrated transcript error:", err);
+      showToast(`❌ 保存校准失败: ${err.message}`, { isError: true });
+    } finally {
+      if (btnSave) {
+        btnSave.disabled = false;
+        btnSave.innerHTML = originalHtml || `<span>💾 永久保存校准</span>`;
+      }
+    }
+  },
+
+  async retranscribeCurrentTrack() {
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    if (!track || !track.id) {
+      showToast("当前暂无播放中的音频");
+      return;
+    }
+
+    const mediaUrl = track.audioUrl || track.mediaUrl;
+    if (!mediaUrl) {
+      showToast("当前音频缺少有效媒体链接，无法提取", { isError: true });
+      return;
+    }
+
+    const shortTitle = (track.title || "当前音频").substring(0, 16);
+    if (!confirm(`确定调用 AI Whisper 从原声音频重新提取「${shortTitle}」的字幕吗？\n\n提取将自动生成 100% 语音对齐时间戳并直接保存覆盖至云端数据库。`)) {
+      return;
+    }
+
+    const overlay = document.getElementById("theater-transcribe-overlay");
+    const msgEl = document.getElementById("theater-transcribe-msg");
+    const btnTheater = document.getElementById("btn-theater-retranscribe");
+    const btnCard = document.getElementById("btn-shuffle-retranscribe");
+
+    if (overlay) overlay.style.display = "flex";
+    if (msgEl) msgEl.textContent = `正在调用 AI Whisper 极速高精转写「${shortTitle}」...`;
+    if (btnTheater) {
+      btnTheater.disabled = true;
+      btnTheater.classList.add("loading");
+    }
+    if (btnCard) {
+      btnCard.disabled = true;
+      btnCard.classList.add("loading");
+    }
+
+    try {
+      showToast("🎙️ 正在调用 AI Whisper 高精转写原声音频...");
+      const res = await transcribeAudio(mediaUrl, null, track.id, {
+        autoSave: true,
+        renderBox: false,
+        onStatus: (msg) => {
+          if (msgEl) msgEl.textContent = msg;
+        },
+        onProgress: ({ percent, current, total, msg }) => {
+          if (msgEl) {
+            msgEl.textContent = msg || `正在处理音频切片 (${current || 0}/${total || 0})... ${percent || 0}%`;
+          }
+        }
+      });
+
+      if (res && res.success && res.transcript) {
+        track.transcript = res.transcript;
+        this.originalTranscriptBeforeCalibrate = res.transcript;
+        this.calibrateOffset = 0;
+        this.updateCalibrateUI();
+
+        this.renderCurrentTrackInfo(track);
+        if (this.isTheaterOpen) {
+          this.renderTheaterLyrics(track);
+          this.syncTheaterFollow(true);
+        }
+        if (this.isLyricsFollowEnabled) {
+          this.syncLyricsFollow(true);
+        }
+
+        OfflineMediaManager.cacheUrl(track.mediaUrl, {
+          noteId: track.id,
+          title: track.title,
+          coverUrl: track.coverUrl,
+          transcript: res.transcript,
+          tags: track.tags
+        }).catch(() => {});
+
+        showToast("🎉 语音字幕重新提取成功！已 100% 同步原声音频并永久保存");
+      } else {
+        throw new Error(res?.error || "AI 语音识别未返回有效文本内容");
+      }
+    } catch (err) {
+      console.error("Retranscribe error:", err);
+      showToast(`❌ 重新提取失败: ${err.message}`, { isError: true });
+    } finally {
+      if (overlay) overlay.style.display = "none";
+      if (btnTheater) {
+        btnTheater.disabled = false;
+        btnTheater.classList.remove("loading");
+      }
+      if (btnCard) {
+        btnCard.disabled = false;
+        btnCard.classList.remove("loading");
+      }
+    }
   },
 
   renderTheaterTrackInfo(track) {
@@ -8525,6 +8940,10 @@ export const ShufflePlayer = {
       } else {
         const dataTimeMatch = line.match(/data-time=["'](\d+(?:\.\d+)?)["']/);
         if (dataTimeMatch) timeSec = parseFloat(dataTimeMatch[1]);
+      }
+
+      if (timeSec !== null && !isNaN(timeSec) && this.calibrateOffset) {
+        timeSec = Math.max(0, Math.round((timeSec + this.calibrateOffset) * 100) / 100);
       }
 
       const timeAttr = timeSec !== null && !isNaN(timeSec) ? `data-time="${timeSec}" title="轻触跳转至 ${this.formatTimeSec(timeSec)}"` : "";
@@ -9382,6 +9801,14 @@ export const ShufflePlayer = {
     this.renderCurrentTrackInfo(track);
     this.highlightActiveCard(index);
 
+    if (this.isTheaterOpen) {
+      this.renderTheaterTrackInfo(track);
+      this.renderTheaterLyrics(track);
+      this.calibrateOffset = 0;
+      this.originalTranscriptBeforeCalibrate = track ? (track.transcript || "") : null;
+      this.updateCalibrateUI();
+    }
+
     if (!this.audioEl) return;
 
     this.setupAudioSession();
@@ -9512,6 +9939,10 @@ export const ShufflePlayer = {
             if (dataTimeMatch) {
               timeSec = parseFloat(dataTimeMatch[1]);
             }
+          }
+
+          if (timeSec !== null && !isNaN(timeSec) && this.calibrateOffset) {
+            timeSec = Math.max(0, Math.round((timeSec + this.calibrateOffset) * 100) / 100);
           }
 
           const timeAttr = timeSec !== null && !isNaN(timeSec) ? `data-time="${timeSec}" title="点击跳转至 ${this.formatTimeSec(timeSec)}"` : "";

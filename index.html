@@ -542,6 +542,10 @@
                   <button id="btn-shuffle-open-theater" class="btn-theater-open-pill" type="button" title="开启沉浸全屏大字幕模式（巨幅动态歌词、封面毛玻璃质感背景、居中同步聚焦）">
                     <span>📺 全屏大字幕</span>
                   </button>
+                  <!-- 🎙️ 语音重新提取字幕 -->
+                  <button id="btn-shuffle-retranscribe" class="btn-card-action-pill" type="button" title="调用 AI Whisper 从原声音频极速重新转写，解决音画字幕对不上的问题">
+                    <span>🎙️ 语音重提</span>
+                  </button>
                   <button id="btn-shuffle-lyrics-follow" class="btn-lyrics-follow-toggle" type="button" title="点击开启/关闭随声聚焦跟读（播放时文案自动同步滚动并高亮发音句）">
                     <span class="follow-icon">🎯</span>
                     <span id="shuffle-lyrics-follow-text">聚焦跟读 · 关</span>
@@ -1624,16 +1628,77 @@
           </div>
         </div>
         <div class="theater-header-actions">
+          <!-- 🎙️ 语音重提 (快捷键: T) -->
+          <button id="btn-theater-retranscribe" class="btn-theater-action-pill btn-theater-transcribe" type="button" title="调用 AI Whisper 从原声音频极速重新转写，解决音画字幕对不上的问题 (快捷键: T)">
+            <span class="pill-icon">🎙️</span>
+            <span class="btn-text">语音重提</span>
+            <span class="kbd-badge">T</span>
+          </button>
+
+          <!-- ⏱️ 校对同步 (快捷键: C) -->
+          <button id="btn-theater-calibrate" class="btn-theater-action-pill btn-theater-calibrate" type="button" title="展开时差偏置微调校准面板，支持按 [ 和 ] 或一键将当前句对齐发音 (快捷键: C)">
+            <span class="pill-icon">⏱️</span>
+            <span class="btn-text">校对同步</span>
+            <span class="kbd-badge">C</span>
+          </button>
+
+          <!-- 剧场大字号微调器 -->
           <div class="theater-font-adjuster" title="调节剧场大字幕字号">
             <button id="btn-theater-font-dec" class="theater-font-btn" type="button" title="减小字幕字号">A-</button>
             <span id="theater-font-indicator" class="theater-font-indicator">26px</span>
             <button id="btn-theater-font-inc" class="theater-font-btn" type="button" title="增大字幕字号">A+</button>
           </div>
+
+          <!-- 关闭剧场 -->
           <button id="btn-theater-close" class="btn-theater-close" type="button" title="退出全屏大字幕模式 (快捷键: Esc)">
             <span>✕ 收起</span>
           </button>
         </div>
       </header>
+
+      <!-- ⏱️ 语音字幕时差微调校准浮层 (校对语音和字幕是否同步) -->
+      <div id="theater-calibrate-bar" class="theater-calibrate-bar" style="display: none;">
+        <div class="calibrate-left">
+          <div class="calibrate-title-row">
+            <span class="calibrate-badge">⏱️ 音画同步校对</span>
+            <span class="calibrate-tip">电脑按 <strong>[</strong> 前移 0.2s，按 <strong>]</strong> 后移 0.2s</span>
+          </div>
+          <div class="calibrate-controls-group">
+            <div class="calibrate-stepper">
+              <button id="btn-cal-dec-large" class="btn-cal-step" type="button" title="提前 0.5 秒">-0.5s</button>
+              <button id="btn-cal-dec-small" class="btn-cal-step" type="button" title="提前 0.2 秒">-0.2s</button>
+              <div class="calibrate-offset-indicator">
+                <span class="cal-offset-label">时差偏置:</span>
+                <span id="calibrate-offset-val" class="cal-offset-val">+0.0s</span>
+              </div>
+              <button id="btn-cal-inc-small" class="btn-cal-step" type="button" title="延后 0.2 秒">+0.2s</button>
+              <button id="btn-cal-inc-large" class="btn-cal-step" type="button" title="延后 0.5 秒">+0.5s</button>
+            </div>
+            <!-- 🎯 一键将当前句对齐发音点 -->
+            <button id="btn-cal-align-current" class="btn-cal-action btn-cal-align" type="button" title="暂停在当前发音处，点击将当前高亮句的时间戳与当前音频时间完美对齐">
+              🎯 将当前句对齐发音点 (<span id="cal-cur-time-display">00:00</span>)
+            </button>
+          </div>
+        </div>
+        <div class="calibrate-actions">
+          <button id="btn-cal-reset" class="btn-cal-ghost" type="button" title="恢复原始时间戳">
+            🔄 重置
+          </button>
+          <button id="btn-cal-save" class="btn-cal-primary" type="button" title="直接永久重写文案时间戳并保存回云端数据库">
+            💾 永久保存校准
+          </button>
+          <button id="btn-cal-close" class="btn-cal-close" type="button" title="关闭校准条">
+            ✖️
+          </button>
+        </div>
+      </div>
+
+      <!-- 🎙️ 语音转写中浮层状态指示 -->
+      <div id="theater-transcribe-overlay" class="theater-transcribe-overlay" style="display: none;">
+        <div class="theater-transcribe-spinner"></div>
+        <div class="theater-transcribe-msg" id="theater-transcribe-msg">正在调用 AI Whisper 极速高精转写原声音频...</div>
+        <div class="theater-transcribe-tip">转写完成后将自动生成 100% 原声音频对齐字幕并永久同步至云端</div>
+      </div>
 
       <!-- 剧场正中：巨幅动态歌词精读滚动区 -->
       <main id="theater-lyrics-container" class="theater-lyrics-container">
