@@ -7746,7 +7746,7 @@ export const ShufflePlayer = {
       } else if (this.mode === "loop") {
         this.mode = "shuffle";
         this.initShufflePool();
-        showToast("已切换为：🔀 智能随机 (冷门/低播放优先，整轮不重复)");
+        showToast("已切换为：🔀 科学复习 (艾宾浩斯遗忘曲线，新知温故自适应)");
       } else if (this.mode === "shuffle") {
         this.mode = "single";
         showToast("已切换为：单曲循环");
@@ -7836,8 +7836,8 @@ export const ShufflePlayer = {
       modeBtn.innerHTML = "🔁 循环";
       modeBtn.title = "列表循环模式";
     } else if (this.mode === "shuffle") {
-      modeBtn.innerHTML = "🔀 智能随机";
-      modeBtn.title = "智能随机播放模式 (低播放优先，整轮不重复)";
+      modeBtn.innerHTML = "🔀 科学复习";
+      modeBtn.title = "艾宾浩斯科学复习模式 (新旧自适应穿插，防重复死循环)";
     } else if (this.mode === "single") {
       modeBtn.innerHTML = "🔂 单曲";
       modeBtn.title = "单曲循环模式";
@@ -8218,22 +8218,97 @@ export const ShufflePlayer = {
     this.hasRecordedCurrentPlay = true;
     const track = this.playlist[this.currentIndex];
     const strId = String(track.id);
-    const cur = this.playStats[strId] || { count: 0, lastPlayed: 0 };
-    cur.count = (cur.count || 0) + 1;
-    cur.lastPlayed = Date.now();
+    const now = Date.now();
+    const SRS_INTERVALS = [0, 1, 3, 7, 15, 30, 60, 90];
+
+    const cur = this.playStats[strId] || { count: 0, lastPlayed: 0, stage: 0 };
+    cur.count = (Number(cur.count) || 0) + 1;
+    cur.lastPlayed = now;
+
+    // 递进艾宾浩斯记忆阶段 (上限为第 7 阶段 90 天)
+    const oldStage = cur.stage !== undefined ? Number(cur.stage) : Math.min(SRS_INTERVALS.length - 1, cur.count - 1);
+    const nextStage = Math.min(SRS_INTERVALS.length - 1, oldStage + 1);
+    cur.stage = nextStage;
+    const intervalDays = SRS_INTERVALS[nextStage] || 1;
+    cur.nextReviewAt = now + intervalDays * 86400000;
+
     this.playStats[strId] = cur;
     this.savePlayStats();
-    this.updateCardPlayCountBadge(strId, cur.count);
+    this.updateCardPlayCountBadge(strId);
   },
 
-  updateCardPlayCountBadge(noteId, count) {
+  calculateTrackUrgency(noteId) {
+    const stat = this.playStats[String(noteId)] || { count: 0, lastPlayed: 0 };
+    const count = Number(stat.count) || 0;
+    const now = Date.now();
+    const SRS_INTERVALS = [0, 1, 3, 7, 15, 30, 60, 90];
+
+    // 1. 全新未收听音频
+    if (count === 0 || !stat.lastPlayed) {
+      return {
+        urgency: 1.25,
+        status: "new",
+        badgeText: "🌱 新音频",
+        badgeClass: "badge-srs-new",
+        badgeTitle: "未收听的新加入音频，推荐优先吸收"
+      };
+    }
+
+    const stage = stat.stage !== undefined ? Number(stat.stage) : Math.min(SRS_INTERVALS.length - 1, count);
+    const targetIntervalDays = SRS_INTERVALS[stage] || 1;
+    const elapsedDays = Math.max(0, (now - stat.lastPlayed) / 86400000);
+    const ratio = elapsedDays / targetIntervalDays;
+
+    // 2. 已牢记/长期掌握 (stage >= 5 且尚未到期)
+    if (stage >= 5 && ratio < 1.0) {
+      const daysLeft = Math.ceil(targetIntervalDays - elapsedDays);
+      return {
+        urgency: 0.15,
+        status: "mastered",
+        ratio,
+        badgeText: `🎓 已牢记 · ${count}次`,
+        badgeClass: "badge-srs-mastered",
+        badgeTitle: `已完成 ${count} 次巩固，记忆扎实，距下次例行温故约 ${daysLeft} 天`
+      };
+    }
+
+    // 3. 到期/超期待复习 (ratio >= 1.0)
+    if (ratio >= 1.0) {
+      const overdueDays = Math.floor(elapsedDays - targetIntervalDays);
+      const urgencyScore = Math.min(3.2, 1.3 + (ratio - 1.0) * 0.7);
+      const text = overdueDays > 0 ? `⏰ 待复习 · 逾期${overdueDays}天` : "⏰ 今日待复习";
+      return {
+        urgency: urgencyScore,
+        status: "due",
+        ratio,
+        badgeText: text,
+        badgeClass: "badge-srs-due",
+        badgeTitle: `艾宾浩斯复习期已到（周期 ${targetIntervalDays} 天，距上次收听 ${elapsedDays.toFixed(1)} 天）`
+      };
+    }
+
+    // 4. 处于正常记忆巩固期间 (ratio < 1.0)
+    const daysLeft = Math.ceil(targetIntervalDays - elapsedDays);
+    const urgencyScore = Math.max(0.1, ratio * 0.7);
+    return {
+      urgency: urgencyScore,
+      status: "learning",
+      ratio,
+      badgeText: `⏳ 巩固中 · ${daysLeft}天后`,
+      badgeClass: "badge-srs-learning",
+      badgeTitle: `记忆巩固期（第 ${stage} 阶段），建议在 ${daysLeft} 天后进行下一次复习`
+    };
+  },
+
+  updateCardPlayCountBadge(noteId) {
     const card = document.querySelector(`.shuffle-item-card[data-id="${noteId}"]`);
     if (!card) return;
     const badge = card.querySelector(".shuffle-play-count-badge");
     if (badge) {
-      badge.className = `shuffle-play-count-badge ${count === 0 ? "unplayed" : ""}`;
-      badge.title = `已累计播放 ${count} 次`;
-      badge.innerHTML = count === 0 ? "🌱 未播放" : `🎧 ${count}次`;
+      const srs = this.calculateTrackUrgency(noteId);
+      badge.className = `shuffle-play-count-badge ${srs.badgeClass}`;
+      badge.title = srs.badgeTitle;
+      badge.innerHTML = srs.badgeText;
     }
   },
 
@@ -8252,22 +8327,59 @@ export const ShufflePlayer = {
       return arr;
     };
 
-    // 按播放次数分组：播放量越少（未听过、低播放）排在越前面
-    const tierMap = new Map();
+    // 1. 计算每个曲目的 SRS 艾宾浩斯遗忘紧迫度
+    const dueList = [];
+    const newList = [];
+    const learningList = [];
+    const masteredList = [];
+
     this.playlist.forEach((track, idx) => {
-      const c = this.getPlayCount(track.id);
-      if (!tierMap.has(c)) tierMap.set(c, []);
-      tierMap.get(c).push(idx);
+      const srs = this.calculateTrackUrgency(track.id);
+      const item = { idx, urgency: srs.urgency, status: srs.status };
+      if (srs.status === "due") {
+        dueList.push(item);
+      } else if (srs.status === "new") {
+        newList.push(item);
+      } else if (srs.status === "learning") {
+        learningList.push(item);
+      } else {
+        masteredList.push(item);
+      }
     });
 
-    const sortedCounts = Array.from(tierMap.keys()).sort((a, b) => a - b);
-    const newPool = [];
-    sortedCounts.forEach((c) => {
-      const tierIndices = shuffleArray([...tierMap.get(c)]);
-      newPool.push(...tierIndices);
-    });
+    // 内部微随机打乱
+    shuffleArray(dueList);
+    dueList.sort((a, b) => b.urgency - a.urgency); // 超期越久的排前面
+    shuffleArray(newList);
+    shuffleArray(learningList);
+    learningList.sort((a, b) => b.urgency - a.urgency);
+    shuffleArray(masteredList);
 
-    // 避免刚好首项与当前正在播放的曲目重复
+    // 2. 科学穿插交替构建优先队列 (due + new 交叉穿插，杜绝连续单调循环新歌)
+    const priorityIndices = [];
+    let dIdx = 0;
+    let nIdx = 0;
+
+    while (dIdx < dueList.length || nIdx < newList.length) {
+      // 每有 2 首待复习旧音频，穿插 1 首新音频 (温故为主，新知交替)
+      if (dIdx < dueList.length) priorityIndices.push(dueList[dIdx++].idx);
+      if (dIdx < dueList.length) priorityIndices.push(dueList[dIdx++].idx);
+      if (nIdx < newList.length) priorityIndices.push(newList[nIdx++].idx);
+
+      if (dIdx >= dueList.length && nIdx < newList.length) {
+        priorityIndices.push(newList[nIdx++].idx);
+      }
+    }
+
+    // 3. 紧跟巩固期音频与掌握音频
+    const followUpIndices = [
+      ...learningList.map((it) => it.idx),
+      ...masteredList.map((it) => it.idx)
+    ];
+
+    const newPool = [...priorityIndices, ...followUpIndices];
+
+    // 4. 避免刚好首项与当前正在播放的曲目重复
     if (newPool.length > 1 && newPool[0] === this.currentIndex) {
       const swapIdx = Math.floor(Math.random() * (newPool.length - 1)) + 1;
       [newPool[0], newPool[swapIdx]] = [newPool[swapIdx], newPool[0]];
@@ -8280,7 +8392,7 @@ export const ShufflePlayer = {
     if (this.playlist.length === 0) return 0;
     if (this.playlist.length === 1) return 0;
 
-    // 当池子里的曲目全部播放过一遍后，自动开启新一轮按播放量加权洗牌
+    // 当池子里的曲目全部播放过一遍后，自动开启新一轮艾宾浩斯加权洗牌
     if (this.shufflePool.length === 0) {
       this.initShufflePool();
     }
@@ -8305,19 +8417,48 @@ export const ShufflePlayer = {
       return;
     }
     const currentId = this.currentIndex >= 0 && this.playlist[this.currentIndex] ? this.playlist[this.currentIndex].id : null;
-    this.playlist.sort((a, b) => {
-      const countA = this.getPlayCount(a.id);
-      const countB = this.getPlayCount(b.id);
-      if (countA !== countB) return countA - countB;
-      return 0;
+
+    // 按艾宾浩斯紧迫度与新旧交替排前
+    const dueList = [];
+    const newList = [];
+    const learningList = [];
+    const masteredList = [];
+
+    this.playlist.forEach((track) => {
+      const srs = this.calculateTrackUrgency(track.id);
+      const item = { track, urgency: srs.urgency, status: srs.status };
+      if (srs.status === "due") dueList.push(item);
+      else if (srs.status === "new") newList.push(item);
+      else if (srs.status === "learning") learningList.push(item);
+      else masteredList.push(item);
     });
+
+    dueList.sort((a, b) => b.urgency - a.urgency);
+    learningList.sort((a, b) => b.urgency - a.urgency);
+
+    const orderedTracks = [];
+    let dIdx = 0;
+    let nIdx = 0;
+    while (dIdx < dueList.length || nIdx < newList.length) {
+      if (dIdx < dueList.length) orderedTracks.push(dueList[dIdx++].track);
+      if (dIdx < dueList.length) orderedTracks.push(dueList[dIdx++].track);
+      if (nIdx < newList.length) orderedTracks.push(newList[nIdx++].track);
+      if (dIdx >= dueList.length && nIdx < newList.length) {
+        orderedTracks.push(newList[nIdx++].track);
+      }
+    }
+
+    orderedTracks.push(...learningList.map((it) => it.track));
+    orderedTracks.push(...masteredList.map((it) => it.track));
+
+    this.playlist = orderedTracks;
     if (currentId) {
       this.currentIndex = this.playlist.findIndex((t) => t.id === currentId);
     }
     this.saveCustomOrder();
     this.initShufflePool();
     this.renderPlaylist();
-    showToast("🌱 已将未播放及低播放量音频排在最前！");
+    showToast("🧠 已按艾宾浩斯遗忘曲线重排（到期待复习与新知交替排前）");
   },
 
   getSavedCustomOrder() {
@@ -8517,7 +8658,7 @@ export const ShufflePlayer = {
     this.playlist.forEach((track, index) => {
       const isCached = this.cachedUrls.has(track.mediaUrl);
       const isActive = index === this.currentIndex;
-      const playCount = this.getPlayCount(track.id);
+      const srs = this.calculateTrackUrgency(track.id);
 
       const card = document.createElement("div");
       card.className = `shuffle-item-card ${isActive ? "active" : ""}`;
@@ -8544,8 +8685,8 @@ export const ShufflePlayer = {
           <div class="shuffle-item-title clickable" title="点击查看笔记详情与文案">${escapeHtml(track.title || "无标题音频")}</div>
           <div class="shuffle-item-meta">
             ${isCached ? '<span class="shuffle-item-cached-pill">💾 已离线</span>' : '<span style="color:#94a3b8;">☁️ 在线</span>'}
-            <span class="shuffle-play-count-badge ${playCount === 0 ? 'unplayed' : ''}" title="已累计播放 ${playCount} 次">
-              ${playCount === 0 ? '🌱 未播放' : `🎧 ${playCount}次`}
+            <span class="shuffle-play-count-badge ${srs.badgeClass}" title="${srs.badgeTitle}">
+              ${srs.badgeText}
             </span>
             ${tagsHtml}
           </div>

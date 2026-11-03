@@ -6801,10 +6801,33 @@ mark.transcript-hl:hover {
   gap: 2px;
 }
 
+.shuffle-play-count-badge.badge-srs-new,
 .shuffle-play-count-badge.unplayed {
   background: #ecfdf5;
   color: #059669;
   border-color: #a7f3d0;
+  font-weight: 600;
+}
+
+.shuffle-play-count-badge.badge-srs-due {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fdba74;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(234, 88, 12, 0.12);
+}
+
+.shuffle-play-count-badge.badge-srs-learning {
+  background: #f0f9ff;
+  color: #0369a1;
+  border-color: #bae6fd;
+  font-weight: 500;
+}
+
+.shuffle-play-count-badge.badge-srs-mastered {
+  background: #faf5ff;
+  color: #7e22ce;
+  border-color: #e9d5ff;
   font-weight: 600;
 }
 
@@ -6816,10 +6839,10 @@ mark.transcript-hl:hover {
 
 .btn-sort-least-played {
   font-size: 11px;
-  padding: 3px 8px;
-  color: #059669;
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
+  padding: 3px 9px;
+  color: #4338ca;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
   border-radius: 6px;
   font-weight: 600;
   cursor: pointer;
@@ -6828,9 +6851,9 @@ mark.transcript-hl:hover {
 }
 
 .btn-sort-least-played:hover {
-  background: #d1fae5;
-  color: #047857;
-  border-color: #6ee7b7;
+  background: #e0e7ff;
+  color: #3730a3;
+  border-color: #a5b4fc;
   transform: translateY(-1px);
 }
 
