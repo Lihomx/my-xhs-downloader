@@ -1618,14 +1618,20 @@
 
       <!-- 剧场顶部栏 -->
       <header class="theater-header">
-        <div class="theater-header-track-info">
-          <div class="theater-track-cover-mini-wrap">
-            <img id="theater-track-cover" src="/favicon.svg" alt="音频封面" class="theater-track-cover-mini" />
+        <div class="theater-header-top-row">
+          <div class="theater-header-track-info">
+            <div class="theater-track-cover-mini-wrap">
+              <img id="theater-track-cover" src="/favicon.svg" alt="音频封面" class="theater-track-cover-mini" />
+            </div>
+            <div class="theater-track-meta">
+              <h3 id="theater-track-title" class="theater-track-title">音频标题加载中...</h3>
+              <div id="theater-track-tags" class="theater-track-tags"></div>
+            </div>
           </div>
-          <div class="theater-track-meta">
-            <h3 id="theater-track-title" class="theater-track-title">音频标题加载中...</h3>
-            <div id="theater-track-tags" class="theater-track-tags"></div>
-          </div>
+          <!-- 关闭剧场 (常驻右上方，移动端绝不被挤出屏幕) -->
+          <button id="btn-theater-close" class="btn-theater-close" type="button" title="退出全屏大字幕模式 (快捷键: Esc)">
+            <span>✕ 收起</span>
+          </button>
         </div>
         <div class="theater-header-actions">
           <!-- 🎙️ 语音重提 (快捷键: T) -->
@@ -1642,17 +1648,18 @@
             <span class="kbd-badge">C</span>
           </button>
 
+          <!-- 🗑️ 释放媒体空间 -->
+          <button id="btn-theater-cleanup-media" class="btn-theater-action-pill btn-theater-cleanup" type="button" title="释放该音频所占媒体空间，保留精读文案与笔记">
+            <span class="pill-icon">🗑️</span>
+            <span class="btn-text">释放空间</span>
+          </button>
+
           <!-- 剧场大字号微调器 -->
           <div class="theater-font-adjuster" title="调节剧场大字幕字号">
             <button id="btn-theater-font-dec" class="theater-font-btn" type="button" title="减小字幕字号">A-</button>
             <span id="theater-font-indicator" class="theater-font-indicator">26px</span>
             <button id="btn-theater-font-inc" class="theater-font-btn" type="button" title="增大字幕字号">A+</button>
           </div>
-
-          <!-- 关闭剧场 -->
-          <button id="btn-theater-close" class="btn-theater-close" type="button" title="退出全屏大字幕模式 (快捷键: Esc)">
-            <span>✕ 收起</span>
-          </button>
         </div>
       </header>
 

@@ -7172,11 +7172,16 @@ mark.transcript-hl:hover {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   background: rgba(15, 23, 42, 0.45);
-  flex-wrap: wrap;
-  gap: 12px;
+  gap: 16px;
+}
+
+/* 桌面端：top-row 为 display: contents，使 track-info 与 close 按钮分别自然排布在左右 */
+.theater-header-top-row {
+  display: contents;
 }
 
 .theater-header-track-info {
+  order: 1;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -7223,6 +7228,7 @@ mark.transcript-hl:hover {
 }
 
 .theater-header-actions {
+  order: 2;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -7275,6 +7281,7 @@ mark.transcript-hl:hover {
 }
 
 .btn-theater-close {
+  order: 3;
   background: rgba(255, 255, 255, 0.14);
   border: 1px solid rgba(255, 255, 255, 0.22);
   color: #ffffff;
@@ -7286,6 +7293,8 @@ mark.transcript-hl:hover {
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .btn-theater-close:hover {
@@ -7293,7 +7302,7 @@ mark.transcript-hl:hover {
   transform: scale(1.04);
 }
 
-/* 顶部操作胶囊 (语音重提 / 校对同步) */
+/* 顶部操作胶囊 (语音重提 / 校对同步 / 释放空间) */
 .btn-theater-action-pill {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -7331,6 +7340,18 @@ mark.transcript-hl:hover {
   border-color: #3b82f6;
   box-shadow: 0 0 14px rgba(59, 130, 246, 0.5);
   color: #93c5fd;
+}
+
+.btn-theater-cleanup:hover {
+  background: rgba(245, 158, 11, 0.35);
+  border-color: #fbbf24;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 释放媒体存储弹窗置顶层级（保证在大字幕剧场之上正常弹出） */
+#modal-media-cleanup {
+  z-index: 100005 !important;
 }
 
 .kbd-badge {
@@ -7826,15 +7847,76 @@ mark.transcript-hl:hover {
 /* 移动端全屏大字幕特别适配 */
 @media (max-width: 680px) {
   .theater-header {
-    padding: 12px 14px;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    padding: 12px 14px 10px !important;
+    gap: 8px !important;
   }
+
+  /* 移动端第 1 行：左侧标题，右侧绝对常驻 [✕ 收起]，绝不被挤出屏幕 */
+  .theater-header-top-row {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    width: 100% !important;
+    gap: 10px !important;
+  }
+
+  .theater-header-track-info {
+    order: unset !important;
+    flex: 1 !important;
+    min-width: 0 !important;
+  }
+
   .theater-track-cover-mini-wrap {
     width: 36px;
     height: 36px;
   }
+
   .theater-track-title {
-    font-size: 14px;
-    max-width: 160px;
+    font-size: 14px !important;
+    max-width: calc(100vw - 150px) !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  .btn-theater-close {
+    order: unset !important;
+    padding: 6px 14px !important;
+    font-size: 12.5px !important;
+    background: rgba(234, 44, 67, 0.22) !important;
+    border-color: rgba(234, 44, 67, 0.45) !important;
+    color: #ffffff !important;
+    border-radius: 999px !important;
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
+  }
+
+  .btn-theater-close:active {
+    background: rgba(234, 44, 67, 0.4) !important;
+  }
+
+  /* 移动端第 2 行：横向滑动操作条，所有工具随手可及且不折行溢出 */
+  .theater-header-actions {
+    order: unset !important;
+    width: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    scrollbar-width: none !important;
+    padding-bottom: 2px !important;
+  }
+
+  .theater-header-actions::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  .btn-theater-action-pill,
+  .theater-font-adjuster {
+    flex-shrink: 0 !important;
   }
   .theater-lyrics-scroller {
     padding: 80px 0 160px;

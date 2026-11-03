@@ -8077,6 +8077,18 @@ export const ShufflePlayer = {
         this.syncTheaterFollow();
       }
 
+      // 记录精确进度断点（每 1.5 秒更新一次 localStorage）
+      if (!this.isScrubbing && cur > 0 && this.playlist[this.currentIndex]) {
+        const now = Date.now();
+        if (!this._lastTimeSaveTime || now - this._lastTimeSaveTime >= 1500) {
+          this._lastTimeSaveTime = now;
+          try {
+            localStorage.setItem("shuffle_last_played_id", String(this.playlist[this.currentIndex].id));
+            localStorage.setItem("shuffle_last_played_time", String(Math.floor(cur)));
+          } catch {}
+        }
+      }
+
       // 听满 20 秒或进度达到 70% 视为一次有效播放，记入低频优先算法
       if (!this.hasRecordedCurrentPlay && (cur >= 20 || (dur > 0 && cur / dur >= 0.7))) {
         this.recordPlayCurrent();
@@ -8112,9 +8124,18 @@ export const ShufflePlayer = {
 
     this.audioEl.addEventListener("pause", () => {
       this.updatePlayStateUI(false);
+      if (this.currentIndex >= 0 && this.playlist[this.currentIndex] && this.audioEl.currentTime > 0) {
+        try {
+          localStorage.setItem("shuffle_last_played_id", String(this.playlist[this.currentIndex].id));
+          localStorage.setItem("shuffle_last_played_time", String(Math.floor(this.audioEl.currentTime)));
+        } catch {}
+      }
     });
 
     this.audioEl.addEventListener("ended", () => {
+      try {
+        localStorage.setItem("shuffle_last_played_time", "0");
+      } catch {}
       this.recordPlayCurrent();
       if (this.mode === "single") {
         this.audioEl.currentTime = 0;
@@ -8423,6 +8444,9 @@ export const ShufflePlayer = {
 
     // 剧场顶部操作：⏱️ 校对同步 (快捷键: C)
     document.getElementById("btn-theater-calibrate")?.addEventListener("click", () => this.toggleCalibrateBar());
+
+    // 剧场顶部操作：🗑️ 释放媒体空间
+    document.getElementById("btn-theater-cleanup-media")?.addEventListener("click", () => this.openCleanupModal());
 
     // 校准条操作按钮
     document.getElementById("btn-cal-dec-large")?.addEventListener("click", () => this.stepCalibrateOffset(-0.5));
@@ -8891,6 +8915,43 @@ export const ShufflePlayer = {
         btnCard.classList.remove("loading");
       }
     }
+  },
+
+  openCleanupModal() {
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    if (!track || !track.id) {
+      showToast("当前暂无播放中的音频");
+      return;
+    }
+
+    const fallbackNote = {
+      id: track.id,
+      title: track.title,
+      coverUrl: track.coverUrl,
+      audioUrl: track.audioUrl || (track.mediaUrl && (track.mediaUrl.includes(".mp3") || track.mediaUrl.includes(".wav") || track.mediaUrl.includes(".m4a")) ? track.mediaUrl : ""),
+      videos: (!track.audioUrl && track.mediaUrl && !track.mediaUrl.includes(".mp3")) ? [{ url: track.mediaUrl }] : [],
+      transcript: track.transcript,
+      tags: track.tags
+    };
+    state.activeDetailNote = fallbackNote;
+    if (typeof window.openMediaCleanupModal === "function") {
+      window.openMediaCleanupModal(fallbackNote);
+    }
+
+    // 异步查询完整笔记以获取绝对精确的音视频源
+    fetch(`/api/notes/${track.id}`, {
+      headers: { "x-auth-pin": state.pin }
+    }).then(async (res) => {
+      if (res.ok) {
+        const fullNote = await res.json();
+        if (state.activeDetailNote && state.activeDetailNote.id === track.id) {
+          state.activeDetailNote = fullNote;
+          if (typeof window.openMediaCleanupModal === "function") {
+            window.openMediaCleanupModal(fullNote);
+          }
+        }
+      }
+    }).catch(() => {});
   },
 
   renderTheaterTrackInfo(track) {
@@ -9468,13 +9529,53 @@ export const ShufflePlayer = {
         showToast(`已同步随身听播放库，共 ${this.playlist.length} 首音频`);
       }
 
-      // 如果当前没有正在播放的音频且列表不为空，预载曲目 (随机模式下优先选冷门/低播放量曲目)
+      // 如果当前没有正在播放的音频且列表不为空，优先恢复上次播放的音频与时间点
       if (this.playlist.length > 0 && this.currentIndex === -1) {
-        if (this.mode === "shuffle") {
-          const firstIdx = this.getNextShuffleIndex() ?? 0;
-          this.prepareTrack(firstIdx, false);
-        } else {
-          this.prepareTrack(0, false);
+        const lastPlayedId = localStorage.getItem("shuffle_last_played_id");
+        const savedTime = parseFloat(localStorage.getItem("shuffle_last_played_time") || "0");
+        let targetIdx = -1;
+
+        if (lastPlayedId) {
+          targetIdx = this.playlist.findIndex((t) => String(t.id) === String(lastPlayedId));
+        }
+
+        if (targetIdx === -1) {
+          if (this.mode === "shuffle") {
+            targetIdx = this.getNextShuffleIndex() ?? 0;
+          } else {
+            targetIdx = 0;
+          }
+        }
+
+        // 预载曲目（就绪但暂不自动播放）
+        this.prepareTrack(targetIdx, false);
+
+        // 恢复播放断点时间
+        if (savedTime > 0 && this.audioEl) {
+          const applySavedTime = () => {
+            try {
+              if (this.audioEl && !isNaN(savedTime)) {
+                this.audioEl.currentTime = savedTime;
+                const curTimeEl = document.getElementById("shuffle-time-current");
+                const slider = document.getElementById("shuffle-scrub-slider");
+                if (curTimeEl) curTimeEl.textContent = this.formatTimeSec(savedTime);
+                if (slider && this.audioEl.duration) {
+                  slider.value = ((savedTime / this.audioEl.duration) * 100).toFixed(1);
+                }
+                if (this.isLyricsFollowEnabled) {
+                  this.syncLyricsFollow(true);
+                }
+              }
+            } catch (e) {
+              console.warn("Restore saved time failed:", e);
+            }
+          };
+
+          if (this.audioEl.readyState >= 1) {
+            applySavedTime();
+          } else {
+            this.audioEl.addEventListener("loadedmetadata", applySavedTime, { once: true });
+          }
         }
       }
     } catch (err) {
@@ -9792,6 +9893,9 @@ export const ShufflePlayer = {
 
     this.hasRecordedCurrentPlay = false;
     if (track?.id) {
+      try {
+        localStorage.setItem("shuffle_last_played_id", String(track.id));
+      } catch {}
       if (this.playHistory[this.playHistory.length - 1] !== track.id) {
         this.playHistory.push(track.id);
         if (this.playHistory.length > 50) this.playHistory.shift();
@@ -9983,8 +10087,14 @@ export const ShufflePlayer = {
   highlightActiveCard(index) {
     const cards = document.querySelectorAll(".shuffle-item-card");
     cards.forEach((card, idx) => {
-      if (idx === index) card.classList.add("active");
-      else card.classList.remove("active");
+      if (idx === index) {
+        card.classList.add("active");
+        try {
+          card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        } catch {}
+      } else {
+        card.classList.remove("active");
+      }
     });
   },
 
@@ -10912,6 +11022,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     cleanupModal?.classList.add("active");
   };
+  window.openMediaCleanupModal = openMediaCleanupModal;
 
   document.getElementById("btn-modal-cleanup-media")?.addEventListener("click", () => {
     openMediaCleanupModal(state.activeDetailNote);
@@ -11012,8 +11123,31 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       closeCleanupModal();
-      openNoteDetail(note.id);
+      if (!ShufflePlayer.isTheaterOpen) {
+        openNoteDetail(note.id);
+      }
       loadStorageUsage({ forceRefresh: true });
+
+      // 如果当前随身听正在播放此音频，根据清理目标平滑切歌/更新
+      if (ShufflePlayer.currentIndex >= 0 && ShufflePlayer.playlist[ShufflePlayer.currentIndex]?.id === note.id) {
+        const curTrack = ShufflePlayer.playlist[ShufflePlayer.currentIndex];
+        if (target === "video") {
+          if (note.audioUrl) {
+            curTrack.mediaUrl = note.audioUrl;
+            curTrack.audioUrl = note.audioUrl;
+          }
+        } else if (target === "audio" || target === "both") {
+          curTrack.mediaUrl = "";
+          curTrack.audioUrl = "";
+          setTimeout(() => {
+            if (ShufflePlayer.playlist.length > 1) {
+              ShufflePlayer.playNext();
+            } else {
+              ShufflePlayer.stop();
+            }
+          }, 300);
+        }
+      }
     } catch (err) {
       showToast(`操作失败: ${err.message}`);
     }
@@ -11359,4 +11493,14 @@ document.addEventListener("DOMContentLoaded", () => {
       BackgroundSubtitleQueue.checkAndResumePending();
     }
   }, 75000);
+
+  // 页面关闭或切换后台时保存当前随身听播放点
+  window.addEventListener("pagehide", () => {
+    if (ShufflePlayer.audioEl && ShufflePlayer.currentIndex >= 0 && ShufflePlayer.playlist[ShufflePlayer.currentIndex] && ShufflePlayer.audioEl.currentTime > 0) {
+      try {
+        localStorage.setItem("shuffle_last_played_id", String(ShufflePlayer.playlist[ShufflePlayer.currentIndex].id));
+        localStorage.setItem("shuffle_last_played_time", String(Math.floor(ShufflePlayer.audioEl.currentTime)));
+      } catch {}
+    }
+  });
 });
