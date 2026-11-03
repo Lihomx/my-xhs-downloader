@@ -530,11 +530,17 @@
             <!-- 文案同步卡片 (Speech Transcript Lyrics) -->
             <div class="shuffle-lyrics-card">
               <div class="shuffle-lyrics-header">
-                <span>🎙️ 提取语音文案 · 随声同步精读</span>
-                <span id="shuffle-lyrics-badge" class="shuffle-lyrics-badge">精选重点</span>
+                <span class="shuffle-lyrics-header-title">🎙️ 提取语音文案 · 随声精读</span>
+                <div class="shuffle-lyrics-header-actions">
+                  <button id="btn-shuffle-lyrics-follow" class="btn-lyrics-follow-toggle" type="button" title="点击开启/关闭随声聚焦跟读（播放时文案自动同步滚动并高亮发音句）">
+                    <span class="follow-icon">🎯</span>
+                    <span id="shuffle-lyrics-follow-text">聚焦跟读 · 关</span>
+                  </button>
+                  <span id="shuffle-lyrics-badge" class="shuffle-lyrics-badge">精选重点</span>
+                </div>
               </div>
               <div id="shuffle-lyrics-content" class="shuffle-lyrics-scroll-wrap">
-                <div class="shuffle-lyrics-empty">播放音频时，若该篇笔记已提取过文案，将在此同步滚动展示句子与划词重点。</div>
+                <div class="shuffle-lyrics-empty">播放音频时，若该篇笔记已提取过文案，将在此同步展示句子与划词重点。</div>
               </div>
             </div>
           </div>

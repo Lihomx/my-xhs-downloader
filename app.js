@@ -7701,6 +7701,8 @@ export const ShufflePlayer = {
   audioSourceNode: null,
   compressorNode: null,
   gainNode: null,
+  // 随声聚焦跟读字幕 (播放时文案自动随语音高亮滚动，默认不开启)
+  isLyricsFollowEnabled: localStorage.getItem("shuffle_lyrics_follow") === "true", // 默认不开启
 
   init() {
     this.audioEl = document.getElementById("shuffle-audio-element");
@@ -7710,6 +7712,7 @@ export const ShufflePlayer = {
     this.playStats = this.getPlayStats();
     this.updateModeBtnUI();
     this.updateEqualizerBtnUI();
+    this.updateLyricsFollowUI();
 
     // 播放/暂停
     const playPauseBtn = document.getElementById("btn-shuffle-play-pause");
@@ -7727,6 +7730,11 @@ export const ShufflePlayer = {
     // 绑定 🎚️ 智能音量动态均衡开关
     document.getElementById("btn-shuffle-equalizer-toggle")?.addEventListener("click", () => {
       this.toggleEqualizer();
+    });
+
+    // 绑定 🎯 随声聚焦跟读字幕开关
+    document.getElementById("btn-shuffle-lyrics-follow")?.addEventListener("click", () => {
+      this.toggleLyricsFollow();
     });
 
     // 挂载系统级后台音频会话 (iOS / Android 熄屏保活核心)
@@ -7787,6 +7795,9 @@ export const ShufflePlayer = {
       if (this.audioEl && this.audioEl.duration) {
         const targetTime = (parseFloat(e.target.value) / 100) * this.audioEl.duration;
         this.audioEl.currentTime = targetTime;
+        if (this.isLyricsFollowEnabled) {
+          this.syncLyricsFollow(true);
+        }
       }
       this.isScrubbing = false;
     });
@@ -7973,6 +7984,11 @@ export const ShufflePlayer = {
             position: cur
           });
         } catch {}
+      }
+
+      // 随声聚焦跟读字幕同步
+      if (this.isLyricsFollowEnabled) {
+        this.syncLyricsFollow();
       }
 
       // 听满 20 秒或进度达到 70% 视为一次有效播放，记入低频优先算法
@@ -8186,6 +8202,90 @@ export const ShufflePlayer = {
       btn.classList.remove("active");
       btn.title = "智能音量动态均衡：已关闭。当前为 100% 纯原生硬件直通模式，全机型熄屏防断播兜底（点击开启）";
       if (textEl) textEl.textContent = "智能音量均衡 · 关";
+    }
+  },
+
+  updateLyricsFollowUI() {
+    const btn = document.getElementById("btn-shuffle-lyrics-follow");
+    const textEl = document.getElementById("shuffle-lyrics-follow-text");
+    if (!btn) return;
+
+    if (this.isLyricsFollowEnabled) {
+      btn.classList.add("active");
+      if (textEl) textEl.textContent = "聚焦跟读 · 开";
+      btn.title = "随声聚焦跟读：已开启（播放时文案自动随语音高亮滚动，点击可关闭）";
+    } else {
+      btn.classList.remove("active");
+      if (textEl) textEl.textContent = "聚焦跟读 · 关";
+      btn.title = "随声聚焦跟读：已关闭（可自由上下滑动浏览文案，点击开启）";
+    }
+  },
+
+  toggleLyricsFollow() {
+    this.isLyricsFollowEnabled = !this.isLyricsFollowEnabled;
+    localStorage.setItem("shuffle_lyrics_follow", String(this.isLyricsFollowEnabled));
+    this.updateLyricsFollowUI();
+
+    if (this.isLyricsFollowEnabled) {
+      showToast("🎯 已开启随声聚焦跟读：播放时文案将同步高亮滚动");
+      this.syncLyricsFollow(true);
+    } else {
+      showToast("已关闭聚焦跟读：可自由上下滑动浏览文案");
+      const activeLines = document.querySelectorAll("#shuffle-lyrics-content .shuffle-lyrics-line.active-speaking");
+      activeLines.forEach((el) => el.classList.remove("active-speaking"));
+    }
+  },
+
+  syncLyricsFollow(forceScroll = false) {
+    if (!this.isLyricsFollowEnabled) return;
+    if (!this.audioEl) return;
+    if (this.audioEl.paused && !forceScroll) return;
+
+    const curTime = this.audioEl.currentTime;
+    const lineEls = Array.from(document.querySelectorAll("#shuffle-lyrics-content .shuffle-lyrics-line[data-time]"));
+    if (lineEls.length === 0) return;
+
+    let activeIndex = -1;
+    for (let i = 0; i < lineEls.length; i++) {
+      const t = parseFloat(lineEls[i].dataset.time);
+      if (!isNaN(t) && t <= curTime + 0.35) {
+        activeIndex = i;
+      } else {
+        break;
+      }
+    }
+
+    if (activeIndex === -1 && curTime >= 0) {
+      activeIndex = 0;
+    }
+
+    if (activeIndex !== -1) {
+      const activeEl = lineEls[activeIndex];
+      const needsHighlightChange = !activeEl.classList.contains("active-speaking");
+
+      if (needsHighlightChange) {
+        lineEls.forEach((el, idx) => {
+          if (idx === activeIndex) {
+            el.classList.add("active-speaking");
+          } else {
+            el.classList.remove("active-speaking");
+          }
+        });
+      }
+
+      if (needsHighlightChange || forceScroll) {
+        const lyricsWrap = document.getElementById("shuffle-lyrics-content");
+        if (lyricsWrap) {
+          const wrapRect = lyricsWrap.getBoundingClientRect();
+          const activeRect = activeEl.getBoundingClientRect();
+          const relativeTop = activeRect.top - wrapRect.top + lyricsWrap.scrollTop;
+          const targetScrollTop = relativeTop - (lyricsWrap.clientHeight / 2) + (activeEl.clientHeight / 2);
+          lyricsWrap.scrollTo({
+            top: Math.max(0, targetScrollTop),
+            behavior: "smooth"
+          });
+        }
+      }
     }
   },
 
@@ -9031,7 +9131,7 @@ export const ShufflePlayer = {
       tagsEl.innerHTML = (track.tags || []).map((t) => `<span class="kb-chip-small">${t}</span>`).join("");
     }
 
-    // 渲染文案 (逐句分段展示，高亮重点)
+    // 渲染文案 (逐句分段展示，高亮重点，提取时间戳供点击跳转与随声聚焦跟读)
     if (lyricsEl) {
       const transcript = track.transcript || "";
       if (!transcript.trim()) {
@@ -9046,9 +9146,42 @@ export const ShufflePlayer = {
         let html = "";
         lines.forEach((line) => {
           const isHighlight = line.includes("<mark") || line.includes("font-weight: 700");
-          html += `<div class="shuffle-lyrics-line ${isHighlight ? "highlight" : ""}">${line}</div>`;
+          let timeSec = null;
+          const timeMatch = line.match(/^(?:\[|⏱️\s*)(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\s+)/);
+          if (timeMatch) {
+            timeSec = parseTimestampToSeconds(timeMatch[1]);
+          } else {
+            const dataTimeMatch = line.match(/data-time=["'](\d+(?:\.\d+)?)["']/);
+            if (dataTimeMatch) {
+              timeSec = parseFloat(dataTimeMatch[1]);
+            }
+          }
+
+          const timeAttr = timeSec !== null && !isNaN(timeSec) ? `data-time="${timeSec}" title="点击跳转至 ${this.formatTimeSec(timeSec)}"` : "";
+          html += `<div class="shuffle-lyrics-line ${isHighlight ? "highlight" : ""}" ${timeAttr}>${line}</div>`;
         });
         lyricsEl.innerHTML = html;
+
+        // 绑定点击句子跳转播放
+        lyricsEl.querySelectorAll(".shuffle-lyrics-line[data-time]").forEach((lineEl) => {
+          lineEl.addEventListener("click", () => {
+            const sec = parseFloat(lineEl.dataset.time);
+            if (!isNaN(sec) && this.audioEl) {
+              this.resumeAudioContext();
+              this.audioEl.currentTime = sec;
+              if (this.audioEl.paused) {
+                this.audioEl.play().catch(() => {});
+              }
+              if (this.isLyricsFollowEnabled) {
+                this.syncLyricsFollow(true);
+              }
+            }
+          });
+        });
+
+        if (this.isLyricsFollowEnabled) {
+          this.syncLyricsFollow(true);
+        }
       }
     }
   },
