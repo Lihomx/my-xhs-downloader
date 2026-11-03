@@ -7703,6 +7703,12 @@ export const ShufflePlayer = {
   gainNode: null,
   // 随声聚焦跟读字幕 (播放时文案自动随语音高亮滚动，默认不开启)
   isLyricsFollowEnabled: localStorage.getItem("shuffle_lyrics_follow") === "true", // 默认不开启
+  // 随身听卡片与沉浸全屏大字幕字号设置
+  cardFontSize: parseInt(localStorage.getItem("shuffle_lyrics_card_font_size") || "13", 10),
+  theaterFontSize: parseInt(localStorage.getItem("shuffle_theater_font_size") || "26", 10),
+  isTheaterOpen: false,
+  isUserScrollingTheater: false,
+  userScrollTheaterTimer: null,
 
   init() {
     this.audioEl = document.getElementById("shuffle-audio-element");
@@ -7713,6 +7719,8 @@ export const ShufflePlayer = {
     this.updateModeBtnUI();
     this.updateEqualizerBtnUI();
     this.updateLyricsFollowUI();
+    this.applyCardFontSize();
+    this.applyTheaterFontSize();
 
     // 播放/暂停
     const playPauseBtn = document.getElementById("btn-shuffle-play-pause");
@@ -7736,6 +7744,16 @@ export const ShufflePlayer = {
     document.getElementById("btn-shuffle-lyrics-follow")?.addEventListener("click", () => {
       this.toggleLyricsFollow();
     });
+
+    // 绑定卡片内字号快速微调
+    document.getElementById("btn-shuffle-font-dec")?.addEventListener("click", () => this.adjustCardFontSize(-1));
+    document.getElementById("btn-shuffle-font-inc")?.addEventListener("click", () => this.adjustCardFontSize(1));
+
+    // 绑定开启全屏大字幕剧场
+    document.getElementById("btn-shuffle-open-theater")?.addEventListener("click", () => this.openTheater());
+
+    // 绑定全屏大字幕剧场内部所有事件
+    this.initTheaterEvents();
 
     // 挂载系统级后台音频会话 (iOS / Android 熄屏保活核心)
     this.setupAudioSession();
@@ -7839,19 +7857,26 @@ export const ShufflePlayer = {
 
   updateModeBtnUI() {
     const modeBtn = document.getElementById("btn-shuffle-mode-toggle");
-    if (!modeBtn) return;
-    if (this.mode === "order") {
-      modeBtn.innerHTML = "➡️ 顺序";
-      modeBtn.title = "顺序播放模式 (播完列表停止)";
-    } else if (this.mode === "loop") {
-      modeBtn.innerHTML = "🔁 循环";
-      modeBtn.title = "列表循环模式";
+    const theaterModeBtn = document.getElementById("btn-theater-mode-toggle");
+    let text = "➡️ 顺序";
+    let title = "顺序播放模式 (播完列表停止)";
+    if (this.mode === "loop") {
+      text = "🔁 循环";
+      title = "列表循环模式";
     } else if (this.mode === "shuffle") {
-      modeBtn.innerHTML = "🔀 科学复习";
-      modeBtn.title = "艾宾浩斯科学复习模式 (新旧自适应穿插，防重复死循环)";
+      text = "🔀 科学复习";
+      title = "艾宾浩斯科学复习模式 (新旧自适应穿插，防重复死循环)";
     } else if (this.mode === "single") {
-      modeBtn.innerHTML = "🔂 单曲";
-      modeBtn.title = "单曲循环模式";
+      text = "🔂 单曲";
+      title = "单曲循环模式";
+    }
+    if (modeBtn) {
+      modeBtn.innerHTML = text;
+      modeBtn.title = title;
+    }
+    if (theaterModeBtn) {
+      theaterModeBtn.innerHTML = text;
+      theaterModeBtn.title = title;
     }
   },
 
@@ -7991,6 +8016,17 @@ export const ShufflePlayer = {
         this.syncLyricsFollow();
       }
 
+      // 沉浸全屏大字幕剧场同步
+      if (this.isTheaterOpen) {
+        const theaterCurTime = document.getElementById("theater-time-current");
+        const theaterDurTime = document.getElementById("theater-time-duration");
+        const theaterSlider = document.getElementById("theater-scrub-slider");
+        if (theaterCurTime) theaterCurTime.textContent = this.formatTimeSec(cur);
+        if (theaterDurTime) theaterDurTime.textContent = this.formatTimeSec(dur);
+        if (theaterSlider && !this.isScrubbing) theaterSlider.value = ((cur / dur) * 100).toFixed(1);
+        this.syncTheaterFollow();
+      }
+
       // 听满 20 秒或进度达到 70% 视为一次有效播放，记入低频优先算法
       if (!this.hasRecordedCurrentPlay && (cur >= 20 || (dur > 0 && cur / dur >= 0.7))) {
         this.recordPlayCurrent();
@@ -8000,6 +8036,10 @@ export const ShufflePlayer = {
     this.audioEl.addEventListener("loadedmetadata", () => {
       if (durTimeEl && this.audioEl.duration) {
         durTimeEl.textContent = this.formatTimeSec(this.audioEl.duration);
+      }
+      if (this.isTheaterOpen && this.audioEl.duration) {
+        const theaterDurTime = document.getElementById("theater-time-duration");
+        if (theaterDurTime) theaterDurTime.textContent = this.formatTimeSec(this.audioEl.duration);
       }
       if ("mediaSession" in navigator && "setPositionState" in navigator.mediaSession && this.audioEl.duration > 0) {
         try {
@@ -8192,16 +8232,25 @@ export const ShufflePlayer = {
   updateEqualizerBtnUI() {
     const btn = document.getElementById("btn-shuffle-equalizer-toggle");
     const textEl = document.getElementById("shuffle-equalizer-text");
-    if (!btn) return;
+    const theaterBtn = document.getElementById("btn-theater-equalizer-toggle");
+    const theaterTextEl = document.getElementById("theater-equalizer-text");
 
     if (this.isEqualizerEnabled) {
-      btn.classList.add("active");
-      btn.title = "智能音量动态均衡：已开启。自动提升微弱说话声(+4dB)并平抑刺耳爆音（点击关闭切换为纯原生熄屏直通）";
+      if (btn) {
+        btn.classList.add("active");
+        btn.title = "智能音量动态均衡：已开启。自动提升微弱说话声(+4dB)并平抑刺耳爆音（点击关闭切换为纯原生熄屏直通）";
+      }
       if (textEl) textEl.textContent = "智能音量均衡 · 开";
+      if (theaterBtn) theaterBtn.className = "btn-theater-equalizer";
+      if (theaterTextEl) theaterTextEl.textContent = "均衡开";
     } else {
-      btn.classList.remove("active");
-      btn.title = "智能音量动态均衡：已关闭。当前为 100% 纯原生硬件直通模式，全机型熄屏防断播兜底（点击开启）";
+      if (btn) {
+        btn.classList.remove("active");
+        btn.title = "智能音量动态均衡：已关闭。当前为 100% 纯原生硬件直通模式，全机型熄屏防断播兜底（点击开启）";
+      }
       if (textEl) textEl.textContent = "智能音量均衡 · 关";
+      if (theaterBtn) theaterBtn.className = "btn-theater-equalizer off";
+      if (theaterTextEl) theaterTextEl.textContent = "均衡关";
     }
   },
 
@@ -8281,6 +8330,311 @@ export const ShufflePlayer = {
           const relativeTop = activeRect.top - wrapRect.top + lyricsWrap.scrollTop;
           const targetScrollTop = relativeTop - (lyricsWrap.clientHeight / 2) + (activeEl.clientHeight / 2);
           lyricsWrap.scrollTo({
+            top: Math.max(0, targetScrollTop),
+            behavior: "smooth"
+          });
+        }
+      }
+    }
+  },
+
+  applyCardFontSize() {
+    const indicator = document.getElementById("shuffle-font-indicator");
+    const lyricsWrap = document.getElementById("shuffle-lyrics-content");
+    if (indicator) indicator.textContent = `${this.cardFontSize}px`;
+    if (lyricsWrap) lyricsWrap.style.fontSize = `${this.cardFontSize}px`;
+    localStorage.setItem("shuffle_lyrics_card_font_size", String(this.cardFontSize));
+  },
+
+  adjustCardFontSize(delta) {
+    this.cardFontSize = Math.min(22, Math.max(11, this.cardFontSize + delta));
+    this.applyCardFontSize();
+  },
+
+  applyTheaterFontSize() {
+    const indicator = document.getElementById("theater-font-indicator");
+    const container = document.getElementById("theater-lyrics-container");
+    if (indicator) indicator.textContent = `${this.theaterFontSize}px`;
+    if (container) container.style.setProperty("--theater-font-size", `${this.theaterFontSize}px`);
+    localStorage.setItem("shuffle_theater_font_size", String(this.theaterFontSize));
+  },
+
+  adjustTheaterFontSize(delta) {
+    this.theaterFontSize = Math.min(42, Math.max(18, this.theaterFontSize + delta));
+    this.applyTheaterFontSize();
+  },
+
+  initTheaterEvents() {
+    // 退出全屏大字幕
+    document.getElementById("btn-theater-close")?.addEventListener("click", () => this.closeTheater());
+
+    // 剧场字号微调
+    document.getElementById("btn-theater-font-dec")?.addEventListener("click", () => this.adjustTheaterFontSize(-2));
+    document.getElementById("btn-theater-font-inc")?.addEventListener("click", () => this.adjustTheaterFontSize(2));
+
+    // 剧场底部播放控制
+    document.getElementById("btn-theater-play-pause")?.addEventListener("click", () => this.togglePlay());
+    document.getElementById("btn-theater-prev")?.addEventListener("click", () => this.playPrev());
+    document.getElementById("btn-theater-next")?.addEventListener("click", () => this.playNext());
+
+    // 剧场模式切换
+    document.getElementById("btn-theater-mode-toggle")?.addEventListener("click", () => {
+      document.getElementById("btn-shuffle-mode-toggle")?.click();
+      this.syncTheaterPlaybackUI();
+    });
+
+    // 剧场倍速切换
+    document.getElementById("btn-theater-speed-toggle")?.addEventListener("click", () => {
+      document.getElementById("btn-shuffle-speed-toggle")?.click();
+      this.syncTheaterPlaybackUI();
+    });
+
+    // 剧场均衡器切换
+    document.getElementById("btn-theater-equalizer-toggle")?.addEventListener("click", () => {
+      this.toggleEqualizer();
+      this.syncTheaterPlaybackUI();
+    });
+
+    // 剧场进度条拖拽
+    const theaterSlider = document.getElementById("theater-scrub-slider");
+    const theaterCurTime = document.getElementById("theater-time-current");
+    theaterSlider?.addEventListener("input", (e) => {
+      this.isScrubbing = true;
+      if (this.audioEl && this.audioEl.duration) {
+        const targetTime = (parseFloat(e.target.value) / 100) * this.audioEl.duration;
+        if (theaterCurTime) theaterCurTime.textContent = this.formatTimeSec(targetTime);
+      }
+    });
+
+    theaterSlider?.addEventListener("change", (e) => {
+      if (this.audioEl && this.audioEl.duration) {
+        const targetTime = (parseFloat(e.target.value) / 100) * this.audioEl.duration;
+        this.audioEl.currentTime = targetTime;
+        if (this.isLyricsFollowEnabled) this.syncLyricsFollow(true);
+        if (this.isTheaterOpen) this.syncTheaterFollow(true);
+      }
+      this.isScrubbing = false;
+    });
+
+    // 监听用户在剧场滚动，暂停自动滚动并显式浮动按钮
+    const theaterContainer = document.getElementById("theater-lyrics-container");
+    const btnResume = document.getElementById("btn-theater-resume-follow");
+
+    const onUserScroll = () => {
+      if (!this.isTheaterOpen) return;
+      this.isUserScrollingTheater = true;
+      if (btnResume) btnResume.style.display = "block";
+      clearTimeout(this.userScrollTheaterTimer);
+      this.userScrollTheaterTimer = setTimeout(() => {
+        this.isUserScrollingTheater = false;
+        if (btnResume) btnResume.style.display = "none";
+        this.syncTheaterFollow();
+      }, 5000);
+    };
+
+    theaterContainer?.addEventListener("wheel", onUserScroll, { passive: true });
+    theaterContainer?.addEventListener("touchmove", onUserScroll, { passive: true });
+
+    btnResume?.addEventListener("click", () => {
+      this.isUserScrollingTheater = false;
+      if (btnResume) btnResume.style.display = "none";
+      this.syncTheaterFollow(true);
+    });
+
+    // Esc 按键退出
+    window.addEventListener("keydown", (e) => {
+      if (this.isTheaterOpen && e.key === "Escape") {
+        this.closeTheater();
+      }
+    });
+  },
+
+  openTheater() {
+    this.isTheaterOpen = true;
+    const modal = document.getElementById("shuffle-theater-modal");
+    if (!modal) return;
+    modal.style.display = "flex";
+    document.body.style.overflow = "hidden";
+
+    // 同步字号与播放器状态
+    this.applyTheaterFontSize();
+    this.syncTheaterPlaybackUI();
+
+    const track = this.currentIndex >= 0 && this.currentIndex < this.playlist.length ? this.playlist[this.currentIndex] : null;
+    this.renderTheaterTrackInfo(track);
+    this.renderTheaterLyrics(track);
+
+    if (this.audioEl && !this.audioEl.paused) {
+      this.syncTheaterFollow(true);
+    }
+  },
+
+  closeTheater() {
+    this.isTheaterOpen = false;
+    const modal = document.getElementById("shuffle-theater-modal");
+    if (modal) modal.style.display = "none";
+    document.body.style.overflow = "";
+    this.isUserScrollingTheater = false;
+    clearTimeout(this.userScrollTheaterTimer);
+  },
+
+  renderTheaterTrackInfo(track) {
+    const titleEl = document.getElementById("theater-track-title");
+    const coverEl = document.getElementById("theater-track-cover");
+    const blurEl = document.getElementById("theater-backdrop-blur");
+    const tagsEl = document.getElementById("theater-track-tags");
+
+    if (!track) {
+      if (titleEl) titleEl.textContent = "暂无播放音频";
+      if (coverEl) coverEl.src = "/favicon.svg";
+      if (blurEl) blurEl.style.backgroundImage = "none";
+      if (tagsEl) tagsEl.innerHTML = "";
+      return;
+    }
+
+    if (titleEl) titleEl.textContent = track.title || "无标题音频";
+    const coverUrl = track.coverUrl || "/favicon.svg";
+    if (coverEl) coverEl.src = coverUrl;
+    if (blurEl) blurEl.style.backgroundImage = `url("${coverUrl}")`;
+    if (tagsEl) {
+      tagsEl.innerHTML = (track.tags || []).map((t) => `<span class="kb-chip-small" style="background: rgba(255,255,255,0.12); color: #fff; border-color: rgba(255,255,255,0.2);">${t}</span>`).join("");
+    }
+  },
+
+  renderTheaterLyrics(track) {
+    const scroller = document.getElementById("theater-lyrics-scroller");
+    if (!scroller) return;
+
+    if (!track || !track.transcript || !track.transcript.trim()) {
+      scroller.innerHTML = `<div class="theater-lyrics-empty">本篇音频暂未提取文案。可在知识库笔记中提取文案生成！</div>`;
+      return;
+    }
+
+    const lines = track.transcript
+      .split(/[\r\n]+/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    let html = "";
+    lines.forEach((line) => {
+      const isHighlight = line.includes("<mark") || line.includes("font-weight: 700");
+      let timeSec = null;
+      const timeMatch = line.match(/^(?:\[|⏱️\s*)(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\s+)/);
+      if (timeMatch) {
+        timeSec = parseTimestampToSeconds(timeMatch[1]);
+      } else {
+        const dataTimeMatch = line.match(/data-time=["'](\d+(?:\.\d+)?)["']/);
+        if (dataTimeMatch) timeSec = parseFloat(dataTimeMatch[1]);
+      }
+
+      const timeAttr = timeSec !== null && !isNaN(timeSec) ? `data-time="${timeSec}" title="轻触跳转至 ${this.formatTimeSec(timeSec)}"` : "";
+      html += `<div class="theater-lyrics-line ${isHighlight ? "highlight" : ""}" ${timeAttr}>${line}</div>`;
+    });
+
+    scroller.innerHTML = html;
+
+    // 绑定行点击跳转
+    scroller.querySelectorAll(".theater-lyrics-line[data-time]").forEach((lineEl) => {
+      lineEl.addEventListener("click", () => {
+        const sec = parseFloat(lineEl.dataset.time);
+        if (!isNaN(sec) && this.audioEl) {
+          this.resumeAudioContext();
+          this.audioEl.currentTime = sec;
+          if (this.audioEl.paused) this.audioEl.play().catch(() => {});
+          this.isUserScrollingTheater = false;
+          const btnResume = document.getElementById("btn-theater-resume-follow");
+          if (btnResume) btnResume.style.display = "none";
+          this.syncTheaterFollow(true);
+        }
+      });
+    });
+
+    this.syncTheaterFollow(true);
+  },
+
+  syncTheaterPlaybackUI() {
+    if (!this.isTheaterOpen) return;
+    const isPlaying = this.audioEl && !this.audioEl.paused;
+    const playIcon = document.getElementById("theater-play-icon");
+    if (playIcon) playIcon.textContent = isPlaying ? "⏸️" : "▶️";
+
+    const modeBtn = document.getElementById("btn-theater-mode-toggle");
+    if (modeBtn) {
+      if (this.mode === "order") modeBtn.innerHTML = "➡️ 顺序";
+      else if (this.mode === "loop") modeBtn.innerHTML = "🔁 循环";
+      else if (this.mode === "shuffle") modeBtn.innerHTML = "🔀 科学复习";
+      else if (this.mode === "single") modeBtn.innerHTML = "🔂 单曲";
+    }
+
+    const speedBtn = document.getElementById("btn-theater-speed-toggle");
+    if (speedBtn) speedBtn.textContent = `${this.playbackRate || 1.0}x`;
+
+    const eqBtn = document.getElementById("btn-theater-equalizer-toggle");
+    const eqTxt = document.getElementById("theater-equalizer-text");
+    if (eqBtn) {
+      if (this.isEqualizerEnabled) {
+        eqBtn.className = "btn-theater-equalizer";
+        if (eqTxt) eqTxt.textContent = "均衡开";
+      } else {
+        eqBtn.className = "btn-theater-equalizer off";
+        if (eqTxt) eqTxt.textContent = "均衡关";
+      }
+    }
+
+    if (this.audioEl && this.audioEl.duration) {
+      const cur = this.audioEl.currentTime;
+      const dur = this.audioEl.duration;
+      const curTime = document.getElementById("theater-time-current");
+      const durTime = document.getElementById("theater-time-duration");
+      const slider = document.getElementById("theater-scrub-slider");
+      if (curTime) curTime.textContent = this.formatTimeSec(cur);
+      if (durTime) durTime.textContent = this.formatTimeSec(dur);
+      if (slider && !this.isScrubbing) slider.value = ((cur / dur) * 100).toFixed(1);
+    }
+  },
+
+  syncTheaterFollow(forceScroll = false) {
+    if (!this.isTheaterOpen) return;
+    if (!this.audioEl) return;
+    if (this.audioEl.paused && !forceScroll) return;
+
+    const curTime = this.audioEl.currentTime;
+    const lineEls = Array.from(document.querySelectorAll("#theater-lyrics-scroller .theater-lyrics-line[data-time]"));
+    if (lineEls.length === 0) return;
+
+    let activeIndex = -1;
+    for (let i = 0; i < lineEls.length; i++) {
+      const t = parseFloat(lineEls[i].dataset.time);
+      if (!isNaN(t) && t <= curTime + 0.35) {
+        activeIndex = i;
+      } else {
+        break;
+      }
+    }
+
+    if (activeIndex === -1 && curTime >= 0) {
+      activeIndex = 0;
+    }
+
+    if (activeIndex !== -1) {
+      const activeEl = lineEls[activeIndex];
+      const needsHighlightChange = !activeEl.classList.contains("active-speaking");
+
+      if (needsHighlightChange) {
+        lineEls.forEach((el, idx) => {
+          if (idx === activeIndex) el.classList.add("active-speaking");
+          else el.classList.remove("active-speaking");
+        });
+      }
+
+      if ((needsHighlightChange || forceScroll) && !this.isUserScrollingTheater) {
+        const container = document.getElementById("theater-lyrics-container");
+        if (container) {
+          const containerRect = container.getBoundingClientRect();
+          const activeRect = activeEl.getBoundingClientRect();
+          const relativeTop = activeRect.top - containerRect.top + container.scrollTop;
+          const targetScrollTop = relativeTop - (container.clientHeight / 2) + (activeEl.clientHeight / 2);
+          container.scrollTo({
             top: Math.max(0, targetScrollTop),
             behavior: "smooth"
           });
@@ -8657,6 +9011,9 @@ export const ShufflePlayer = {
       if (isPlaying) coverWrap.classList.add("playing");
       else coverWrap.classList.remove("playing");
     }
+    const theaterIcon = document.getElementById("theater-play-icon");
+    if (theaterIcon) theaterIcon.textContent = isPlaying ? "⏸️" : "▶️";
+
     if ("mediaSession" in navigator) {
       navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
     }
@@ -9183,6 +9540,12 @@ export const ShufflePlayer = {
           this.syncLyricsFollow(true);
         }
       }
+    }
+
+    if (this.isTheaterOpen) {
+      this.renderTheaterTrackInfo(track);
+      this.renderTheaterLyrics(track);
+      this.syncTheaterPlaybackUI();
     }
   },
 

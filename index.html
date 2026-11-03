@@ -532,6 +532,16 @@
               <div class="shuffle-lyrics-header">
                 <span class="shuffle-lyrics-header-title">🎙️ 提取语音文案 · 随声精读</span>
                 <div class="shuffle-lyrics-header-actions">
+                  <!-- 卡片内字号快速微调 (A- / A+) -->
+                  <div class="shuffle-font-adjuster" title="调节当前卡片文案字号">
+                    <button id="btn-shuffle-font-dec" class="shuffle-font-btn" type="button" title="缩小字号">A-</button>
+                    <span id="shuffle-font-indicator" class="shuffle-font-indicator">13px</span>
+                    <button id="btn-shuffle-font-inc" class="shuffle-font-btn" type="button" title="放大字号">A+</button>
+                  </div>
+                  <!-- 一键开启沉浸全屏大字幕剧场 -->
+                  <button id="btn-shuffle-open-theater" class="btn-theater-open-pill" type="button" title="开启沉浸全屏大字幕模式（巨幅动态歌词、封面毛玻璃质感背景、居中同步聚焦）">
+                    <span>📺 全屏大字幕</span>
+                  </button>
                   <button id="btn-shuffle-lyrics-follow" class="btn-lyrics-follow-toggle" type="button" title="点击开启/关闭随声聚焦跟读（播放时文案自动同步滚动并高亮发音句）">
                     <span class="follow-icon">🎯</span>
                     <span id="shuffle-lyrics-follow-text">聚焦跟读 · 关</span>
@@ -1594,6 +1604,84 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 📻 随身听 · 沉浸全屏大字幕剧场 (Cover Art Glass + 动态歌词聚焦 + 常驻磨砂控制条) -->
+    <div id="shuffle-theater-modal" class="shuffle-theater-modal" style="display: none;">
+      <!-- 动态背景层：高斯模糊虚化当前音频封面 -->
+      <div id="theater-backdrop-blur" class="theater-backdrop-blur"></div>
+      <div class="theater-backdrop-overlay"></div>
+
+      <!-- 剧场顶部栏 -->
+      <header class="theater-header">
+        <div class="theater-header-track-info">
+          <div class="theater-track-cover-mini-wrap">
+            <img id="theater-track-cover" src="/favicon.svg" alt="音频封面" class="theater-track-cover-mini" />
+          </div>
+          <div class="theater-track-meta">
+            <h3 id="theater-track-title" class="theater-track-title">音频标题加载中...</h3>
+            <div id="theater-track-tags" class="theater-track-tags"></div>
+          </div>
+        </div>
+        <div class="theater-header-actions">
+          <div class="theater-font-adjuster" title="调节剧场大字幕字号">
+            <button id="btn-theater-font-dec" class="theater-font-btn" type="button" title="减小字幕字号">A-</button>
+            <span id="theater-font-indicator" class="theater-font-indicator">26px</span>
+            <button id="btn-theater-font-inc" class="theater-font-btn" type="button" title="增大字幕字号">A+</button>
+          </div>
+          <button id="btn-theater-close" class="btn-theater-close" type="button" title="退出全屏大字幕模式 (快捷键: Esc)">
+            <span>✕ 收起</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- 剧场正中：巨幅动态歌词精读滚动区 -->
+      <main id="theater-lyrics-container" class="theater-lyrics-container">
+        <div id="theater-lyrics-scroller" class="theater-lyrics-scroller">
+          <div class="theater-lyrics-empty">音频播放时，文案将在此巨幅滚动展示，当前发音句居中放大聚焦。</div>
+        </div>
+        <!-- 手动滚动时浮现的快速回正按钮 -->
+        <button id="btn-theater-resume-follow" class="btn-theater-resume-follow" type="button" style="display: none;">
+          📍 回到当前发音句
+        </button>
+      </main>
+
+      <!-- 剧场底部：常驻微透磨砂高精控制栏 -->
+      <footer class="theater-footer">
+        <!-- 进度条与高精时间戳 -->
+        <div class="theater-scrubber-wrap">
+          <div class="theater-time-labels">
+            <span id="theater-time-current">00:00</span>
+            <span id="theater-time-duration">00:00</span>
+          </div>
+          <div class="theater-slider-track">
+            <input type="range" id="theater-scrub-slider" min="0" max="100" value="0" step="0.1" class="theater-slider" />
+          </div>
+        </div>
+
+        <!-- 播放控制按键群 -->
+        <div class="theater-controls-row">
+          <button id="btn-theater-mode-toggle" class="btn-theater-ctrl" type="button" title="切换播放模式">
+            ➡️ 顺序
+          </button>
+          <button id="btn-theater-prev" class="btn-theater-ctrl btn-theater-round" type="button" title="上一曲">
+            ⏮️
+          </button>
+          <button id="btn-theater-play-pause" class="btn-theater-play-hero" type="button" title="播放 / 暂停">
+            <span id="theater-play-icon">▶️</span>
+          </button>
+          <button id="btn-theater-next" class="btn-theater-ctrl btn-theater-round" type="button" title="下一曲">
+            ⏭️
+          </button>
+          <button id="btn-theater-speed-toggle" class="btn-theater-ctrl" type="button" title="切换播放倍速">
+            1.0x
+          </button>
+          <button id="btn-theater-equalizer-toggle" class="btn-theater-equalizer active" type="button" title="智能音量动态均衡">
+            <span class="theater-eq-icon">🎚️</span>
+            <span id="theater-equalizer-text">均衡开</span>
+          </button>
+        </div>
+      </footer>
     </div>
 
     <!-- 底部轻提示 Toast -->
