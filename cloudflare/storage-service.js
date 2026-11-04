@@ -913,15 +913,17 @@ export async function deleteNoteMedia(env, id, { target = 'both' } = {}) {
   if (target === 'video' || target === 'both') {
     if (Array.isArray(note.videos)) {
       for (const v of note.videos) {
-        if (v.r2Key) keysToDelete.push(v.r2Key);
+        const key = v.r2Key || (v.url && v.url.startsWith('/api/media/') ? decodeURIComponent(v.url.slice('/api/media/'.length)) : null);
+        if (key) keysToDelete.push(key);
       }
     }
     updateVideos = true;
   }
 
   if (target === 'audio' || target === 'both') {
-    if (note.audioR2Key) {
-      keysToDelete.push(note.audioR2Key);
+    const audioKey = note.audioR2Key || (note.audioUrl && note.audioUrl.startsWith('/api/media/') ? decodeURIComponent(note.audioUrl.slice('/api/media/'.length)) : null);
+    if (audioKey) {
+      keysToDelete.push(audioKey);
     }
     updateAudio = true;
   }

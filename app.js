@@ -8924,12 +8924,16 @@ export const ShufflePlayer = {
       return;
     }
 
+    const initialVideoUrl = track.videoUrl || (track.mediaUrl && !track.mediaUrl.match(/\.(mp3|wav|m4a|aac|ogg)(\?.*)?$/i) ? track.mediaUrl : "");
+    const initialAudioUrl = track.audioUrl || (track.mediaUrl && track.mediaUrl.match(/\.(mp3|wav|m4a|aac|ogg)(\?.*)?$/i) ? track.mediaUrl : "");
+
     const fallbackNote = {
       id: track.id,
       title: track.title,
       coverUrl: track.coverUrl,
-      audioUrl: track.audioUrl || (track.mediaUrl && (track.mediaUrl.includes(".mp3") || track.mediaUrl.includes(".wav") || track.mediaUrl.includes(".m4a")) ? track.mediaUrl : ""),
-      videos: (!track.audioUrl && track.mediaUrl && !track.mediaUrl.includes(".mp3")) ? [{ url: track.mediaUrl }] : [],
+      audioUrl: initialAudioUrl,
+      videoUrl: initialVideoUrl,
+      videos: initialVideoUrl ? [{ url: initialVideoUrl }] : [],
       transcript: track.transcript,
       tags: track.tags
     };
@@ -8938,20 +8942,23 @@ export const ShufflePlayer = {
       window.openMediaCleanupModal(fallbackNote);
     }
 
-    // 异步查询完整笔记以获取绝对精确的音视频源
+    // 异步查询完整笔记以获取绝对精确的音视频源 (注意解包 fullData.note)
     fetch(`/api/notes/${track.id}`, {
       headers: { "x-auth-pin": state.pin }
     }).then(async (res) => {
       if (res.ok) {
-        const fullNote = await res.json();
-        if (state.activeDetailNote && state.activeDetailNote.id === track.id) {
-          state.activeDetailNote = fullNote;
+        const fullData = await res.json();
+        const note = fullData.note || fullData;
+        if (state.activeDetailNote && String(state.activeDetailNote.id) === String(track.id)) {
+          state.activeDetailNote = note;
           if (typeof window.openMediaCleanupModal === "function") {
-            window.openMediaCleanupModal(fullNote);
+            window.openMediaCleanupModal(note);
           }
         }
       }
-    }).catch(() => {});
+    }).catch((err) => {
+      console.warn("查询完整笔记数据失败:", err);
+    });
   },
 
   renderTheaterTrackInfo(track) {
@@ -11000,25 +11007,120 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target === cleanupModal) closeCleanupModal();
   });
 
+  const resolveNoteMediaInfo = (rawNote) => {
+    if (!rawNote) return null;
+    const note = (rawNote && rawNote.note) ? rawNote.note : rawNote;
+
+    let videos = [];
+    if (Array.isArray(note.videos)) {
+      videos = note.videos;
+    } else if (typeof note.videos_json === "string") {
+      try { videos = JSON.parse(note.videos_json); } catch {}
+    } else if (typeof note.videos === "string") {
+      try { videos = JSON.parse(note.videos); } catch {}
+    }
+
+    let videoUrl = (Array.isArray(videos) && videos[0]?.url) ? videos[0].url : (note.videoUrl || "");
+    if (!videoUrl && note.mediaUrl && !note.mediaUrl.match(/\.(mp3|wav|m4a|aac|ogg)(\?.*)?$/i)) {
+      if (note.mediaUrl.includes("/videos/") || note.mediaUrl.includes(".mp4") || note.mediaUrl.includes(".mov")) {
+        videoUrl = note.mediaUrl;
+      }
+    }
+
+    let audioUrl = note.audioUrl || "";
+    if (!audioUrl && note.mediaUrl && note.mediaUrl.match(/\.(mp3|wav|m4a|aac|ogg)(\?.*)?$/i)) {
+      audioUrl = note.mediaUrl;
+    }
+    if (!audioUrl && note.mediaUrl && note.mediaUrl.includes("/audios/")) {
+      audioUrl = note.mediaUrl;
+    }
+
+    const hasVideo = Boolean(videoUrl || (Array.isArray(videos) && videos.length > 0));
+    const hasAudio = Boolean(audioUrl);
+
+    if (!note.videos || !note.videos.length) {
+      if (videoUrl) {
+        note.videos = [{ url: videoUrl }];
+      } else {
+        note.videos = [];
+      }
+    }
+    if (!note.audioUrl && audioUrl) {
+      note.audioUrl = audioUrl;
+    }
+
+    return {
+      note,
+      hasVideo,
+      hasAudio,
+      videoUrl,
+      audioUrl
+    };
+  };
+
   const openMediaCleanupModal = (note) => {
-    const targetNote = note || state.activeDetailNote;
-    if (!targetNote) return;
+    const raw = note || state.activeDetailNote;
+    const info = resolveNoteMediaInfo(raw);
+    if (!info) {
+      showToast("未找到当前笔记数据，请稍后重试", { isError: true });
+      return;
+    }
+
+    const { note: targetNote, hasVideo, hasAudio } = info;
+    state.activeDetailNote = targetNote;
+
+    const targetTitleEl = document.getElementById("cleanup-modal-target-title");
+    if (targetTitleEl) {
+      targetTitleEl.textContent = targetNote.title || "当前笔记";
+      targetTitleEl.title = targetNote.title || "";
+    }
 
     const btnVideoOnly = document.getElementById("btn-cleanup-video-only");
     const btnAudioOnly = document.getElementById("btn-cleanup-audio-only");
     const btnBoth = document.getElementById("btn-cleanup-both");
 
-    const hasVideo = Array.isArray(targetNote.videos) && targetNote.videos.length > 0 && Boolean(targetNote.videos[0]?.url);
-    const hasAudio = Boolean(targetNote.audioUrl);
+    if (btnVideoOnly) {
+      btnVideoOnly.disabled = !hasVideo;
+      btnVideoOnly.title = hasVideo ? "转存纯音频并删除大视频" : "当前笔记未存储独立视频文件";
+      const descEl = btnVideoOnly.querySelector(".cleanup-opt-desc");
+      if (descEl) {
+        if (hasVideo) {
+          descEl.textContent = hasAudio 
+            ? "已具备独立音频，将直接从云端删除数十兆大视频文件（释放 ~95% 空间）。"
+            : "转存轻量纯音频，彻底删除大视频文件（释放 ~95% 空间），仍可在随身听中播放。";
+        } else {
+          descEl.textContent = "当前笔记未存储独立视频源（或视频已被清理）。";
+        }
+      }
+    }
+    if (btnAudioOnly) {
+      btnAudioOnly.disabled = !hasAudio;
+      btnAudioOnly.title = hasAudio ? "删除独立语音文件" : "当前笔记未存储独立音频文件";
+      const descEl = btnAudioOnly.querySelector(".cleanup-opt-desc");
+      if (descEl) {
+        if (hasAudio) {
+          descEl.textContent = "仅从云端删除独立音频文件，保留高清视频画面。";
+        } else {
+          descEl.textContent = "当前笔记未包含独立音频文件。";
+        }
+      }
+    }
+    if (btnBoth) {
+      btnBoth.disabled = !hasVideo && !hasAudio;
+      const descEl = btnBoth.querySelector(".cleanup-opt-desc");
+      if (descEl) {
+        if (!hasVideo && !hasAudio) {
+          descEl.textContent = "当前笔记音视频文件均已释放清理。";
+        } else {
+          descEl.textContent = "从 Cloudflare R2 中彻底删除视频与语音文件，释放全部音视频硬盘空间！文案与笔记安全留存。";
+        }
+      }
+    }
 
     if (!hasVideo && !hasAudio) {
       showToast("当前笔记未包含视频或独立语音媒体，无需清理");
       return;
     }
-
-    if (btnVideoOnly) btnVideoOnly.disabled = !hasVideo;
-    if (btnAudioOnly) btnAudioOnly.disabled = !hasAudio;
-    if (btnBoth) btnBoth.disabled = !hasVideo && !hasAudio;
 
     cleanupModal?.classList.add("active");
   };
@@ -11033,23 +11135,46 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   const executeMediaCleanup = async (target) => {
-    const note = state.activeDetailNote;
-    if (!note) return;
+    const info = resolveNoteMediaInfo(state.activeDetailNote);
+    if (!info) {
+      showToast("未找到当前笔记数据，请刷新后重试", { isError: true });
+      return;
+    }
+    const { note, hasVideo, hasAudio, videoUrl } = info;
 
-    const hasVideo = Array.isArray(note.videos) && note.videos.length > 0 && Boolean(note.videos[0]?.url);
-    const hasAudio = Boolean(note.audioUrl);
+    const btnVideoOnly = document.getElementById("btn-cleanup-video-only");
+    const btnAudioOnly = document.getElementById("btn-cleanup-audio-only");
+    const btnBoth = document.getElementById("btn-cleanup-both");
+
+    const setButtonsBusy = (isBusy) => {
+      if (btnVideoOnly) btnVideoOnly.disabled = isBusy || !hasVideo;
+      if (btnAudioOnly) btnAudioOnly.disabled = isBusy || !hasAudio;
+      if (btnBoth) btnBoth.disabled = isBusy || (!hasVideo && !hasAudio);
+    };
 
     try {
       if (target === "video") {
-        if (!hasVideo) return;
+        if (!hasVideo) {
+          showToast("当前笔记未包含视频文件（或视频已被清理）", { isError: true });
+          return;
+        }
         if (!confirm("确定要仅删除视频文件吗？\n系统将自动保留/提取纯音频，以便您之后仍可听声音并查阅文案，大幅节省云端空间。")) return;
+
+        setButtonsBusy(true);
 
         // 1. 如果尚未转存独立音频文件，先从视频中提取轻量纯音频并上传到 R2
         if (!hasAudio && hasVideo) {
           showToast("⏳ 正在提取轻量纯音频转存云端，以便删除大视频后保留声音...");
           try {
-            const videoUrl = note.videos[0].url;
-            const { blob } = await extractFullWavFromMedia(videoUrl);
+            let vUrl = videoUrl || (note.videos && note.videos[0]?.url);
+            if (!vUrl) throw new Error("无法读取有效视频源");
+
+            try {
+              const cached = await OfflineMediaManager.getPlayableSource(vUrl);
+              if (cached?.src) vUrl = cached.src;
+            } catch {}
+
+            const { blob } = await extractFullWavFromMedia(vUrl);
             const uploadRes = await fetch(`/api/notes/${note.id}/audio`, {
               method: "POST",
               headers: {
@@ -11064,7 +11189,8 @@ document.addEventListener("DOMContentLoaded", () => {
             }
           } catch (extractErr) {
             console.warn("提取纯音频失败:", extractErr);
-            if (!confirm("提取独立音频失败，是否仍继续删除视频？（文字笔记与文案仍将完整保留）")) {
+            if (!confirm(`提取独立音频遇到问题 (${extractErr.message})，是否仍继续删除视频？（文字笔记与文案仍将完整保留）`)) {
+              setButtonsBusy(false);
               return;
             }
           }
@@ -11083,10 +11209,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!data.success) throw new Error(data.message || "删除视频失败");
 
         note.videos = [];
+        note.videoUrl = "";
         showToast("🎬 视频文件已成功删除！纯音频与语音文案完整保留，已大幅腾出云端空间！");
       } else if (target === "audio") {
-        if (!hasAudio) return;
+        if (!hasAudio) {
+          showToast("当前笔记未包含独立音频文件（或已删除）", { isError: true });
+          return;
+        }
         if (!confirm("确定要仅删除独立语音文件吗？视频画面、文案与笔记仍将完整保留。")) return;
+
+        setButtonsBusy(true);
 
         showToast("⏳ 正在从 Cloudflare R2 删除语音文件...");
         const res = await fetch(`/api/notes/${note.id}/delete-media`, {
@@ -11105,6 +11237,8 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (target === "both") {
         if (!confirm("确定要同时删除视频和语音文件吗？\n当前笔记文字、感想、分类标签及【提取语音文案】将 100% 完整保留，云端大文件空间将完全释放。")) return;
 
+        setButtonsBusy(true);
+
         showToast("⏳ 正在从 Cloudflare R2 彻底删除音视频文件...");
         const res = await fetch(`/api/notes/${note.id}/delete-media`, {
           method: "POST",
@@ -11118,6 +11252,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!data.success) throw new Error(data.message || "删除音视频失败");
 
         note.videos = [];
+        note.videoUrl = "";
         note.audioUrl = "";
         showToast("💥 音视频媒体已全部删除！文字笔记与语音文案安全留存，已最大化腾出云端空间！");
       }
@@ -11129,16 +11264,26 @@ document.addEventListener("DOMContentLoaded", () => {
       loadStorageUsage({ forceRefresh: true });
 
       // 如果当前随身听正在播放此音频，根据清理目标平滑切歌/更新
-      if (ShufflePlayer.currentIndex >= 0 && ShufflePlayer.playlist[ShufflePlayer.currentIndex]?.id === note.id) {
+      if (ShufflePlayer.currentIndex >= 0 && String(ShufflePlayer.playlist[ShufflePlayer.currentIndex]?.id) === String(note.id)) {
         const curTrack = ShufflePlayer.playlist[ShufflePlayer.currentIndex];
         if (target === "video") {
+          curTrack.videoUrl = "";
           if (note.audioUrl) {
             curTrack.mediaUrl = note.audioUrl;
             curTrack.audioUrl = note.audioUrl;
+            // 如果随身听正在播放，无缝切换到纯音频源并保留当前播放进度
+            if (ShufflePlayer.audioEl && curTrack.mediaUrl && !ShufflePlayer.audioEl.src.includes(curTrack.mediaUrl)) {
+              const curTime = ShufflePlayer.audioEl.currentTime;
+              const isPlaying = !ShufflePlayer.audioEl.paused;
+              ShufflePlayer.audioEl.src = curTrack.mediaUrl;
+              ShufflePlayer.audioEl.currentTime = curTime;
+              if (isPlaying) ShufflePlayer.audioEl.play().catch(() => {});
+            }
           }
         } else if (target === "audio" || target === "both") {
           curTrack.mediaUrl = "";
           curTrack.audioUrl = "";
+          if (target === "both") curTrack.videoUrl = "";
           setTimeout(() => {
             if (ShufflePlayer.playlist.length > 1) {
               ShufflePlayer.playNext();
@@ -11149,7 +11294,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
     } catch (err) {
-      showToast(`操作失败: ${err.message}`);
+      showToast(`操作失败: ${err.message}`, { isError: true });
+    } finally {
+      setButtonsBusy(false);
     }
   };
 
