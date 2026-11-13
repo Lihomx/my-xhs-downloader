@@ -8153,9 +8153,66 @@ export const ShufflePlayer = {
     });
 
     this.audioEl.addEventListener("error", (e) => {
-      console.warn("Shuffle audio error:", e);
+      console.warn("Shuffle audio error:", e, this.audioEl?.error);
       this.updatePlayStateUI(false);
+
+      const track = this.currentIndex >= 0 ? this.playlist[this.currentIndex] : null;
+      const currentSrc = this.audioEl?.src || "";
+
+      // 若离线缓存 Blob 损坏或解码失败，自动回退到云端原始流并清理异常缓存
+      if (currentSrc.startsWith("blob:") && track?.mediaUrl && !this._fallbackTriedForIndex?.[this.currentIndex]) {
+        this._fallbackTriedForIndex = this._fallbackTriedForIndex || {};
+        this._fallbackTriedForIndex[this.currentIndex] = true;
+        showToast("⚠️ 本地离线音频异常，已自动切回云端流畅播放");
+        const curTime = this.audioEl.currentTime || 0;
+        this.audioEl.src = track.mediaUrl;
+        this.audioEl.playbackRate = this.playbackRate;
+        this.audioEl.addEventListener("loadedmetadata", () => {
+          if (curTime > 0 && curTime < (this.audioEl.duration || Infinity)) {
+            this.audioEl.currentTime = curTime;
+          }
+          this.audioEl.play().catch(() => {});
+        }, { once: true });
+        return;
+      }
+
+      showToast("⚠️ 当前音频加载失败，请检查网络或切换下一首", { isError: true });
     });
+
+    // 卡顿自愈监控：若播放中长时间处于 waiting/stalled，尝试平滑重连
+    let stallTimer = null;
+    const clearStallTimer = () => {
+      if (stallTimer) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    };
+    const startStallWatchdog = () => {
+      clearStallTimer();
+      if (!this.audioEl || this.audioEl.paused) return;
+      stallTimer = setTimeout(() => {
+        if (!this.audioEl || this.audioEl.paused || this.audioEl.readyState >= 3) return;
+        const curTime = this.audioEl.currentTime || 0;
+        const src = this.audioEl.src;
+        if (!src) return;
+        console.warn("Shuffle audio stalled > 10s, attempting recovery...");
+        showToast("⏳ 音频缓冲较慢，正在尝试自动重连...");
+        this.audioEl.load();
+        this.audioEl.addEventListener("loadedmetadata", () => {
+          if (curTime > 0 && curTime < (this.audioEl.duration || Infinity)) {
+            this.audioEl.currentTime = curTime;
+          }
+          this.audioEl.playbackRate = this.playbackRate;
+          this.audioEl.play().catch(() => {});
+        }, { once: true });
+      }, 10000);
+    };
+    this.audioEl.addEventListener("waiting", startStallWatchdog);
+    this.audioEl.addEventListener("stalled", startStallWatchdog);
+    this.audioEl.addEventListener("playing", clearStallTimer);
+    this.audioEl.addEventListener("canplay", clearStallTimer);
+    this.audioEl.addEventListener("pause", clearStallTimer);
+    this.audioEl.addEventListener("ended", clearStallTimer);
   },
 
   // 6. 动态解耦/重构音频节点（关闭均衡时切回 100% 纯原生音频，彻底脱离 Web Audio 劫持）
@@ -9939,7 +9996,7 @@ export const ShufflePlayer = {
       });
     }
 
-    // 异步查询本地离线 Blob (若已离线则秒速平滑替换为 ObjectURL)
+    // 异步查询本地离线 Blob (若尚未起播则平滑替换为 ObjectURL；若已在流畅播放则不打断当前解码器)
     OfflineMediaManager.getPlayableSource(track.mediaUrl, {
       noteId: track.id,
       title: track.title,
@@ -9948,12 +10005,23 @@ export const ShufflePlayer = {
       tags: track.tags
     }).then(({ src, isOffline }) => {
       if (src && this.audioEl && this.currentIndex === index) {
-        if (isOffline && this.audioEl.src !== src) {
-          const curTime = this.audioEl.currentTime;
+        const isAlreadyPlayingSmoothly = !this.audioEl.paused && this.audioEl.readyState >= 2;
+        if (isOffline && this.audioEl.src !== src && !isAlreadyPlayingSmoothly) {
+          const curTime = this.audioEl.currentTime || 0;
           const wasPlaying = !this.audioEl.paused;
           this.audioEl.src = src;
-          this.audioEl.currentTime = curTime;
-          if (wasPlaying) this.audioEl.play().catch(() => {});
+          this.audioEl.playbackRate = this.playbackRate;
+          if (curTime > 0) {
+            this.audioEl.addEventListener("loadedmetadata", () => {
+              if (curTime < (this.audioEl.duration || Infinity)) {
+                this.audioEl.currentTime = curTime;
+              }
+              this.audioEl.playbackRate = this.playbackRate;
+              if (wasPlaying) this.audioEl.play().catch(() => {});
+            }, { once: true });
+          } else if (wasPlaying) {
+            this.audioEl.play().catch(() => {});
+          }
         }
 
         const pill = document.getElementById("shuffle-offline-pill");
