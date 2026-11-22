@@ -1085,10 +1085,10 @@ export async function getShuffleNotes(db) {
   if (!db) return [];
   await initDb(db);
   const rows = await db.prepare(`
-    SELECT id, title, cover_url, audio_url, videos_json, transcript, tags_json, updated_at
+    SELECT id, title, cover_url, audio_url, videos_json, transcript, tags_json, created_at, updated_at
     FROM notes
     WHERE in_shuffle = 1
-    ORDER BY updated_at DESC
+    ORDER BY created_at DESC
   `).all();
 
   return (rows.results || []).map(r => {
@@ -1105,7 +1105,9 @@ export async function getShuffleNotes(db) {
       videoUrl: videos[0]?.url || "",
       mediaUrl,
       transcript: r.transcript || "",
-      tags
+      tags,
+      createdAt: Number(r.created_at || 0),
+      updatedAt: Number(r.updated_at || 0)
     };
   }).filter(item => Boolean(item.mediaUrl));
 }

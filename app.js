@@ -7823,12 +7823,14 @@ export const ShufflePlayer = {
         showToast("已切换为：🔀 科学复习 (艾宾浩斯遗忘曲线，新知温故自适应)");
       } else if (this.mode === "shuffle") {
         this.mode = "newest";
-        showToast("已切换为：🆕 新歌优先 (最新加入的 15 首从新到旧循环)");
-        if (this.playlist.length > 0 && (this.currentIndex < 0 || this.currentIndex >= Math.min(15, this.playlist.length))) {
+        this.applyPlaylistOrdering();
+        showToast("已切换为：🆕 新歌优先 (按归档时间从新到旧排序全部音频)");
+        if (this.playlist.length > 0 && this.currentIndex !== 0) {
           this.playIndex(0);
         }
       } else if (this.mode === "newest") {
         this.mode = "single";
+        this.applyPlaylistOrdering();
         showToast("已切换为：单曲循环");
       } else {
         this.mode = "order";
@@ -7922,7 +7924,7 @@ export const ShufflePlayer = {
       title = "艾宾浩斯科学复习模式 (新旧自适应穿插，防重复死循环)";
     } else if (this.mode === "newest") {
       text = "🆕 新歌优先";
-      title = "新歌优先模式 (最新加入的 15 首从新到旧循环播放)";
+      title = "新歌优先模式 (按笔记归档时间从新到旧排序全部音频)";
     } else if (this.mode === "single") {
       text = "🔂 单曲";
       title = "单曲循环模式";
@@ -9116,6 +9118,7 @@ export const ShufflePlayer = {
       if (this.mode === "order") modeBtn.innerHTML = "➡️ 顺序";
       else if (this.mode === "loop") modeBtn.innerHTML = "🔁 循环";
       else if (this.mode === "shuffle") modeBtn.innerHTML = "🔀 科学复习";
+      else if (this.mode === "newest") modeBtn.innerHTML = "🆕 新歌优先";
       else if (this.mode === "single") modeBtn.innerHTML = "🔂 单曲";
     }
 
@@ -9508,6 +9511,28 @@ export const ShufflePlayer = {
     return ordered;
   },
 
+  applyPlaylistOrdering() {
+    if (!Array.isArray(this.playlist) || this.playlist.length === 0) return;
+    const curTrackId = this.currentIndex >= 0 && this.currentIndex < this.playlist.length
+      ? String(this.playlist[this.currentIndex].id)
+      : null;
+
+    if (this.mode === "newest") {
+      this.playlist = [...this.playlist].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    } else {
+      this.playlist = this.applyCustomOrder(this.playlist);
+    }
+
+    if (curTrackId) {
+      const newIdx = this.playlist.findIndex((t) => String(t.id) === curTrackId);
+      if (newIdx !== -1) this.currentIndex = newIdx;
+    }
+    this.renderPlaylist();
+    if (this.currentIndex >= 0) {
+      this.highlightActiveCard(this.currentIndex);
+    }
+  },
+
   calculateInsertIndex(fromIdx, overIdx, isBottomHalf) {
     if (isBottomHalf) {
       return fromIdx <= overIdx ? overIdx : overIdx + 1;
@@ -9592,8 +9617,12 @@ export const ShufflePlayer = {
         items = await OfflineMediaManager.getAllCachedTracks();
       }
 
-      // 应用自定义排序
-      this.playlist = this.applyCustomOrder(items);
+      // 应用排序（新歌优先按归档时间倒序，其他模式应用自定义排序）
+      if (this.mode === "newest") {
+        this.playlist = [...items].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+      } else {
+        this.playlist = this.applyCustomOrder(items);
+      }
       this.updateBadgeCounts();
       this.initShufflePool();
       this.renderPlaylist();
@@ -10219,13 +10248,8 @@ export const ShufflePlayer = {
       // 智能无重复洗牌池 (未播/低播优先，整轮不重复)
       nextIndex = this.getNextShuffleIndex();
     } else if (this.mode === "newest") {
-      // 新歌优先：在最新加入的前 15 首中从新到旧循环播放
-      const newestCap = Math.min(15, this.playlist.length);
-      if (this.currentIndex < 0 || this.currentIndex >= newestCap - 1) {
-        nextIndex = 0;
-      } else {
-        nextIndex = this.currentIndex + 1;
-      }
+      // 新歌优先：列表已按归档时间从新到旧全量排序，依次循环播放全部音频
+      nextIndex = (this.currentIndex + 1) % this.playlist.length;
     } else if (this.mode === "order") {
       // 顺序播放：到达末尾时停止并提示
       if (this.currentIndex >= this.playlist.length - 1) {
@@ -10265,8 +10289,7 @@ export const ShufflePlayer = {
     if (this.mode === "shuffle") {
       prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
     } else if (this.mode === "newest") {
-      const newestCap = Math.min(15, this.playlist.length);
-      prevIndex = (this.currentIndex <= 0 || this.currentIndex >= newestCap) ? (newestCap - 1) : (this.currentIndex - 1);
+      prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
     } else if (this.mode === "order") {
       // 顺序播放：到达第一首时回退到开头并提示
       if (this.currentIndex <= 0) {
