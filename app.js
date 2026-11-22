@@ -7727,7 +7727,7 @@ function renderDetailTags(note) {
 export const ShufflePlayer = {
   playlist: [],
   currentIndex: -1,
-  mode: localStorage.getItem("shuffle_play_mode") || "order", // "order" | "loop" | "shuffle" | "single"
+  mode: localStorage.getItem("shuffle_play_mode") || "newest", // "newest" | "shuffle" | "loop" | "order" | "single"
   playbackRate: 1.0,
   audioEl: null,
   isScrubbing: false,
@@ -7815,30 +7815,30 @@ export const ShufflePlayer = {
     // 挂载音频核心事件监听
     this.attachAudioElementListeners();
 
-    // 播放模式切换 (顺序播放 / 列表循环 / 智能随机 / 单曲循环)
+    // 播放模式切换 (🆕 新歌优先 → 🔀 科学复习 → 🔁 循环 → ➡️ 顺序 → 🔂 单曲)
     const modeBtn = document.getElementById("btn-shuffle-mode-toggle");
     modeBtn?.addEventListener("click", () => {
-      if (this.mode === "order") {
-        this.mode = "loop";
-        showToast("已切换为：列表循环");
-      } else if (this.mode === "loop") {
+      if (this.mode === "newest") {
         this.mode = "shuffle";
+        this.applyPlaylistOrdering();
         this.initShufflePool();
         showToast("已切换为：🔀 科学复习 (艾宾浩斯遗忘曲线，新知温故自适应)");
       } else if (this.mode === "shuffle") {
+        this.mode = "loop";
+        showToast("已切换为：🔁 列表循环");
+      } else if (this.mode === "loop") {
+        this.mode = "order";
+        showToast("已切换为：➡️ 顺序播放");
+      } else if (this.mode === "order") {
+        this.mode = "single";
+        showToast("已切换为：🔂 单曲循环");
+      } else {
         this.mode = "newest";
         this.applyPlaylistOrdering();
         showToast("已切换为：🆕 新歌优先 (按归档时间从新到旧排序全部音频)");
         if (this.playlist.length > 0 && this.currentIndex !== 0) {
           this.playIndex(0);
         }
-      } else if (this.mode === "newest") {
-        this.mode = "single";
-        this.applyPlaylistOrdering();
-        showToast("已切换为：单曲循环");
-      } else {
-        this.mode = "order";
-        showToast("已切换为：顺序播放");
       }
       localStorage.setItem("shuffle_play_mode", this.mode);
       this.updateModeBtnUI();
