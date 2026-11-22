@@ -7822,6 +7822,12 @@ export const ShufflePlayer = {
         this.initShufflePool();
         showToast("已切换为：🔀 科学复习 (艾宾浩斯遗忘曲线，新知温故自适应)");
       } else if (this.mode === "shuffle") {
+        this.mode = "newest";
+        showToast("已切换为：🆕 新歌优先 (最新加入的 15 首从新到旧循环)");
+        if (this.playlist.length > 0 && (this.currentIndex < 0 || this.currentIndex >= Math.min(15, this.playlist.length))) {
+          this.playIndex(0);
+        }
+      } else if (this.mode === "newest") {
         this.mode = "single";
         showToast("已切换为：单曲循环");
       } else {
@@ -7914,6 +7920,9 @@ export const ShufflePlayer = {
     } else if (this.mode === "shuffle") {
       text = "🔀 科学复习";
       title = "艾宾浩斯科学复习模式 (新旧自适应穿插，防重复死循环)";
+    } else if (this.mode === "newest") {
+      text = "🆕 新歌优先";
+      title = "新歌优先模式 (最新加入的 15 首从新到旧循环播放)";
     } else if (this.mode === "single") {
       text = "🔂 单曲";
       title = "单曲循环模式";
@@ -10209,6 +10218,14 @@ export const ShufflePlayer = {
     if (this.mode === "shuffle") {
       // 智能无重复洗牌池 (未播/低播优先，整轮不重复)
       nextIndex = this.getNextShuffleIndex();
+    } else if (this.mode === "newest") {
+      // 新歌优先：在最新加入的前 15 首中从新到旧循环播放
+      const newestCap = Math.min(15, this.playlist.length);
+      if (this.currentIndex < 0 || this.currentIndex >= newestCap - 1) {
+        nextIndex = 0;
+      } else {
+        nextIndex = this.currentIndex + 1;
+      }
     } else if (this.mode === "order") {
       // 顺序播放：到达末尾时停止并提示
       if (this.currentIndex >= this.playlist.length - 1) {
@@ -10247,6 +10264,9 @@ export const ShufflePlayer = {
     let prevIndex;
     if (this.mode === "shuffle") {
       prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
+    } else if (this.mode === "newest") {
+      const newestCap = Math.min(15, this.playlist.length);
+      prevIndex = (this.currentIndex <= 0 || this.currentIndex >= newestCap) ? (newestCap - 1) : (this.currentIndex - 1);
     } else if (this.mode === "order") {
       // 顺序播放：到达第一首时回退到开头并提示
       if (this.currentIndex <= 0) {
