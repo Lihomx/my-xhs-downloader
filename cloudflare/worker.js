@@ -910,11 +910,12 @@ ${cleanTranscript || '（暂无音频文案，请基于正文与标题提炼）'
           const search = url.searchParams.get('q') || '';
           const tag = url.searchParams.get('tag') || '';
           const author = url.searchParams.get('author') || '';
+          const mediaType = url.searchParams.get('mediaType') || '';
           const sort = url.searchParams.get('sort') || 'created_desc';
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 20));
           const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
 
-          const result = await listNotes(env.DB, { search, tag, author, sort, limit, offset });
+          const result = await listNotes(env.DB, { search, tag, author, mediaType, sort, limit, offset });
           return json({ success: true, ...result });
         }
 

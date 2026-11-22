@@ -535,7 +535,7 @@ export async function archiveNote(env, noteData) {
 /**
  * 分页与关键词、分类、博主检索笔记列表
  */
-export async function listNotes(db, { search = "", tag = "", author = "", sort = "created_desc", limit = 20, offset = 0 } = {}) {
+export async function listNotes(db, { search = "", tag = "", author = "", mediaType = "", sort = "created_desc", limit = 20, offset = 0 } = {}) {
   if (!db) return { total: 0, items: [] };
   await initDb(db);
 
@@ -556,6 +556,14 @@ export async function listNotes(db, { search = "", tag = "", author = "", sort =
   } else if (author && author !== '__all__') {
     conditions.push("author_name = ?");
     params.push(author);
+  }
+
+  if (mediaType === 'video') {
+    conditions.push("(videos_json IS NOT NULL AND videos_json != '[]' AND TRIM(videos_json) != '')");
+  } else if (mediaType === 'audio') {
+    conditions.push("(audio_url IS NOT NULL AND TRIM(audio_url) != '') AND (videos_json IS NULL OR videos_json = '[]' OR TRIM(videos_json) = '')");
+  } else if (mediaType === 'text') {
+    conditions.push("(videos_json IS NULL OR videos_json = '[]' OR TRIM(videos_json) = '') AND (audio_url IS NULL OR TRIM(audio_url) = '')");
   }
 
   if (search.trim()) {

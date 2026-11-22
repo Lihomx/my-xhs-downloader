@@ -292,7 +292,7 @@
                 </div>
               </div>
 
-              <!-- 分类模式切换条：🏷️ 标签分类 vs 👤 博主分类 -->
+              <!-- 分类模式切换条：🏷️ 标签分类 vs 👤 博主分类 + 媒体类型筛选 -->
               <div class="kb-filter-nav">
                 <div class="filter-mode-tabs">
                   <button id="btn-mode-tags" class="filter-mode-tab active" type="button">
@@ -301,6 +301,12 @@
                   <button id="btn-mode-authors" class="filter-mode-tab" type="button">
                     👤 博主分类 <span id="kb-authors-count-badge" class="filter-mode-badge">0</span>
                   </button>
+                </div>
+                <div id="kb-media-filter-tabs" class="kb-media-filter-tabs" role="group" aria-label="媒体类型筛选">
+                  <button class="kb-media-filter-btn active" type="button" data-media-type="all">📚 全部</button>
+                  <button class="kb-media-filter-btn" type="button" data-media-type="video">🎬 视频</button>
+                  <button class="kb-media-filter-btn" type="button" data-media-type="audio">🎧 纯音频</button>
+                  <button class="kb-media-filter-btn" type="button" data-media-type="text">📄 纯图文/无音视频</button>
                 </div>
                 <div id="kb-active-filter-indicator" class="active-filter-indicator" style="display: none;">
                   <span id="kb-active-filter-text">当前筛选: ...</span>

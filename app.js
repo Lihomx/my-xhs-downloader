@@ -237,6 +237,7 @@ const state = {
   tagCounts: {},
   filterMode: "tags",
   currentAuthor: "__all__",
+  currentMediaType: "all",
   authors: [],
   unknownAuthorCount: 0,
   notesSortOrder: localStorage.getItem("kb_notes_sort_order") || "created_desc",
@@ -7028,6 +7029,9 @@ async function loadNotes(search = "") {
     if (state.currentAuthor && state.currentAuthor !== "__all__") {
       url += `&author=${encodeURIComponent(state.currentAuthor)}`;
     }
+    if (state.currentMediaType && state.currentMediaType !== "all") {
+      url += `&mediaType=${encodeURIComponent(state.currentMediaType)}`;
+    }
     const res = await fetch(url, {
       headers: { "x-auth-pin": state.pin }
     });
@@ -10635,6 +10639,18 @@ document.addEventListener("DOMContentLoaded", () => {
   // 分类模式切换：🏷️ 标签分类 vs 👤 博主分类
   document.getElementById("btn-mode-tags")?.addEventListener("click", () => setFilterMode("tags"));
   document.getElementById("btn-mode-authors")?.addEventListener("click", () => setFilterMode("authors"));
+
+  // 媒体类型筛选：📚 全部 / 🎬 视频 / 🎧 纯音频 / 📄 纯图文/无音视频
+  const mediaFilterWrap = document.getElementById("kb-media-filter-tabs");
+  mediaFilterWrap?.querySelectorAll(".kb-media-filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const nextType = btn.dataset.mediaType || "all";
+      state.currentMediaType = nextType;
+      mediaFilterWrap.querySelectorAll(".kb-media-filter-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      loadNotes(document.getElementById("kb-search-input")?.value || "");
+    });
+  });
   document.getElementById("btn-clear-active-filter")?.addEventListener("click", () => {
     if (state.filterMode === "authors") {
       state.currentCategory = "__all__";
