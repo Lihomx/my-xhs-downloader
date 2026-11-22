@@ -591,7 +591,9 @@ export async function listNotes(db, { search = "", tag = "", author = "", mediaT
     try { noteTags = JSON.parse(r.tags_json || '[]'); } catch {}
     let videos = [];
     try { videos = JSON.parse(r.videos_json || '[]'); } catch {}
-    const hasAudioOrVideo = Boolean((r.audio_url && r.audio_url.trim()) || (videos.length > 0 && videos[0]?.url));
+    const hasVideo = Boolean(videos.length > 0 && videos[0]?.url);
+    const hasAudio = Boolean(r.audio_url && r.audio_url.trim());
+    const hasAudioOrVideo = hasVideo || hasAudio;
     return {
       id: r.id,
       title: r.title,
@@ -601,6 +603,10 @@ export async function listNotes(db, { search = "", tag = "", author = "", mediaT
       author_profile_url: r.author_profile_url || (r.author_id ? `https://www.xiaohongshu.com/user/profile/${r.author_id}` : ""),
       tags: Array.isArray(noteTags) ? noteTags : [],
       inShuffle: Boolean(r.in_shuffle),
+      hasVideo,
+      hasAudio,
+      videoUrl: videos[0]?.url || "",
+      audioUrl: r.audio_url || "",
       hasAudioOrVideo,
       content_preview: r.content_preview,
       thoughts_preview: r.thoughts_preview,

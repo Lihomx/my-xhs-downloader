@@ -288,6 +288,9 @@
                   <button id="btn-kb-sort-toggle" class="btn btn-secondary kb-sort-pill-btn" type="button" title="当前：最新收藏优先（从新到旧），点击切换为最早收藏优先">
                     <span id="kb-sort-toggle-icon">🕒</span> <span id="kb-sort-toggle-text">最新收藏 ↓</span>
                   </button>
+                  <button id="btn-kb-multi-select" class="btn btn-secondary" type="button" title="开启多选模式，支持一键批量删除视频并更新云端空间">
+                    ☑️ 多选
+                  </button>
                   <span id="kb-total-badge" class="kb-total-pill">0 篇</span>
                 </div>
               </div>
@@ -318,6 +321,25 @@
               <div class="kb-tags-bar">
                 <div id="kb-tag-list" class="kb-tags-scroll-wrap">
                   <!-- 动态插入分类标签胶囊 或 博主胶囊 -->
+                </div>
+              </div>
+
+              <!-- 多选批量操作条 -->
+              <div id="kb-batch-bar" class="kb-batch-bar" style="display: none;">
+                <div class="kb-batch-left">
+                  <label class="kb-batch-select-all">
+                    <input type="checkbox" id="kb-batch-select-all-cb" />
+                    <span>全选当前页</span>
+                  </label>
+                  <span id="kb-batch-selected-count" class="kb-batch-count">已选 0 篇</span>
+                </div>
+                <div class="kb-batch-actions">
+                  <button id="btn-kb-batch-delete-video" class="btn btn-danger btn-sm" type="button" disabled>
+                    🎬 批量删除视频 (保留音频/文案)
+                  </button>
+                  <button id="btn-kb-batch-cancel" class="btn btn-ghost btn-sm" type="button">
+                    取消多选
+                  </button>
                 </div>
               </div>
             </div>

@@ -238,6 +238,9 @@ const state = {
   filterMode: "tags",
   currentAuthor: "__all__",
   currentMediaType: "all",
+  kbMultiSelectMode: false,
+  kbSelectedNotes: new Map(),
+  kbLoadedItems: [],
   authors: [],
   unknownAuthorCount: 0,
   notesSortOrder: localStorage.getItem("kb_notes_sort_order") || "created_desc",
@@ -7045,17 +7048,27 @@ async function loadNotes(search = "") {
     showPinLockView(false);
 
     if (!data.items || data.items.length === 0) {
+      state.kbLoadedItems = [];
       gridContainer.innerHTML = "";
       if (emptyHint) emptyHint.style.display = "block";
+      if (typeof window.updateKbBatchBar === "function") window.updateKbBatchBar();
       return;
     }
 
+    state.kbLoadedItems = data.items;
     if (emptyHint) emptyHint.style.display = "none";
     gridContainer.innerHTML = "";
+    if (state.kbMultiSelectMode) {
+      gridContainer.classList.add("kb-multi-select-active");
+    } else {
+      gridContainer.classList.remove("kb-multi-select-active");
+    }
 
     data.items.forEach((item) => {
       const card = document.createElement("div");
-      card.className = "kb-note-card";
+      const isSelected = state.kbSelectedNotes.has(String(item.id));
+      card.className = `kb-note-card ${isSelected ? "kb-card-selected" : ""}`;
+      card.dataset.noteId = String(item.id);
 
       const tagsHtml = (item.tags || [])
         .map((t) => `<span class="kb-chip-small">${t}</span>`)
@@ -7063,6 +7076,7 @@ async function loadNotes(search = "") {
 
       card.innerHTML = `
         <div class="kb-card-cover-wrap">
+          <div class="kb-card-select-badge" title="点击选中/取消">✓</div>
           <img src="${item.cover_url || '/favicon.svg'}" alt="封面" loading="lazy" />
           <div class="kb-card-tag-chips">${tagsHtml}</div>
         </div>
@@ -7116,9 +7130,25 @@ async function loadNotes(search = "") {
         });
       }
 
-      card.addEventListener("click", () => openNoteDetail(item.id));
+      card.addEventListener("click", () => {
+        if (state.kbMultiSelectMode) {
+          const strId = String(item.id);
+          if (state.kbSelectedNotes.has(strId)) {
+            state.kbSelectedNotes.delete(strId);
+            card.classList.remove("kb-card-selected");
+          } else {
+            state.kbSelectedNotes.set(strId, item);
+            card.classList.add("kb-card-selected");
+          }
+          if (typeof window.updateKbBatchBar === "function") window.updateKbBatchBar();
+          return;
+        }
+        openNoteDetail(item.id);
+      });
       gridContainer.appendChild(card);
     });
+
+    if (typeof window.updateKbBatchBar === "function") window.updateKbBatchBar();
 
     // 检查并同步待提取字幕状态徽标
     BackgroundSubtitleQueue.checkAndResumePending(false);
@@ -10650,6 +10680,153 @@ document.addEventListener("DOMContentLoaded", () => {
       btn.classList.add("active");
       loadNotes(document.getElementById("kb-search-input")?.value || "");
     });
+  });
+
+  // 知识库多选模式与批量删除视频
+  const updateKbBatchBar = () => {
+    const batchBar = document.getElementById("kb-batch-bar");
+    const countEl = document.getElementById("kb-batch-selected-count");
+    const btnDeleteVideo = document.getElementById("btn-kb-batch-delete-video");
+    const selectAllCb = document.getElementById("kb-batch-select-all-cb");
+    const btnToggle = document.getElementById("btn-kb-multi-select");
+    const grid = document.getElementById("kb-notes-grid");
+
+    if (grid) {
+      grid.classList.toggle("kb-multi-select-active", state.kbMultiSelectMode);
+    }
+    if (btnToggle) {
+      btnToggle.classList.toggle("btn-primary", state.kbMultiSelectMode);
+      btnToggle.classList.toggle("btn-secondary", !state.kbMultiSelectMode);
+      btnToggle.textContent = state.kbMultiSelectMode ? "✖️ 退出多选" : "☑️ 多选";
+    }
+    if (batchBar) {
+      batchBar.style.display = state.kbMultiSelectMode ? "flex" : "none";
+    }
+
+    const selectedCount = state.kbSelectedNotes.size;
+    const selectedWithVideo = Array.from(state.kbSelectedNotes.values()).filter((it) => it.hasVideo || it.videoUrl).length;
+
+    if (countEl) {
+      countEl.textContent = `已选 ${selectedCount} 篇${selectedWithVideo > 0 ? ` (含视频 ${selectedWithVideo} 篇)` : ""}`;
+    }
+    if (btnDeleteVideo) {
+      btnDeleteVideo.disabled = selectedWithVideo === 0;
+    }
+    if (selectAllCb) {
+      const loaded = state.kbLoadedItems || [];
+      selectAllCb.checked = loaded.length > 0 && loaded.every((it) => state.kbSelectedNotes.has(String(it.id)));
+    }
+  };
+  window.updateKbBatchBar = updateKbBatchBar;
+
+  const toggleKbMultiSelect = (forceState) => {
+    state.kbMultiSelectMode = typeof forceState === "boolean" ? forceState : !state.kbMultiSelectMode;
+    if (!state.kbMultiSelectMode) {
+      state.kbSelectedNotes.clear();
+      document.querySelectorAll(".kb-note-card.kb-card-selected").forEach((c) => c.classList.remove("kb-card-selected"));
+    }
+    updateKbBatchBar();
+  };
+
+  document.getElementById("btn-kb-multi-select")?.addEventListener("click", () => toggleKbMultiSelect());
+  document.getElementById("btn-kb-batch-cancel")?.addEventListener("click", () => toggleKbMultiSelect(false));
+
+  document.getElementById("kb-batch-select-all-cb")?.addEventListener("change", (e) => {
+    const checked = e.target.checked;
+    const loaded = state.kbLoadedItems || [];
+    loaded.forEach((item) => {
+      const strId = String(item.id);
+      if (checked) state.kbSelectedNotes.set(strId, item);
+      else state.kbSelectedNotes.delete(strId);
+    });
+    document.querySelectorAll("#kb-notes-grid .kb-note-card").forEach((card) => {
+      const nid = card.dataset.noteId;
+      if (nid && state.kbSelectedNotes.has(nid)) card.classList.add("kb-card-selected");
+      else card.classList.remove("kb-card-selected");
+    });
+    updateKbBatchBar();
+  });
+
+  document.getElementById("btn-kb-batch-delete-video")?.addEventListener("click", async () => {
+    const selectedList = Array.from(state.kbSelectedNotes.values());
+    const videoNotes = selectedList.filter((it) => it.hasVideo || it.videoUrl);
+    if (videoNotes.length === 0) {
+      showToast("所选笔记中不包含视频文件，无需清理", { isError: true });
+      return;
+    }
+
+    if (!confirm(`确定要批量删除所选 ${videoNotes.length} 篇笔记的视频文件吗？\n系统将保留纯音频与文字文案（尚未提取独立音频的将自动提取转存），大幅释放云端存储空间。`)) {
+      return;
+    }
+
+    const btnDel = document.getElementById("btn-kb-batch-delete-video");
+    const btnCancel = document.getElementById("btn-kb-batch-cancel");
+    const origText = btnDel ? btnDel.textContent : "";
+    if (btnDel) {
+      btnDel.disabled = true;
+      btnDel.textContent = "⏳ 正在批量处理...";
+    }
+    if (btnCancel) btnCancel.disabled = true;
+
+    let successCount = 0;
+    let failCount = 0;
+
+    try {
+      for (let i = 0; i < videoNotes.length; i++) {
+        const note = videoNotes[i];
+        const shortTitle = (note.title || "笔记").slice(0, 14);
+        showToast(`⏳ 批量清理 (${i + 1}/${videoNotes.length}): ${shortTitle}...`);
+        if (btnDel) btnDel.textContent = `⏳ 清理中 (${i + 1}/${videoNotes.length})...`;
+
+        try {
+          if (!note.hasAudio && !note.audioUrl && note.videoUrl) {
+            try {
+              let vUrl = note.videoUrl;
+              try {
+                const cached = await OfflineMediaManager.getPlayableSource(vUrl);
+                if (cached?.src) vUrl = cached.src;
+              } catch {}
+              const { blob } = await extractFullWavFromMedia(vUrl);
+              await fetch(`/api/notes/${note.id}/audio`, {
+                method: "POST",
+                headers: { "x-auth-pin": state.pin, "Content-Type": "audio/wav" },
+                body: blob
+              });
+            } catch (extractErr) {
+              console.warn(`批量清理提取音频失败 (${note.id}):`, extractErr);
+            }
+          }
+
+          const res = await fetch(`/api/notes/${note.id}/delete-media`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+            body: JSON.stringify({ target: "video" })
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } catch (err) {
+          console.warn(`批量删除视频失败 (${note.id}):`, err);
+          failCount++;
+        }
+      }
+
+      toggleKbMultiSelect(false);
+      await loadNotes(document.getElementById("kb-search-input")?.value || "");
+      ShufflePlayer.loadPlaylist();
+      await loadStorageUsage({ forceRefresh: true });
+      showToast(`🎬 批量删除视频完成！成功释放 ${successCount} 篇视频空间${failCount > 0 ? `（${failCount} 篇失败）` : ""}`);
+    } finally {
+      if (btnDel) {
+        btnDel.textContent = origText || "🎬 批量删除视频 (保留音频/文案)";
+        btnDel.disabled = false;
+      }
+      if (btnCancel) btnCancel.disabled = false;
+      updateKbBatchBar();
+    }
   });
   document.getElementById("btn-clear-active-filter")?.addEventListener("click", () => {
     if (state.filterMode === "authors") {
