@@ -10687,6 +10687,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const batchBar = document.getElementById("kb-batch-bar");
     const countEl = document.getElementById("kb-batch-selected-count");
     const btnEditTags = document.getElementById("btn-kb-batch-edit-tags");
+    const btnAddShuffle = document.getElementById("btn-kb-batch-add-shuffle");
     const btnDeleteVideo = document.getElementById("btn-kb-batch-delete-video");
     const selectAllCb = document.getElementById("kb-batch-select-all-cb");
     const btnToggle = document.getElementById("btn-kb-multi-select");
@@ -10705,13 +10706,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const selectedCount = state.kbSelectedNotes.size;
-    const selectedWithVideo = Array.from(state.kbSelectedNotes.values()).filter((it) => it.hasVideo || it.videoUrl).length;
+    const selectedValues = Array.from(state.kbSelectedNotes.values());
+    const selectedWithVideo = selectedValues.filter((it) => it.hasVideo || it.videoUrl).length;
+    const selectedWithMedia = selectedValues.filter((it) => it.hasAudioOrVideo || it.hasVideo || it.hasAudio || it.videoUrl || it.audioUrl).length;
 
     if (countEl) {
       countEl.textContent = `已选 ${selectedCount} 篇${selectedWithVideo > 0 ? ` (含视频 ${selectedWithVideo} 篇)` : ""}`;
     }
     if (btnEditTags) {
       btnEditTags.disabled = selectedCount === 0;
+    }
+    if (btnAddShuffle) {
+      btnAddShuffle.disabled = selectedWithMedia === 0;
     }
     if (btnDeleteVideo) {
       btnDeleteVideo.disabled = selectedWithVideo === 0;
@@ -10978,6 +10984,65 @@ document.addEventListener("DOMContentLoaded", () => {
         btnConfirm.disabled = false;
         btnConfirm.textContent = origText || "✅ 应用到所选笔记";
       }
+    }
+  });
+
+  // 多选批量加入随身听
+  document.getElementById("btn-kb-batch-add-shuffle")?.addEventListener("click", async () => {
+    const selectedNotes = Array.from(state.kbSelectedNotes.values());
+    const mediaNotes = selectedNotes.filter((it) => it.hasAudioOrVideo || it.hasVideo || it.hasAudio || it.videoUrl || it.audioUrl);
+    if (mediaNotes.length === 0) {
+      showToast("所选笔记中不包含音视频文件，无法加入随身听", { isError: true });
+      return;
+    }
+
+    const needAddNotes = mediaNotes.filter((it) => !it.inShuffle);
+    if (needAddNotes.length === 0) {
+      showToast("所选含音视频笔记已全部在随身听播放库中");
+      return;
+    }
+
+    const btnAdd = document.getElementById("btn-kb-batch-add-shuffle");
+    const origText = btnAdd ? btnAdd.textContent : "";
+    if (btnAdd) {
+      btnAdd.disabled = true;
+      btnAdd.textContent = "⏳ 正在加入...";
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    try {
+      for (let i = 0; i < needAddNotes.length; i++) {
+        const note = needAddNotes[i];
+        if (btnAdd) btnAdd.textContent = `⏳ 加入中 (${i + 1}/${needAddNotes.length})...`;
+        try {
+          const res = await fetch(`/api/notes/${note.id}/shuffle`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+            body: JSON.stringify({ inShuffle: true })
+          });
+          if (res.ok) {
+            note.inShuffle = true;
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } catch {
+          failCount++;
+        }
+      }
+
+      toggleKbMultiSelect(false);
+      await loadNotes(document.getElementById("kb-search-input")?.value || "");
+      await ShufflePlayer.loadPlaylist();
+      showToast(`📻 已批量将 ${successCount} 篇音频加入随身听播放库${failCount > 0 ? `（${failCount} 篇失败）` : ""}`);
+    } finally {
+      if (btnAdd) {
+        btnAdd.textContent = origText || "📻 批量加入随身听";
+        btnAdd.disabled = false;
+      }
+      updateKbBatchBar();
     }
   });
   document.getElementById("btn-clear-active-filter")?.addEventListener("click", () => {
