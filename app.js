@@ -10686,6 +10686,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const updateKbBatchBar = () => {
     const batchBar = document.getElementById("kb-batch-bar");
     const countEl = document.getElementById("kb-batch-selected-count");
+    const btnEditTags = document.getElementById("btn-kb-batch-edit-tags");
     const btnDeleteVideo = document.getElementById("btn-kb-batch-delete-video");
     const selectAllCb = document.getElementById("kb-batch-select-all-cb");
     const btnToggle = document.getElementById("btn-kb-multi-select");
@@ -10708,6 +10709,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (countEl) {
       countEl.textContent = `已选 ${selectedCount} 篇${selectedWithVideo > 0 ? ` (含视频 ${selectedWithVideo} 篇)` : ""}`;
+    }
+    if (btnEditTags) {
+      btnEditTags.disabled = selectedCount === 0;
     }
     if (btnDeleteVideo) {
       btnDeleteVideo.disabled = selectedWithVideo === 0;
@@ -10826,6 +10830,154 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (btnCancel) btnCancel.disabled = false;
       updateKbBatchBar();
+    }
+  });
+
+  // 多选批量修改分类弹窗逻辑
+  const batchTagsModal = document.getElementById("modal-kb-batch-tags");
+  let batchSelectedTags = new Set();
+
+  const closeBatchTagsModal = () => {
+    batchTagsModal?.classList.remove("active");
+  };
+
+  const renderBatchTagChips = () => {
+    const chipsContainer = document.getElementById("batch-tags-chips");
+    if (!chipsContainer) return;
+    chipsContainer.innerHTML = "";
+    const allTags = Array.isArray(state.tags) ? state.tags : [];
+    if (allTags.length === 0) {
+      chipsContainer.innerHTML = `<span style="font-size: 12px; color: var(--text-muted);">暂无分类，请在下方输入新分类名称添加</span>`;
+      return;
+    }
+    allTags.forEach((tag) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      const isSelected = batchSelectedTags.has(tag);
+      chip.className = `kb-tag-pill ${isSelected ? "active" : ""}`;
+      chip.textContent = `🏷️ ${tag}`;
+      chip.addEventListener("click", () => {
+        if (batchSelectedTags.has(tag)) batchSelectedTags.delete(tag);
+        else batchSelectedTags.add(tag);
+        renderBatchTagChips();
+      });
+      chipsContainer.appendChild(chip);
+    });
+  };
+
+  document.getElementById("btn-kb-batch-edit-tags")?.addEventListener("click", () => {
+    if (state.kbSelectedNotes.size === 0) {
+      showToast("请先选择至少一篇笔记", { isError: true });
+      return;
+    }
+    batchSelectedTags.clear();
+    const countEl = document.getElementById("batch-tags-count");
+    if (countEl) countEl.textContent = String(state.kbSelectedNotes.size);
+    const replaceRadio = document.querySelector('input[name="batch-tags-mode"][value="replace"]');
+    if (replaceRadio) replaceRadio.checked = true;
+    const newInput = document.getElementById("batch-tags-new-input");
+    if (newInput) newInput.value = "";
+    renderBatchTagChips();
+    batchTagsModal?.classList.add("active");
+  });
+
+  document.getElementById("btn-close-batch-tags-modal")?.addEventListener("click", closeBatchTagsModal);
+  document.getElementById("btn-cancel-batch-tags")?.addEventListener("click", closeBatchTagsModal);
+  batchTagsModal?.addEventListener("click", (e) => {
+    if (e.target === batchTagsModal) closeBatchTagsModal();
+  });
+
+  const handleAddBatchNewTag = async () => {
+    const input = document.getElementById("batch-tags-new-input");
+    const newTag = (input?.value || "").trim();
+    if (!newTag) return;
+    try {
+      if (!state.tags.includes(newTag)) {
+        const res = await fetch("/api/tags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+          body: JSON.stringify({ action: "add", tag: newTag })
+        });
+        if (res.ok) {
+          state.tags.push(newTag);
+        }
+      }
+      batchSelectedTags.add(newTag);
+      if (input) input.value = "";
+      renderBatchTagChips();
+    } catch (err) {
+      showToast(`添加分类失败: ${err.message}`, { isError: true });
+    }
+  };
+
+  document.getElementById("btn-batch-tags-add-new")?.addEventListener("click", handleAddBatchNewTag);
+  document.getElementById("batch-tags-new-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleAddBatchNewTag();
+    }
+  });
+
+  document.getElementById("btn-confirm-batch-tags")?.addEventListener("click", async () => {
+    const selectedNotes = Array.from(state.kbSelectedNotes.values());
+    if (selectedNotes.length === 0) return;
+
+    const modeEl = document.querySelector('input[name="batch-tags-mode"]:checked');
+    const mode = modeEl ? modeEl.value : "replace";
+    const targetTags = Array.from(batchSelectedTags);
+
+    if (mode === "append" && targetTags.length === 0) {
+      showToast("追加模式下请至少选择一个分类", { isError: true });
+      return;
+    }
+
+    const btnConfirm = document.getElementById("btn-confirm-batch-tags");
+    const origText = btnConfirm ? btnConfirm.textContent : "";
+    if (btnConfirm) {
+      btnConfirm.disabled = true;
+      btnConfirm.textContent = "⏳ 正在更新...";
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    try {
+      for (let i = 0; i < selectedNotes.length; i++) {
+        const note = selectedNotes[i];
+        if (btnConfirm) btnConfirm.textContent = `⏳ 正在更新 (${i + 1}/${selectedNotes.length})...`;
+
+        const existingTags = Array.isArray(note.tags) ? note.tags : [];
+        const finalTags = mode === "append"
+          ? Array.from(new Set([...existingTags, ...targetTags]))
+          : [...targetTags];
+
+        try {
+          const res = await fetch(`/api/notes/${note.id}/tags`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "x-auth-pin": state.pin },
+            body: JSON.stringify({ tags: finalTags })
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } catch {
+          failCount++;
+        }
+      }
+
+      closeBatchTagsModal();
+      toggleKbMultiSelect(false);
+      await loadTags();
+      await loadNotes(document.getElementById("kb-search-input")?.value || "");
+      showToast(`🏷️ 批量修改分类完成！成功更新 ${successCount} 篇笔记${failCount > 0 ? `（${failCount} 篇失败）` : ""}`);
+    } finally {
+      if (btnConfirm) {
+        btnConfirm.disabled = false;
+        btnConfirm.textContent = origText || "✅ 应用到所选笔记";
+      }
     }
   });
   document.getElementById("btn-clear-active-filter")?.addEventListener("click", () => {
