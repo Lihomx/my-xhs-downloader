@@ -241,6 +241,10 @@ const state = {
   kbMultiSelectMode: false,
   kbSelectedNotes: new Map(),
   kbLoadedItems: [],
+  kbPage: 1,
+  kbPageSize: 60,
+  kbTotalNotes: 0,
+  kbTotalPages: 1,
   authors: [],
   unknownAuthorCount: 0,
   notesSortOrder: localStorage.getItem("kb_notes_sort_order") || "created_desc",
@@ -6991,14 +6995,14 @@ function switchCategory(category, label) {
   state.currentCategory = category;
   renderTagsList();
   const searchVal = document.getElementById("kb-search-input")?.value || "";
-  loadNotes(searchVal);
+  loadNotes(searchVal, { resetPage: true });
 }
 
 function switchAuthor(author, label) {
   state.currentAuthor = author;
   renderAuthorsList();
   const searchVal = document.getElementById("kb-search-input")?.value || "";
-  loadNotes(searchVal);
+  loadNotes(searchVal, { resetPage: true });
 }
 
 function updateSortBtnUI() {
@@ -7017,7 +7021,8 @@ function updateSortBtnUI() {
   }
 }
 
-async function loadNotes(search = "") {
+async function loadNotes(search = "", { resetPage = false } = {}) {
+  if (resetPage) state.kbPage = 1;
   const gridContainer = document.getElementById("kb-notes-grid");
   const emptyHint = document.getElementById("kb-empty-hint");
   if (!gridContainer) return;
@@ -7025,7 +7030,11 @@ async function loadNotes(search = "") {
   gridContainer.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding: 40px; color: var(--text-sub);">正在加载知识库笔记...</div>`;
 
   try {
-    let url = `/api/notes?limit=100&q=${encodeURIComponent(search)}&sort=${encodeURIComponent(state.notesSortOrder || "created_desc")}`;
+    const pageSize = state.kbPageSize || 60;
+    const currentPage = Math.max(1, state.kbPage || 1);
+    const offset = (currentPage - 1) * pageSize;
+
+    let url = `/api/notes?limit=${pageSize}&offset=${offset}&q=${encodeURIComponent(search)}&sort=${encodeURIComponent(state.notesSortOrder || "created_desc")}`;
     if (state.currentCategory && state.currentCategory !== "__all__") {
       url += `&tag=${encodeURIComponent(state.currentCategory)}`;
     }
@@ -7046,6 +7055,18 @@ async function loadNotes(search = "") {
 
     const data = await res.json();
     showPinLockView(false);
+
+    const total = Number(data.total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    state.kbTotalNotes = total;
+    state.kbTotalPages = totalPages;
+
+    if (currentPage > totalPages && total > 0) {
+      state.kbPage = totalPages;
+      return loadNotes(search);
+    }
+
+    renderKbPagination();
 
     if (!data.items || data.items.length === 0) {
       state.kbLoadedItems = [];
@@ -7155,6 +7176,84 @@ async function loadNotes(search = "") {
   } catch (err) {
     gridContainer.innerHTML = `<div style="grid-column: 1/-1; color:var(--primary); padding:20px; text-align:center;">加载失败: ${err.message}</div>`;
   }
+}
+
+function goToKbPage(page) {
+  const targetPage = Math.max(1, Math.min(state.kbTotalPages || 1, Number(page) || 1));
+  if (targetPage === state.kbPage) return;
+  state.kbPage = targetPage;
+  const searchVal = document.getElementById("kb-search-input")?.value || "";
+  loadNotes(searchVal).then(() => {
+    const cardsArea = document.querySelector(".kb-cards-area");
+    if (cardsArea) cardsArea.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+function renderKbPagination() {
+  const bar = document.getElementById("kb-pagination-bar");
+  const infoEl = document.getElementById("kb-pagination-info");
+  const controlsEl = document.getElementById("kb-pagination-controls");
+  const jumpInput = document.getElementById("kb-page-jump-input");
+  if (!bar || !infoEl || !controlsEl) return;
+
+  const total = state.kbTotalNotes || 0;
+  const totalPages = state.kbTotalPages || 1;
+  const current = Math.min(state.kbPage || 1, totalPages);
+
+  if (total === 0) {
+    bar.style.display = "none";
+    return;
+  }
+
+  bar.style.display = "flex";
+  infoEl.textContent = `第 ${current} / ${totalPages} 页 · 共 ${total} 篇`;
+  if (jumpInput) {
+    jumpInput.max = String(totalPages);
+    jumpInput.value = String(current);
+  }
+
+  controlsEl.innerHTML = "";
+
+  const createBtn = (label, pageNum, disabled = false, active = false) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `kb-page-btn ${active ? "active" : ""}`;
+    btn.textContent = label;
+    btn.disabled = disabled;
+    if (!disabled && !active) {
+      btn.addEventListener("click", () => goToKbPage(pageNum));
+    }
+    return btn;
+  };
+
+  controlsEl.appendChild(createBtn("上一页", current - 1, current <= 1));
+
+  // 生成页码序列（带省略号）
+  const pages = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (current > 3) pages.push("...");
+    const start = Math.max(2, current - 1);
+    const end = Math.min(totalPages - 1, current + 1);
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (current < totalPages - 2) pages.push("...");
+    pages.push(totalPages);
+  }
+
+  pages.forEach((p) => {
+    if (p === "...") {
+      const span = document.createElement("span");
+      span.className = "kb-page-ellipsis";
+      span.textContent = "...";
+      controlsEl.appendChild(span);
+    } else {
+      controlsEl.appendChild(createBtn(String(p), p, false, p === current));
+    }
+  });
+
+  controlsEl.appendChild(createBtn("下一页", current + 1, current >= totalPages));
 }
 
 function showPinLockView(showLock) {
@@ -10646,7 +10745,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("kb-search-input")?.addEventListener("input", (e) => {
     clearTimeout(kbSearchTimer);
     kbSearchTimer = setTimeout(() => {
-      loadNotes(e.target.value);
+      loadNotes(e.target.value, { resetPage: true });
     }, 300);
   });
 
@@ -10663,7 +10762,7 @@ document.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("kb_notes_sort_order", state.notesSortOrder);
     updateSortBtnUI();
     const searchVal = document.getElementById("kb-search-input")?.value || "";
-    loadNotes(searchVal);
+    loadNotes(searchVal, { resetPage: true });
   });
 
   // 分类模式切换：🏷️ 标签分类 vs 👤 博主分类
@@ -10678,7 +10777,7 @@ document.addEventListener("DOMContentLoaded", () => {
       state.currentMediaType = nextType;
       mediaFilterWrap.querySelectorAll(".kb-media-filter-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      loadNotes(document.getElementById("kb-search-input")?.value || "");
+      loadNotes(document.getElementById("kb-search-input")?.value || "", { resetPage: true });
     });
   });
 
@@ -11052,7 +11151,23 @@ document.addEventListener("DOMContentLoaded", () => {
       state.currentAuthor = "__all__";
     }
     updateActiveFilterIndicator();
-    loadNotes(document.getElementById("kb-search-input")?.value || "");
+    loadNotes(document.getElementById("kb-search-input")?.value || "", { resetPage: true });
+  });
+
+  // 知识库页码快捷跳转
+  const handleKbPageJump = () => {
+    const jumpInput = document.getElementById("kb-page-jump-input");
+    const target = parseInt(jumpInput?.value || "1", 10);
+    if (!isNaN(target)) {
+      goToKbPage(target);
+    }
+  };
+  document.getElementById("btn-kb-page-jump")?.addEventListener("click", handleKbPageJump);
+  document.getElementById("kb-page-jump-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleKbPageJump();
+    }
   });
 
   // 批量补全历史已收藏笔记博主信息
